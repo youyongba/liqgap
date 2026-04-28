@@ -564,6 +564,95 @@
   });
 
   // ============================================================
+  // 飞书推送 (Feishu push controls)
+  // ============================================================
+  const fsEls = {
+    push: document.getElementById('fs-push'),
+    pushForce: document.getElementById('fs-push-force'),
+    test: document.getElementById('fs-test'),
+    status: document.getElementById('fs-status')
+  };
+
+  function setFsStatus(text, kind) {
+    if (!fsEls.status) return;
+    fsEls.status.textContent = text;
+    fsEls.status.classList.remove('ok', 'error', 'warn');
+    if (kind) fsEls.status.classList.add(kind);
+  }
+
+  async function refreshFeishuStatus() {
+    try {
+      const r = await fetch('/api/notify/status');
+      const j = await r.json();
+      if (!j.success) throw new Error(j.error || 'unknown');
+      const d = j.data;
+      if (!d.enabled) {
+        setFsStatus('飞书未配置 / Webhook not configured (.env)', 'warn');
+        if (fsEls.push) fsEls.push.disabled = true;
+        if (fsEls.pushForce) fsEls.pushForce.disabled = true;
+        if (fsEls.test) fsEls.test.disabled = true;
+        return;
+      }
+      const symKey = `${(els.symbol.value || 'BTCUSDT').toUpperCase()}|${els.market.value}`;
+      const last = d.lastNotified[symKey];
+      const cooldownMin = Math.round((d.cooldownMs || 0) / 60000);
+      let lastTxt = last
+        ? `上次推送 ${last.signal} @ ${new Date(last.ts).toLocaleTimeString()}`
+        : '尚未推送过 / not pushed yet';
+      const sig = d.signedRequest ? '签名' : '无签名';
+      setFsStatus(`飞书已就绪 / Ready · ${sig} · 冷却 ${cooldownMin}min · ${lastTxt}`, 'ok');
+    } catch (err) {
+      setFsStatus('飞书状态获取失败 / Status err: ' + err.message, 'error');
+    }
+  }
+
+  async function pushFeishuSignal(force) {
+    setFsStatus(force ? '强制推送中… / Forcing…' : '推送中… / Pushing…');
+    try {
+      const r = await fetch('/api/notify/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol: els.symbol.value.trim().toUpperCase() || 'BTCUSDT',
+          market: els.market.value,
+          force: !!force
+        })
+      });
+      const j = await r.json();
+      if (j.success) {
+        setFsStatus(`已推送 / Pushed · ${j.data.signal} · ${new Date().toLocaleTimeString()}`, 'ok');
+      } else {
+        setFsStatus('推送跳过 / Skip: ' + j.error, 'warn');
+      }
+    } catch (err) {
+      setFsStatus('推送失败 / Failed: ' + err.message, 'error');
+    } finally {
+      // 任何分支后都刷新一下状态以显示最新 lastNotified
+      setTimeout(refreshFeishuStatus, 1000);
+    }
+  }
+
+  async function testFeishuWebhook() {
+    setFsStatus('测试中… / Testing…');
+    try {
+      const r = await fetch('/api/notify/test', { method: 'POST' });
+      const j = await r.json();
+      if (j.success) setFsStatus('测试消息已送达 / Test delivered ✓', 'ok');
+      else setFsStatus('测试失败 / Test failed: ' + j.error, 'error');
+    } catch (err) {
+      setFsStatus('测试失败 / Test failed: ' + err.message, 'error');
+    }
+  }
+
+  if (fsEls.push) fsEls.push.addEventListener('click', () => pushFeishuSignal(false));
+  if (fsEls.pushForce) fsEls.pushForce.addEventListener('click', () => pushFeishuSignal(true));
+  if (fsEls.test) fsEls.test.addEventListener('click', testFeishuWebhook);
+  // 启动时拉一下飞书状态；symbol/market 改变时也刷新
+  refreshFeishuStatus();
+  els.symbol.addEventListener('change', refreshFeishuStatus);
+  els.market.addEventListener('change', refreshFeishuStatus);
+
+  // ============================================================
   // 30 天回测面板 (30-day backtest panel)
   // ============================================================
   const btEls = {

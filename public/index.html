@@ -375,6 +375,32 @@
       }
       #status.error { color: var(--accent-down); }
 
+      /* 飞书推送控制条 / Feishu push bar */
+      .feishu-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+        margin: 8px 0 10px 0;
+        padding: 8px 10px;
+        background: var(--bg-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+      }
+      .feishu-bar button {
+        font-size: 11px;
+        padding: 4px 10px;
+      }
+      #fs-status {
+        font-size: 11px;
+        color: var(--fg-2);
+        margin-left: 4px;
+        flex: 1 1 100%;
+      }
+      #fs-status.ok { color: var(--accent); }
+      #fs-status.error { color: var(--accent-down); }
+      #fs-status.warn { color: var(--accent-yellow); }
+
       ::-webkit-scrollbar { width: 8px; height: 8px; }
       ::-webkit-scrollbar-thumb {
         background: var(--bg-2);
@@ -439,6 +465,14 @@
         <div class="card-header">
           <h2>交易信号 / Trade Signal</h2>
           <span class="meta" id="signal-meta"></span>
+        </div>
+
+        <!-- 飞书推送控制 / Feishu push controls -->
+        <div class="feishu-bar" id="feishu-bar">
+          <button id="fs-push" type="button" title="按当前 symbol/market 推送一次（受冷却限制）">推送飞书 / Push</button>
+          <button id="fs-push-force" type="button" class="ghost" title="绕过冷却强制推送">强制推送 / Force</button>
+          <button id="fs-test" type="button" class="ghost" title="发送一条测试消息验证 webhook">测试 webhook / Test</button>
+          <span id="fs-status" class="meta">飞书状态加载中… / Loading…</span>
         </div>
 
         <div id="signal-banner" class="signal-banner none">等待信号… / Waiting…</div>

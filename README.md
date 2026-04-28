@@ -18,7 +18,8 @@ liq-gap/
 ├── services/
 │   ├── binance.js             # 币安 REST API 封装（现货+合约通用 K线/盘口/成交）
 │   ├── binanceFutures.js      # 合约专属 API（资金费率 / OI / 多空比 / Taker / 强平）
-│   └── binanceData.js         # data.binance.vision 历史 aggTrades 流式下载/聚合 (回测专用)
+│   ├── binanceData.js         # data.binance.vision 历史 aggTrades 流式下载/聚合 (回测专用)
+│   └── feishu.js              # 飞书自定义机器人推送（签名 + 交互卡片 + 去重冷却）
 ├── routes/
 │   ├── klines.js              # GET /api/klines
 │   ├── orderbook.js           # GET /api/orderbook/indicators
@@ -29,7 +30,8 @@ liq-gap/
 │   ├── alerts.js              # GET /api/alerts/liquidity
 │   ├── signal.js              # GET /api/trade/signal  (核心信号)
 │   ├── squeeze.js             # /api/squeeze/{warning,confirmation,heatmap,signal}
-│   └── backtest.js            # GET /api/backtest/run  (30 天回测)
+│   ├── backtest.js            # GET /api/backtest/run  (30 天回测)
+│   └── notify.js              # /api/notify/{status,test,signal}  (飞书推送)
 ├── indicators/
 │   ├── klineIndicators.js     # VWAP / MFI / ATR / FVG / Liquidity Voids
 │   ├── orderbookIndicators.js # 深度比 / 估算有效价差 / 滑点模拟
@@ -94,6 +96,9 @@ npm run dev            # nodemon 热重载
 | GET | `/api/squeeze/heatmap` | 清算价位热力图 + 最近多/空爆仓集群 |
 | GET | `/api/squeeze/signal` | **核心**：扎空/扎多交易信号 + 三段止盈 |
 | GET | `/api/backtest/run` | **新增**：30 天策略回测（VWAP+FVG+MFI），返回胜率/盈亏比/资金曲线 |
+| GET | `/api/notify/status` | 飞书 webhook 状态（是否启用、签名、上次推送时间） |
+| POST | `/api/notify/test` | 发送一条测试卡片验证 webhook |
+| POST | `/api/notify/signal` | 手动推送当前 `/api/trade/signal` (body 支持 `{symbol, market, force}`) |
 | GET | `/api/health` | 健康检查 |
 
 公共参数：`symbol`（默认 `BTCUSDT`）、`market`（`spot` / `futures`，**默认 `futures`，即 U 本位合约**）。
@@ -269,6 +274,61 @@ export BINANCE_API_KEY=...
 export BINANCE_API_SECRET=...
 npm start
 ```
+
+---
+
+## 飞书推送 (Feishu / Lark Webhook)
+
+把 **`/api/trade/signal`** 产生的 LONG / SHORT 交易信号自动推送到飞书群机器人。
+
+### 配置
+在 `.env` 填两项（签名是可选项，仅当机器人开启了"签名校验"时需要）：
+```bash
+FEISHU_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+FEISHU_WEBHOOK_SECRET=xxxxxxxxxx        # 可选
+# FEISHU_NOTIFY_ENABLED=false           # 想关掉自动推送时打开此行
+# FEISHU_NOTIFY_COOLDOWN_MS=1800000     # 同方向重复推送的冷却（默认 30 min）
+```
+> 创建机器人：飞书群 → 设置 → 群机器人 → 添加 → 自定义机器人。
+
+### 推送规则（去重 / 冷却）
+后端 `routes/signal.js` 在响应前会检查：
+- 仅当 `signal === 'LONG'` 或 `'SHORT'` 才推送（NONE 永不推）
+- 上次为 NONE / 未推送过 → 推
+- 方向反转 (`LONG ↔ SHORT`) → 推
+- 同方向且距上次推送 ≥ `FEISHU_NOTIFY_COOLDOWN_MS` → 推
+- 同方向且尚在冷却内 → 跳过（终端会 `console.log` 出原因）
+
+推送是 fire-and-forget，**不阻塞** `/api/trade/signal` 的响应；推送失败仅在服务端日志里告警。
+
+### 卡片样式
+飞书会收到一张 interactive 卡片，header 带颜色（多=绿、空=红），主体含：
+- 标的 / 最新价
+- 入场价、止损、TP1 (50%) / TP2 (30%) / TP3 (20%)
+- 风险金额、仓位大小
+- 多/空条件命中清单（✅ ❌）
+- 关键指标快照（ATR / VWAP / depthRatio / CVD-Px corr / ILLIQ）
+- 触发来源 + 时间戳
+
+### 端点
+| 路径 | 用途 |
+| --- | --- |
+| `GET /api/notify/status` | 查看 webhook 是否启用、签名状态、上次推送时间 |
+| `POST /api/notify/test` | 发送一条文本测试消息验证 webhook 可达 |
+| `POST /api/notify/signal` | 手动触发推送当前信号；body `{symbol?, market?, force?}` |
+
+### 前端
+仪表盘的"交易信号"面板顶部新增飞书控制条，三个按钮：
+- **推送飞书 / Push** — 受冷却限制
+- **强制推送 / Force** — 绕过冷却（用于测试）
+- **测试 webhook / Test** — 发一条 ping，确认 URL+签名正确
+
+状态条显示：是否已配置、签名状态、当前 symbol+market 上次推送时间。
+
+### 关闭自动推送但保留手动按钮
+两种方式：
+1. `.env` 里 `FEISHU_NOTIFY_ENABLED=false`：自动 + 手动都关闭
+2. 在前端把所有 `/api/trade/signal` 调用都加上 `&notify=false` —— 自动关、手动仍可用。当前轮询默认走自动推送，如需关闭请改 `public/app.js` 里 `fetchJsonSoft('/api/trade/signal?...&notify=false')`。
 
 ---
 

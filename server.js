@@ -32,6 +32,7 @@ const alertsRoute = require('./routes/alerts');
 const signalRoute = require('./routes/signal');
 const squeezeRoute = require('./routes/squeeze');
 const backtestRoute = require('./routes/backtest');
+const notifyRoute = require('./routes/notify');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,6 +57,7 @@ app.use('/api', alertsRoute);
 app.use('/api', signalRoute);
 app.use('/api', squeezeRoute);
 app.use('/api', backtestRoute);
+app.use('/api', notifyRoute);
 
 // 健康检查 (Health-check endpoint)
 app.get('/api/health', (_req, res) => {

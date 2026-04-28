@@ -41,6 +41,7 @@ const { computeTradeIndicators } = require('../indicators/tradeIndicators');
 const { computeIlliquidity } = require('../indicators/illiquidity');
 const { computeVolumeProfile } = require('../indicators/volumeProfile');
 const { mean, correlation } = require('../indicators/stats');
+const feishu = require('../services/feishu');
 
 const router = express.Router();
 
@@ -249,49 +250,78 @@ router.get('/trade/signal', async (req, res) => {
     const positionSize = riskAmount / stopDistance;
     const positionSizeQuote = positionSize * entryPrice;
 
-    res.json({
-      success: true,
-      data: {
-        signal,
-        entryPrice,
-        stopLoss,
-        takeProfits: [
-          { price: tp1, closeFraction: 0.5 },
-          { price: tp2, closeFraction: 0.3 },
-          { price: tp3, closeFraction: 0.2 }
-        ],
-        positionSize,
-        positionSizeQuote,
-        riskAmount,
-        indicatorsSnapshot: {
-          symbol,
-          market,
-          latestPrice,
-          atr: lastAtr,
-          vwap: lastVwap,
-          depthRatio,
-          spread: orderBook.spread,
-          latestIlliq,
-          illiqMean,
-          cvdPriceCorr,
-          cvd: tradeMetrics.summary.finalCvd,
-          longConditions,
-          shortConditions,
-          longScore,
-          shortScore,
-          recentBullishFvg:
-            recentBullishFvgs.length > 0
-              ? recentBullishFvgs[recentBullishFvgs.length - 1]
-              : null,
-          recentBearishFvg:
-            recentBearishFvgs.length > 0
-              ? recentBearishFvgs[recentBearishFvgs.length - 1]
-              : null,
-          poc: profile.poc ? { priceLow: profile.poc.priceLow, priceHigh: profile.poc.priceHigh } : null,
-          liquidityVoidsCount: liquidityVoids.length
-        }
+    const signalData = {
+      signal,
+      entryPrice,
+      stopLoss,
+      takeProfits: [
+        { price: tp1, closeFraction: 0.5 },
+        { price: tp2, closeFraction: 0.3 },
+        { price: tp3, closeFraction: 0.2 }
+      ],
+      positionSize,
+      positionSizeQuote,
+      riskAmount,
+      indicatorsSnapshot: {
+        symbol,
+        market,
+        latestPrice,
+        atr: lastAtr,
+        vwap: lastVwap,
+        depthRatio,
+        spread: orderBook.spread,
+        latestIlliq,
+        illiqMean,
+        cvdPriceCorr,
+        cvd: tradeMetrics.summary.finalCvd,
+        longConditions,
+        shortConditions,
+        longScore,
+        shortScore,
+        recentBullishFvg:
+          recentBullishFvgs.length > 0
+            ? recentBullishFvgs[recentBullishFvgs.length - 1]
+            : null,
+        recentBearishFvg:
+          recentBearishFvgs.length > 0
+            ? recentBearishFvgs[recentBearishFvgs.length - 1]
+            : null,
+        poc: profile.poc ? { priceLow: profile.poc.priceLow, priceHigh: profile.poc.priceHigh } : null,
+        liquidityVoidsCount: liquidityVoids.length
       }
-    });
+    };
+
+    // ---- 飞书自动推送 (Feishu auto-push) ----
+    // 仅当 ① 启用了 webhook、② signal === LONG/SHORT、③ 通过去重 / 冷却校验
+    // 时才推送；推送是 fire-and-forget，不阻塞响应，失败也只记日志。
+    if (feishu.isEnabled() && (signal === 'LONG' || signal === 'SHORT') && req.query.notify !== 'false') {
+      const verdict = feishu.shouldNotify(symbol, market, signal);
+      if (verdict.ok) {
+        // 先标记，再异步发送，避免并发请求重复推送
+        // (Mark first to dedupe under concurrent polls.)
+        feishu.markNotified(symbol, market, signal);
+        feishu
+          .sendSignalCard(signalData, { symbol, market, triggerSource: `auto · ${verdict.reason}` })
+          .then((r) => {
+            if (!r.ok && !r.skipped) {
+              // eslint-disable-next-line no-console
+              console.warn('[signal] feishu push failed:', r.error || r.response);
+            } else if (r.ok) {
+              // eslint-disable-next-line no-console
+              console.log(`[signal] pushed to Feishu: ${symbol} ${signal} (${verdict.reason})`);
+            }
+          })
+          .catch((err) => {
+            // eslint-disable-next-line no-console
+            console.error('[signal] feishu push threw:', err.message);
+          });
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(`[signal] feishu skip: ${symbol} ${signal} → ${verdict.reason}`);
+      }
+    }
+
+    res.json({ success: true, data: signalData });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
