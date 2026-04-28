@@ -1,0 +1,30 @@
+{
+  "name": "liq-gap",
+  "version": "1.0.0",
+  "description": "Binance liquidity indicators and trading signal system (Express.js + Vanilla JS dashboard)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "keywords": [
+    "binance",
+    "liquidity",
+    "vwap",
+    "fvg",
+    "cvd",
+    "footprint",
+    "trading-signal"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.7",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.0",
+    "unzipper": "^0.12.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.7"
+  }
+}
