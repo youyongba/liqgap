@@ -117,8 +117,10 @@ function dispatchNewFvgs(newFvgs, ctx) {
   const { symbol, market, interval, latestPrice } = ctx;
 
   // ----- (1) 飞书卡片推送 (Feishu cards) -----
-  // FEISHU_FVG_NOTIFY_ENABLED=false 时跳过；regime webhook 仍照常发。
-  if (feishu.isFvgNotifyEnabled()) {
+  // 仅当 ① interval === '1h' ② FEISHU_FVG_NOTIFY_ENABLED !== 'false' 时推送；
+  // regime webhook 走自己的判断，互不影响。
+  // (User spec: only push FVG cards on the 1h timeframe to keep Feishu quiet.)
+  if (interval === '1h' && feishu.isFvgNotifyEnabled()) {
     Promise.allSettled(
       newFvgs.map((f) => feishu.sendFvgCard(f, { symbol, market, latestPrice }))
     )

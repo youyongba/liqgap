@@ -78,7 +78,7 @@ npm run dev            # nodemon 热重载
 | `FEISHU_WEBHOOK_SECRET` | 否 | 启用「签名校验」时填 |
 | `FEISHU_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭飞书推送 |
 | `FEISHU_SIGNAL_NOTIFY_ENABLED` | 否 | `false` 仅关闭 LONG/SHORT 交易信号自动推送 |
-| `FEISHU_FVG_NOTIFY_ENABLED` | 否 | `false` 仅关闭 FVG 缺口卡自动推送（regime webhook 不受影响）|
+| `FEISHU_FVG_NOTIFY_ENABLED` | 否 | `false` 仅关闭 FVG 缺口卡自动推送（regime webhook 不受影响）；默认开启时**只在 1h 级别**触发推送 |
 | `FEISHU_NOTIFY_COOLDOWN_MS` | 否 | 同方向交易信号推送冷却（默认 30 分钟）|
 | **`REGIME_API_URL`** | 否 | **1h K 线出现新 FVG 时调用的 regime 接口**（留空则跳过）|
 | `REGIME_API_METHOD` | 否 | 默认 `POST`，可改 `GET`（GET 用 query string 传参）|
