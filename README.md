@@ -74,6 +74,14 @@ npm run dev            # nodemon 热重载
 | `BINANCE_API_KEY` | 否 | 仅在需要拉取真实强平数据时填写 |
 | `BINANCE_API_SECRET` | 否 | 与上配对 |
 | `HTTPS_PROXY` / `HTTP_PROXY` | 否 | 网络受限时通过代理访问币安 |
+| `FEISHU_WEBHOOK_URL` | 否 | 飞书自定义机器人 webhook，留空则关闭推送 |
+| `FEISHU_WEBHOOK_SECRET` | 否 | 启用「签名校验」时填 |
+| `FEISHU_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭飞书推送 |
+| `FEISHU_NOTIFY_COOLDOWN_MS` | 否 | 同方向交易信号推送冷却（默认 30 分钟）|
+| **`REGIME_API_URL`** | 否 | **1h K 线出现新 FVG 时调用的 regime 接口**（留空则跳过）|
+| `REGIME_API_METHOD` | 否 | 默认 `POST`，可改 `GET`（GET 用 query string 传参）|
+| `REGIME_API_TOKEN` | 否 | 可选 Bearer token，附加在 `Authorization` 头 |
+| `REGIME_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭 regime 通知 |
 
 不填密钥 `/api/squeeze/*` 会自动降级（强平数据返回空 + `degraded:true`），其余路由全部可用。
 
@@ -279,7 +287,9 @@ npm start
 
 ## 飞书推送 (Feishu / Lark Webhook)
 
-把 **`/api/trade/signal`** 产生的 LONG / SHORT 交易信号自动推送到飞书群机器人。
+两类自动推送：
+- **交易信号**：`/api/trade/signal` 产出 LONG / SHORT 时按方向变化推送
+- **新 FVG**：`/api/klines?detectPatterns=true` 检测到新出现的 Bullish / Bearish FVG 时实时推送（前端默认 10s 轮询，所以最迟 10s 内你就会收到）
 
 ### 配置
 在 `.env` 填两项（签名是可选项，仅当机器人开启了"签名校验"时需要）：
@@ -292,23 +302,35 @@ FEISHU_WEBHOOK_SECRET=xxxxxxxxxx        # 可选
 > 创建机器人：飞书群 → 设置 → 群机器人 → 添加 → 自定义机器人。
 
 ### 推送规则（去重 / 冷却）
-后端 `routes/signal.js` 在响应前会检查：
+
+**交易信号** —— 在 `routes/signal.js` 里：
 - 仅当 `signal === 'LONG'` 或 `'SHORT'` 才推送（NONE 永不推）
 - 上次为 NONE / 未推送过 → 推
 - 方向反转 (`LONG ↔ SHORT`) → 推
 - 同方向且距上次推送 ≥ `FEISHU_NOTIFY_COOLDOWN_MS` → 推
 - 同方向且尚在冷却内 → 跳过（终端会 `console.log` 出原因）
 
-推送是 fire-and-forget，**不阻塞** `/api/trade/signal` 的响应；推送失败仅在服务端日志里告警。
+**新 FVG** —— 在 `routes/klines.js` 里：
+- **首次调用静默建立 baseline**：把当前所有历史 FVG 当作"已知"，不推送，避免初次启动洗版
+- 之后每次只推送 `endTime` 严格大于已记录最大值的新 FVG（即"刚刚收盘 / 刚刚被确认"的 FVG）
+- 单批最多推 3 条，防止异常情况刷屏；未推送但已看到的 FVG 仍计入"已知"，下一批不会重复
+
+推送是 fire-and-forget，**不阻塞** API 响应；推送失败仅在服务端日志里告警。
 
 ### 卡片样式
-飞书会收到一张 interactive 卡片，header 带颜色（多=绿、空=红），主体含：
+**信号卡片**：header 带颜色（多=绿、空=红），主体含：
 - 标的 / 最新价
 - 入场价、止损、TP1 (50%) / TP2 (30%) / TP3 (20%)
 - 风险金额、仓位大小
 - 多/空条件命中清单（✅ ❌）
 - 关键指标快照（ATR / VWAP / depthRatio / CVD-Px corr / ILLIQ）
 - 触发来源 + 时间戳
+
+**FVG 卡片**：header 颜色与类型一致（Bullish=绿、Bearish=红），主体含：
+- 标的 / 类型（绿色看涨 / 红色看跌）
+- 缺口下沿 / 上沿 / 宽度（含百分比）
+- 当前最新价、起始 K 线、确认收盘时间
+- 简易交易意图说明（回踩 / 反弹 / 失效条件）
 
 ### 端点
 | 路径 | 用途 |
@@ -328,7 +350,55 @@ FEISHU_WEBHOOK_SECRET=xxxxxxxxxx        # 可选
 ### 关闭自动推送但保留手动按钮
 两种方式：
 1. `.env` 里 `FEISHU_NOTIFY_ENABLED=false`：自动 + 手动都关闭
-2. 在前端把所有 `/api/trade/signal` 调用都加上 `&notify=false` —— 自动关、手动仍可用。当前轮询默认走自动推送，如需关闭请改 `public/app.js` 里 `fetchJsonSoft('/api/trade/signal?...&notify=false')`。
+2. 在前端调用里加 `&notify=false`：
+   - `/api/trade/signal?...&notify=false` 关掉信号自动推送
+   - `/api/klines?...&notify=false` 关掉 FVG 自动推送（同时也会跳过 regime 接口）
+   - 手动按钮 `/api/notify/signal` / `/api/notify/test` 不受影响
+
+---
+
+## Regime 接口 (Market-state Webhook)
+
+当 **1h K 线** 出现一根「新」的 FVG 时，后端会异步把方向打到外部 regime 接口。
+适合接入自定义的 market-state 模型 / 仓位管理 / 报警系统。
+
+### 配置
+```bash
+REGIME_API_URL=https://your-regime-host/path
+# REGIME_API_METHOD=POST       # 默认 POST，可改 GET（GET 时把 body 拼到 query string）
+# REGIME_API_TOKEN=xxxxxxxx    # 可选 Bearer Token
+# REGIME_NOTIFY_ENABLED=false  # 临时关掉
+```
+留空 `REGIME_API_URL` 即整体禁用，不会发任何请求。
+
+### 触发规则
+- **仅 1h K 线**：`/api/klines?interval=1h&detectPatterns=true` 命中时才触发；
+  其他周期（15m / 4h / 1d 等）命中 FVG 只会推飞书，不调 regime
+- **去重**：与飞书 FVG 推送共享一份 `pickNewFvgs` 状态——首次调用静默建立 baseline；
+  之后每次只发送 `endTime` 严格更新的新 FVG（避免历史/重复 FVG 触发噪声）
+- **fire-and-forget**：异步发送，**不阻塞** `/api/klines` 响应；失败只写服务端日志
+
+### 请求体
+固定 JSON 形状：
+
+| FVG 类型 | 请求体 |
+| --- | --- |
+| Bullish (绿色 / 看涨) | `{"fvg": "long"}` |
+| Bearish (红色 / 看跌) | `{"fvg": "short"}` |
+
+请求头：
+```
+Content-Type: application/json; charset=utf-8
+Authorization: Bearer <REGIME_API_TOKEN>   # 仅在配置时附带
+User-Agent: liq-gap/1.0 (+regime-notifier)
+```
+
+GET 模式下，参数会拼到 URL：`?fvg=long` 或 `?fvg=short`。
+
+### 排查
+- 服务端日志里 `[regime] notified regime for N new FVG(s)` = 成功 N 条
+- `[regime] notify long failed: ...` = 单条失败，不会影响其他 FVG
+- 调 `GET /api/notify/status` 查看 `regime.recentCalls`，最近 10 次调用的方向 / 状态码 / 响应都在里面
 
 ---
 

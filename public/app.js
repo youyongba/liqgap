@@ -595,12 +595,18 @@
       }
       const symKey = `${(els.symbol.value || 'BTCUSDT').toUpperCase()}|${els.market.value}`;
       const last = d.lastNotified[symKey];
+      const fvg = d.fvgState && d.fvgState[symKey];
       const cooldownMin = Math.round((d.cooldownMs || 0) / 60000);
       let lastTxt = last
-        ? `上次推送 ${last.signal} @ ${new Date(last.ts).toLocaleTimeString()}`
-        : '尚未推送过 / not pushed yet';
+        ? `上次信号 ${last.signal} @ ${new Date(last.ts).toLocaleTimeString()}`
+        : '尚未推送信号 / no signals pushed';
+      let fvgTxt = '';
+      if (fvg) {
+        fvgTxt = ` · FVG 已推 ${fvg.count} 条`;
+        if (fvg.baseline && fvg.count === 0) fvgTxt += '（baseline）';
+      }
       const sig = d.signedRequest ? '签名' : '无签名';
-      setFsStatus(`飞书已就绪 / Ready · ${sig} · 冷却 ${cooldownMin}min · ${lastTxt}`, 'ok');
+      setFsStatus(`飞书已就绪 / Ready · ${sig} · 冷却 ${cooldownMin}min · ${lastTxt}${fvgTxt}`, 'ok');
     } catch (err) {
       setFsStatus('飞书状态获取失败 / Status err: ' + err.message, 'error');
     }

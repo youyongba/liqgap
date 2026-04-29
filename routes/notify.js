@@ -15,6 +15,7 @@
 const express = require('express');
 const axios = require('axios');
 const feishu = require('../services/feishu');
+const regime = require('../services/regime');
 
 const router = express.Router();
 
@@ -27,7 +28,16 @@ router.get('/notify/status', (_req, res) => {
       signedRequest: !!process.env.FEISHU_WEBHOOK_SECRET,
       cooldownMs:
         Number(process.env.FEISHU_NOTIFY_COOLDOWN_MS) || 30 * 60 * 1000,
-      lastNotified: feishu.getLastNotifiedSnapshot()
+      lastNotified: feishu.getLastNotifiedSnapshot(),
+      fvgState: feishu.getFvgNotifiedSnapshot(),
+      // ---- Regime 接口状态 (Regime / market-state webhook status) ----
+      regime: {
+        enabled: regime.isEnabled(),
+        urlConfigured: !!process.env.REGIME_API_URL,
+        method: String(process.env.REGIME_API_METHOD || 'POST').toUpperCase(),
+        tokenConfigured: !!process.env.REGIME_API_TOKEN,
+        recentCalls: regime.getRecentCalls(10)
+      }
     }
   });
 });

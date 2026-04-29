@@ -35,6 +35,8 @@ const {
   detectFVGs,
   detectLiquidityVoids
 } = require('../indicators/klineIndicators');
+const feishu = require('../services/feishu');
+const regime = require('../services/regime');
 
 const router = express.Router();
 
@@ -67,6 +69,32 @@ router.get('/klines', async (req, res) => {
     if (detectPatterns) {
       result.fvgs = detectFVGs(candles);
       result.liquidityVoids = detectLiquidityVoids(candles);
+
+      // ---- 新 FVG 派发：飞书卡片 + regime 接口 ----
+      // (Dispatch newly-appeared FVGs to Feishu + regime API.)
+      //
+      // 设计要点：
+      //   - 飞书与 regime **共用一次** pickNewFvgs 调用，避免任一方推进 baseline
+      //     另一方收不到（两端共享 lastFvgNotified 状态）。
+      //   - regime 仅在 **1h** K 线上触发（用户需求：当一小时 K 线出现 long/short FVG）。
+      //   - 通过 ?notify=false 显式关闭所有 FVG 派发（前端 fetch 时可用）。
+      //   - fire-and-forget，不阻塞响应。
+      if (req.query.notify !== 'false') {
+        const latestPrice = decorated.length ? decorated[decorated.length - 1].close : null;
+        const picked = feishu.pickNewFvgs(symbol, market, result.fvgs);
+
+        if (picked.baseline) {
+          // eslint-disable-next-line no-console
+          console.log(`[klines] FVG baseline established for ${symbol} ${market} (${result.fvgs.length} historical FVGs · 不推送)`);
+        } else if (picked.toPush.length > 0) {
+          dispatchNewFvgs(picked.toPush, {
+            symbol,
+            market,
+            interval,
+            latestPrice
+          });
+        }
+      }
     }
 
     res.json({ success: true, data: result });
@@ -77,5 +105,92 @@ router.get('/klines', async (req, res) => {
     res.json({ success: false, error: err.message });
   }
 });
+
+/**
+ * 把新检测到的 FVG 派发到 飞书 / regime。
+ * (Dispatch the *picked* (already-deduplicated) new FVGs to downstream sinks.)
+ *
+ * @param {Array} newFvgs   feishu.pickNewFvgs(...).toPush
+ * @param {{symbol:string, market:string, interval:string, latestPrice:number|null}} ctx
+ */
+function dispatchNewFvgs(newFvgs, ctx) {
+  const { symbol, market, interval, latestPrice } = ctx;
+
+  // ----- (1) 飞书卡片推送 (Feishu cards) -----
+  if (feishu.isEnabled()) {
+    Promise.allSettled(
+      newFvgs.map((f) => feishu.sendFvgCard(f, { symbol, market, latestPrice }))
+    )
+      .then((settled) => {
+        const ok = settled.filter((s) => s.status === 'fulfilled' && s.value && s.value.ok).length;
+        const fails = settled
+          .map((s, i) => ({ s, i }))
+          .filter(({ s }) => !(s.status === 'fulfilled' && s.value && s.value.ok));
+        if (ok > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[klines] pushed ${ok} new FVG(s) to Feishu for ${symbol} ${market}`);
+        }
+        if (fails.length > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[klines] FVG Feishu push had ${fails.length} failures:`,
+            fails
+              .map(({ s }) => (s.status === 'rejected' ? s.reason && s.reason.message : (s.value && s.value.error)))
+              .filter(Boolean)
+              .join(' | ')
+          );
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[klines] FVG Feishu dispatch threw:', err.message);
+      });
+  }
+
+  // ----- (2) Regime 接口通知 (Regime / market-state notify) -----
+  // 用户需求：当 **1h K 线** 出现 long / short FVG 才调 regime 接口。
+  // (Per user spec: only fire on 1h timeframe.)
+  if (interval === '1h' && regime.isEnabled()) {
+    Promise.allSettled(
+      newFvgs.map((f) => {
+        const direction = f.type === 'bullish' ? 'long' : 'short';
+        return regime.notifyFvg(direction, {
+          symbol,
+          market,
+          interval,
+          fvg: {
+            type: f.type,
+            upper: f.upper,
+            lower: f.lower,
+            startTime: f.startTime,
+            endTime: f.endTime
+          }
+        });
+      })
+    )
+      .then((settled) => {
+        const ok = settled.filter((s) => s.status === 'fulfilled' && s.value && s.value.ok).length;
+        const fails = settled.filter((s) => !(s.status === 'fulfilled' && s.value && s.value.ok));
+        if (ok > 0) {
+          // eslint-disable-next-line no-console
+          console.log(`[klines] notified regime for ${ok} new FVG(s) (${symbol} ${market} ${interval})`);
+        }
+        if (fails.length > 0) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[klines] regime notify had ${fails.length} failures:`,
+            fails
+              .map((s) => (s.status === 'rejected' ? s.reason && s.reason.message : (s.value && s.value.error)))
+              .filter(Boolean)
+              .join(' | ')
+          );
+        }
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[klines] regime dispatch threw:', err.message);
+      });
+  }
+}
 
 module.exports = router;

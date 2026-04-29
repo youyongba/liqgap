@@ -38,7 +38,8 @@ const FEISHU_HEADERS = {
 // ============================================================================
 // 内部状态：上次推送 (last-notified state · in-memory only)
 // ============================================================================
-const lastNotified = new Map(); // key: `${symbol}|${market}` → { signal, ts }
+const lastNotified = new Map();      // 交易信号 · key: `${symbol}|${market}` → { signal, ts }
+const lastFvgNotified = new Map();   // FVG · key: `${symbol}|${market}` → { lastEndTime, count, baseline }
 
 function key(symbol, market) {
   return `${String(symbol).toUpperCase()}|${market || 'futures'}`;
@@ -95,6 +96,83 @@ function getLastNotifiedSnapshot() {
 /** 测试用：清空内部去重状态 (For tests / manual reset). */
 function resetNotifiedState() {
   lastNotified.clear();
+  lastFvgNotified.clear();
+}
+
+// ============================================================================
+// FVG 增量推送 (FVG incremental push)
+// ============================================================================
+/**
+ * 找出"新出现的 FVG"并返回需要推送的列表 (Pick newly-appeared FVGs to push).
+ *
+ * 设计考量 (Design):
+ *   - **首次调用 (baseline)**：把当前所有 FVG 视为「已知」，**不推送**，
+ *     避免初次启动时把过去 30 个 FVG 一次刷屏到飞书。
+ *   - 之后每次调用：只挑选 endTime 严格大于 lastEndTime 的 FVG。
+ *   - 单批最多推送 MAX_PUSH_PER_BATCH = 3 条，防止异常情况下刷屏；
+ *     未推送但更新过的 FVG 会标记到 lastEndTime，下次不会重复出现。
+ *
+ * @param {string} symbol
+ * @param {string} market 'spot' | 'futures'
+ * @param {Array<{type:string, lower:number, upper:number, startTime:number,
+ *                endTime:number, index:number}>} fvgs
+ * @returns {{toPush:Array<object>, baseline:boolean, totalNewSinceLast:number}}
+ */
+const MAX_FVG_PUSH_PER_BATCH = 3;
+function pickNewFvgs(symbol, market, fvgs) {
+  const out = { toPush: [], baseline: false, totalNewSinceLast: 0 };
+  if (!Array.isArray(fvgs) || fvgs.length === 0) return out;
+
+  const k = key(symbol, market);
+  const prev = lastFvgNotified.get(k);
+  const maxEndTime = fvgs.reduce(
+    (m, f) => Math.max(m, Number(f.endTime) || 0),
+    0
+  );
+
+  if (!prev) {
+    // 首次调用：建立基线，不推送任何历史 FVG
+    // (First call: set baseline, push nothing.)
+    lastFvgNotified.set(k, { lastEndTime: maxEndTime, count: 0, baseline: true });
+    out.baseline = true;
+    return out;
+  }
+
+  // 找出比 lastEndTime 更新的 FVG（按 endTime 升序，最近的放在最后）
+  const fresh = fvgs
+    .filter((f) => Number(f.endTime) > prev.lastEndTime)
+    .sort((a, b) => Number(a.endTime) - Number(b.endTime));
+
+  out.totalNewSinceLast = fresh.length;
+  if (fresh.length === 0) return out;
+
+  // 防刷屏：单批只推最近 N 条；剩余的也算"已看过"以免下批又被算成新
+  // (Anti-flood: cap per batch; advance lastEndTime to maxEndTime regardless.)
+  out.toPush = fresh.slice(-MAX_FVG_PUSH_PER_BATCH);
+  lastFvgNotified.set(k, {
+    lastEndTime: maxEndTime,
+    count: prev.count + out.toPush.length,
+    baseline: false
+  });
+  return out;
+}
+
+/** 获取所有 symbol/market 上的 FVG 推送状态（仅状态查询用） */
+function getFvgNotifiedSnapshot() {
+  const out = {};
+  for (const [k, v] of lastFvgNotified.entries()) {
+    out[k] = {
+      lastEndTime: v.lastEndTime,
+      lastEndIso: v.lastEndTime ? new Date(v.lastEndTime).toISOString() : null,
+      count: v.count,
+      baseline: !!v.baseline
+    };
+  }
+  return out;
+}
+
+function resetFvgNotifiedState() {
+  lastFvgNotified.clear();
 }
 
 // ============================================================================
@@ -286,15 +364,132 @@ async function sendSignalCard(payload, meta = {}) {
   return sendCard(card);
 }
 
+// ============================================================================
+// FVG 卡片 (Fair Value Gap card)
+// ============================================================================
+/**
+ * 把单个 FVG 渲染成飞书 interactive 卡片
+ * (Build an interactive card for a single FVG.)
+ */
+function buildFvgCard(fvg, meta = {}) {
+  const isBullish = fvg && fvg.type === 'bullish';
+  const sym = (meta.symbol || 'BTCUSDT').toUpperCase();
+  const market = meta.market || 'futures';
+  const lower = Number(fvg.lower);
+  const upper = Number(fvg.upper);
+  const width = upper - lower;
+  const mid = (upper + lower) / 2 || 1;
+  const widthPct = ((width / mid) * 100).toFixed(3);
+  const title = isBullish
+    ? '🟢 Bullish FVG · 看涨缺口出现'
+    : '🔴 Bearish FVG · 看跌缺口出现';
+  const template = isBullish ? 'green' : 'red';
+
+  const lines = [];
+  lines.push(`**标的 / Symbol**: ${sym} · ${market === 'spot' ? '现货 / Spot' : '合约 / Futures'}`);
+  lines.push(`**类型 / Type**: ${isBullish ? '🟩 Bullish (绿色)' : '🟥 Bearish (红色)'}`);
+  lines.push('---');
+  lines.push(`**缺口下沿 / Lower**: \`${fmt(lower)}\``);
+  lines.push(`**缺口上沿 / Upper**: \`${fmt(upper)}\``);
+  lines.push(`**缺口宽度 / Width**: ${fmt(width)} (${widthPct}%)`);
+  if (meta.latestPrice != null) {
+    lines.push(`**最新价 / Last**: ${fmt(meta.latestPrice)}`);
+  }
+  lines.push(`**起始 K 线 / Start**: ${formatTs(fvg.startTime)}`);
+  lines.push(`**确认收盘 / Confirmed**: ${formatTs(fvg.endTime)}`);
+
+  // 简易交易意图说明（供使用者快速判断）
+  const hint = isBullish
+    ? '价格回踩到缺口区间内常被视作潜在多头入场区；跌破下沿则缺口失效。'
+    : '价格反弹到缺口区间内常被视作潜在空头入场区；突破上沿则缺口失效。';
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `${title} · ${sym}` },
+      template
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      { tag: 'hr' },
+      {
+        tag: 'note',
+        elements: [{ tag: 'lark_md', content: hint }]
+      },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'lark_md',
+            content: `触发 / Trigger: **auto · klines polling** · ${new Date().toLocaleString('zh-CN', { hour12: false })}`
+          }
+        ]
+      }
+    ]
+  };
+}
+
+/** 单个 FVG 推送 (Send a single FVG card). */
+async function sendFvgCard(fvg, meta = {}) {
+  return sendCard(buildFvgCard(fvg, meta));
+}
+
+/**
+ * 一键封装：检测+推送新 FVG (Detect & push newly-appeared FVGs).
+ *
+ * 在 `routes/klines.js` 里 fire-and-forget 调用。第一次调用静默建立 baseline；
+ * 之后只推送 endTime 严格大于历史已推 endTime 的 FVG（最多 3 条/批）。
+ *
+ * @returns {Promise<{baseline:boolean, pushed:number, results:Array, totalNewSinceLast:number}>}
+ */
+async function pushNewFvgs(symbol, market, fvgs, meta = {}) {
+  if (!isEnabled()) {
+    return { skipped: true, baseline: false, pushed: 0, results: [], totalNewSinceLast: 0 };
+  }
+  const picked = pickNewFvgs(symbol, market, fvgs);
+  if (picked.baseline || picked.toPush.length === 0) {
+    return { baseline: picked.baseline, pushed: 0, results: [], totalNewSinceLast: picked.totalNewSinceLast };
+  }
+  // 顺序发送（飞书 webhook 不接受并发批量；保持顺序方便排查）
+  const results = [];
+  for (const fvg of picked.toPush) {
+    try {
+      const r = await sendFvgCard(fvg, { symbol, market, latestPrice: meta.latestPrice });
+      results.push({ endTime: fvg.endTime, type: fvg.type, ok: r.ok, error: r.error });
+    } catch (err) {
+      results.push({ endTime: fvg.endTime, type: fvg.type, ok: false, error: err.message });
+    }
+  }
+  return {
+    baseline: false,
+    pushed: results.filter((r) => r.ok).length,
+    results,
+    totalNewSinceLast: picked.totalNewSinceLast
+  };
+}
+
+function formatTs(ts) {
+  if (!ts) return '-';
+  return new Date(Number(ts)).toLocaleString('zh-CN', { hour12: false });
+}
+
 module.exports = {
   isEnabled,
   sendText,
   sendCard,
+  // 交易信号 (trade signal)
   sendSignalCard,
   buildSignalCard,
   shouldNotify,
   markNotified,
   getLastNotifiedSnapshot,
   resetNotifiedState,
+  // FVG 推送
+  buildFvgCard,
+  sendFvgCard,
+  pickNewFvgs,
+  pushNewFvgs,
+  getFvgNotifiedSnapshot,
+  resetFvgNotifiedState,
   feishuSign
 };
