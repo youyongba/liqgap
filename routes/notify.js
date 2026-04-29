@@ -25,6 +25,7 @@ router.get('/notify/status', (_req, res) => {
     data: {
       enabled: feishu.isEnabled(),
       signalAutoNotifyEnabled: feishu.isSignalNotifyEnabled(),
+      fvgAutoNotifyEnabled: feishu.isFvgNotifyEnabled(),
       webhookConfigured: !!process.env.FEISHU_WEBHOOK_URL,
       signedRequest: !!process.env.FEISHU_WEBHOOK_SECRET,
       cooldownMs:

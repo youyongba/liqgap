@@ -117,7 +117,8 @@ function dispatchNewFvgs(newFvgs, ctx) {
   const { symbol, market, interval, latestPrice } = ctx;
 
   // ----- (1) 飞书卡片推送 (Feishu cards) -----
-  if (feishu.isEnabled()) {
+  // FEISHU_FVG_NOTIFY_ENABLED=false 时跳过；regime webhook 仍照常发。
+  if (feishu.isFvgNotifyEnabled()) {
     Promise.allSettled(
       newFvgs.map((f) => feishu.sendFvgCard(f, { symbol, market, latestPrice }))
     )

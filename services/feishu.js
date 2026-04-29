@@ -7,8 +7,10 @@
  *   FEISHU_WEBHOOK_URL      飞书群机器人的 webhook URL（必填）
  *   FEISHU_WEBHOOK_SECRET   签名密钥（飞书机器人若启用了"签名校验"必填）
  *   FEISHU_NOTIFY_ENABLED   'false' 关闭整体推送（默认开启）
- *   FEISHU_SIGNAL_NOTIFY_ENABLED 'false' 仅关闭 LONG/SHORT 交易信号自动推送，
- *                                FVG 推送不受影响（默认开启）
+ *   FEISHU_SIGNAL_NOTIFY_ENABLED 'false' 仅关闭 LONG/SHORT 交易信号自动推送
+ *                                （默认开启）
+ *   FEISHU_FVG_NOTIFY_ENABLED    'false' 仅关闭 FVG 缺口卡自动推送
+ *                                （regime webhook 不受影响，默认开启）
  *   FEISHU_NOTIFY_COOLDOWN_MS 同方向推送冷却毫秒，默认 1800000 (30 分钟)
  *
  * 提供两类发送函数 (Two send helpers)：
@@ -204,6 +206,13 @@ function isEnabled() {
 function isSignalNotifyEnabled() {
   if (!isEnabled()) return false;
   return process.env.FEISHU_SIGNAL_NOTIFY_ENABLED !== 'false';
+}
+
+// 仅决定 FVG 缺口卡是否自动推送 (auto-push of FVG cards to Feishu).
+// regime webhook / 手动推送 / 测试 ping 不受此开关影响。
+function isFvgNotifyEnabled() {
+  if (!isEnabled()) return false;
+  return process.env.FEISHU_FVG_NOTIFY_ENABLED !== 'false';
 }
 
 function buildBody(payload) {
@@ -485,6 +494,7 @@ function formatTs(ts) {
 module.exports = {
   isEnabled,
   isSignalNotifyEnabled,
+  isFvgNotifyEnabled,
   sendText,
   sendCard,
   // 交易信号 (trade signal)
