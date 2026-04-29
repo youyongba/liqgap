@@ -292,9 +292,10 @@ router.get('/trade/signal', async (req, res) => {
     };
 
     // ---- 飞书自动推送 (Feishu auto-push) ----
-    // 仅当 ① 启用了 webhook、② signal === LONG/SHORT、③ 通过去重 / 冷却校验
-    // 时才推送；推送是 fire-and-forget，不阻塞响应，失败也只记日志。
-    if (feishu.isEnabled() && (signal === 'LONG' || signal === 'SHORT') && req.query.notify !== 'false') {
+    // 仅当 ① 启用了 webhook、② FEISHU_SIGNAL_NOTIFY_ENABLED !== 'false'、
+    //      ③ signal === LONG/SHORT、④ 通过去重 / 冷却校验 时才推送；
+    // 推送是 fire-and-forget，不阻塞响应，失败也只记日志。
+    if (feishu.isSignalNotifyEnabled() && (signal === 'LONG' || signal === 'SHORT') && req.query.notify !== 'false') {
       const verdict = feishu.shouldNotify(symbol, market, signal);
       if (verdict.ok) {
         // 先标记，再异步发送，避免并发请求重复推送

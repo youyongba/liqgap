@@ -77,6 +77,7 @@ npm run dev            # nodemon 热重载
 | `FEISHU_WEBHOOK_URL` | 否 | 飞书自定义机器人 webhook，留空则关闭推送 |
 | `FEISHU_WEBHOOK_SECRET` | 否 | 启用「签名校验」时填 |
 | `FEISHU_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭飞书推送 |
+| `FEISHU_SIGNAL_NOTIFY_ENABLED` | 否 | `false` 仅关闭 LONG/SHORT 交易信号自动推送（FVG 推送不受影响）|
 | `FEISHU_NOTIFY_COOLDOWN_MS` | 否 | 同方向交易信号推送冷却（默认 30 分钟）|
 | **`REGIME_API_URL`** | 否 | **1h K 线出现新 FVG 时调用的 regime 接口**（留空则跳过）|
 | `REGIME_API_METHOD` | 否 | 默认 `POST`，可改 `GET`（GET 用 query string 传参）|
@@ -348,9 +349,11 @@ FEISHU_WEBHOOK_SECRET=xxxxxxxxxx        # 可选
 状态条显示：是否已配置、签名状态、当前 symbol+market 上次推送时间。
 
 ### 关闭自动推送但保留手动按钮
-两种方式：
-1. `.env` 里 `FEISHU_NOTIFY_ENABLED=false`：自动 + 手动都关闭
-2. 在前端调用里加 `&notify=false`：
+三种粒度：
+1. `.env` 里 `FEISHU_NOTIFY_ENABLED=false`：飞书所有自动 + 手动推送都关闭
+2. `.env` 里 `FEISHU_SIGNAL_NOTIFY_ENABLED=false`：**只关掉 LONG/SHORT 交易信号自动推送**，
+   FVG 缺口卡和手动 `/api/notify/signal` 仍可用
+3. 在前端调用里加 `&notify=false`：
    - `/api/trade/signal?...&notify=false` 关掉信号自动推送
    - `/api/klines?...&notify=false` 关掉 FVG 自动推送（同时也会跳过 regime 接口）
    - 手动按钮 `/api/notify/signal` / `/api/notify/test` 不受影响
