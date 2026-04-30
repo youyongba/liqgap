@@ -40,8 +40,32 @@
     longConditions: document.getElementById('long-conditions'),
     shortConditions: document.getElementById('short-conditions'),
     alerts: document.getElementById('alerts'),
-    snapshot: document.getElementById('snapshot')
+    snapshot: document.getElementById('snapshot'),
+    volTitle: document.getElementById('vol-title'),
+    cvdTitle: document.getElementById('cvd-title'),
+    obTitle: document.getElementById('ob-title')
   };
+
+  // 当前周期下两个副图的取数策略
+  // (Per-interval policy for sub-chart data fetching.)
+  //   - CVD 是从 K 线 takerBuyBase 派生，直接跟主图同步，所以这里的"interval"
+  //     就是用户在 header 里选的那个；
+  //   - 订单簿是即时快照，但不同周期下展示的档位深度不同（短周期看细盘、
+  //     长周期看深盘），由 depth 决定。
+  const INTERVAL_OB_DEPTH = { '15m': 15, '1h': 20, '4h': 30, '1d': 50 };
+  function obDepthForInterval(interval) {
+    return INTERVAL_OB_DEPTH[interval] || 20;
+  }
+  function intervalLabel(interval) {
+    return ({ '15m': '15 分钟', '1h': '1 小时', '4h': '4 小时', '1d': '1 天' }[interval]) || interval;
+  }
+  function refreshSubTitles() {
+    const itv = els.interval.value;
+    const itvLab = intervalLabel(itv);
+    if (els.volTitle) els.volTitle.textContent = `成交量 / Volume · ${itvLab}`;
+    if (els.cvdTitle) els.cvdTitle.textContent = `累积主动差 / CVD · ${itvLab}`;
+    if (els.obTitle)  els.obTitle.textContent  = `订单簿深度图 / Order Book Depth · 前 ${obDepthForInterval(itv)} 档`;
+  }
 
   const POLL_INTERVAL_MS = 10000;
   let pollTimer = null;
@@ -798,27 +822,40 @@
     }));
     volumeSeries.setData(volumeData);
 
+    // CVD 副图与主图 K 线同源派生，随 interval 自动切换
+    // (Derive CVD from the same candles so it auto-aligns with the chosen interval.)
+    renderCvdFromCandles(candles);
+
     mainChart.timeScale().fitContent();
     volumeChart.timeScale().fitContent();
   }
 
-  function renderCvd(tradeData) {
-    const points = (tradeData.cvdSeries || [])
-      .map((p) => ({ time: toLwSeconds(p.time), value: p.value }))
-      .filter((p) => Number.isFinite(p.value));
-    // Lightweight-charts 要求时间戳严格递增，需去重
-    // (Lightweight-charts requires strictly increasing time; dedupe by time.)
-    const dedup = [];
+  // ---- CVD 副图：从 K 线 takerBuyBase 派生 (Derive CVD from K-line takerBuyBase) ----
+  // Binance K 线带有 `takerBuyBase`（主动买的基础币量），
+  // 因此每根 K 线的"主动买 - 主动卖" = 2 * takerBuyBase - volume，
+  // 累积起来就是与该周期一一对应的 CVD 序列。
+  // 这样 CVD 副图就能和主图 K 线时间轴严格对齐，并随 interval 切换。
+  // (Derive bar delta = 2*takerBuyBase - volume so the resulting CVD curve
+  //  shares the exact bar grid with the main chart for the chosen interval.)
+  function renderCvdFromCandles(candles) {
+    const points = [];
+    let cum = 0;
     let lastTs = -Infinity;
-    for (const p of points) {
-      if (p.time > lastTs) {
-        dedup.push(p);
-        lastTs = p.time;
-      } else if (dedup.length) {
-        dedup[dedup.length - 1].value = p.value;
+    for (const c of candles || []) {
+      const tb = Number(c.takerBuyBase);
+      const v = Number(c.volume);
+      if (!Number.isFinite(tb) || !Number.isFinite(v)) continue;
+      const delta = 2 * tb - v;
+      cum += delta;
+      const ts = toLwSeconds(c.openTime);
+      if (ts > lastTs) {
+        points.push({ time: ts, value: cum });
+        lastTs = ts;
+      } else if (points.length) {
+        points[points.length - 1].value = cum;
       }
     }
-    cvdSeries.setData(dedup);
+    cvdSeries.setData(points);
     cvdChart.timeScale().fitContent();
   }
 
@@ -972,18 +1009,22 @@
     try {
       // 用 fetchJsonSoft，单一端点失败不会拖垮整个面板
       // (Use soft fetch so a single failed endpoint doesn't blank the dashboard.)
-      const [kData, obData, tdData, signal, alerts] = await Promise.all([
+      // 订单簿深度档位随 interval 自适应（短周期看细盘 / 长周期看深盘）
+      // (Order-book depth scales with interval so longer timeframes show
+      //  more levels and shorter ones zoom in on the touch.)
+      const obDepth = obDepthForInterval(interval);
+      const [kData, obData, signal, alerts] = await Promise.all([
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=200&market=${market}&detectPatterns=true`),
-        fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=20&market=${market}`),
-        fetchJsonSoft(`/api/trade/indicators?symbol=${symbol}&limit=500&market=${market}`),
+        fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`),
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
         fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`)
       ]);
 
       const failed = [];
+      // CVD 副图由 renderMain 内基于 K 线派生，无需独立请求
+      // (CVD sub-chart is derived from candles inside renderMain.)
       if (kData) renderMain(kData); else failed.push('klines');
       if (obData) renderOrderBook(obData); else failed.push('orderbook');
-      if (tdData) renderCvd(tdData); else failed.push('trades');
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       fitCharts();
@@ -1021,7 +1062,13 @@
   els.refresh.addEventListener('click', poll);
   els.symbol.addEventListener('change', poll);
   els.market.addEventListener('change', poll);
-  els.interval.addEventListener('change', poll);
+  els.interval.addEventListener('change', () => {
+    // 先即时更新副图标题，避免请求未返回前副图依旧显示旧周期
+    refreshSubTitles();
+    poll();
+  });
+  // 页面加载时先把副图标题渲染成当前 interval
+  refreshSubTitles();
   els.auto.addEventListener('click', () => {
     autoOn = !autoOn;
     els.auto.textContent = autoOn
