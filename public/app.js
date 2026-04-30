@@ -1137,6 +1137,205 @@
     els.alerts.appendChild(summary);
   }
 
+  // ============================================================
+  // SSE 实时模式 (Server-Sent Events realtime mode)
+  // ============================================================
+  // 当浏览器支持 EventSource 时，主图 K 线 / 订单簿改由 SSE 驱动，
+  // 实时推送（K 线每秒 1-N 次，订单簿 100ms 节流）；
+  // 信号 / 报警 / 指标快照仍走 10s 轮询（10s 内变化对决策不敏感）。
+  // SSE 异常会自动 fallback：状态栏标红 + 继续依赖 10s 轮询数据。
+  // ============================================================
+  const SSE_RENDER_THROTTLE_MS = 200;
+  const sseState = {
+    supported: typeof EventSource !== 'undefined',
+    es: null,
+    active: false,
+    ready: false,           // 是否收到首帧 snapshot
+    candles: [],            // 由 SSE 推送维护的 K 线序列
+    summary: null,
+    patterns: { fvgs: [], liquidityVoids: [] }, // 由 10s poll 维护
+    renderTimer: null,
+    lastBookAt: 0,
+    lastKlineAt: 0,
+    reconnectTimer: null,
+    backoffMs: 1000,
+    statusEl: null
+  };
+
+  function isSSEDriving() {
+    return sseState.active && sseState.ready;
+  }
+
+  function buildSSEUrl() {
+    const symbol = (els.symbol.value || '').trim().toUpperCase() || 'BTCUSDT';
+    const market = els.market.value;
+    const interval = els.interval.value;
+    const depth = obDepthForInterval(interval);
+    const params = new URLSearchParams({
+      symbol,
+      market,
+      interval,
+      limit: '200',
+      depth: String(depth),
+      aggLimit: '200'
+    });
+    return `/api/stream/sse?${params.toString()}`;
+  }
+
+  function scheduleSSERender() {
+    if (sseState.renderTimer) return;
+    sseState.renderTimer = setTimeout(() => {
+      sseState.renderTimer = null;
+      if (!isSSEDriving()) return;
+      renderMain({
+        candles: sseState.candles,
+        summary: sseState.summary || { symbol: '', market: '', interval: '', count: sseState.candles.length },
+        fvgs: sseState.patterns.fvgs,
+        liquidityVoids: sseState.patterns.liquidityVoids
+      });
+    }, SSE_RENDER_THROTTLE_MS);
+  }
+
+  // 把 SSE book 推送的纯档位数据转换成 renderOrderBook 期望的形状
+  function renderOrderBookFromSSE(book) {
+    if (!book || !book.bids || !book.asks) return;
+    const topBid = book.bids[0];
+    const topAsk = book.asks[0];
+    const bestBid = topBid ? Number(topBid[0]) : null;
+    const bestAsk = topAsk ? Number(topAsk[0]) : null;
+    const mid = (Number.isFinite(bestBid) && Number.isFinite(bestAsk))
+      ? (bestBid + bestAsk) / 2
+      : null;
+    renderOrderBook({
+      bids: book.bids,
+      asks: book.asks,
+      bestBid,
+      bestAsk,
+      midPrice: mid
+    });
+  }
+
+  function setSSELiveStatus(extra = '') {
+    setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8)${extra}`);
+  }
+
+  function startSSE() {
+    if (!sseState.supported) return false;
+    stopSSE();
+    sseState.active = true;
+    sseState.ready = false;
+    sseState.candles = [];
+    sseState.summary = null;
+    setStatus('建立实时连接… / Connecting SSE…');
+
+    const url = buildSSEUrl();
+    let es;
+    try {
+      es = new EventSource(url);
+    } catch (err) {
+      sseState.active = false;
+      setStatus('SSE 不可用，使用轮询 / SSE unavailable, falling back', true);
+      return false;
+    }
+    sseState.es = es;
+
+    es.addEventListener('snapshot', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        sseState.candles = Array.isArray(d.klines) ? d.klines.slice() : [];
+        sseState.summary = {
+          symbol: d.symbol, market: d.market, interval: d.interval,
+          count: sseState.candles.length
+        };
+        sseState.ready = true;
+        sseState.backoffMs = 1000;
+        renderMain({
+          candles: sseState.candles,
+          summary: sseState.summary,
+          fvgs: sseState.patterns.fvgs,
+          liquidityVoids: sseState.patterns.liquidityVoids
+        });
+        renderOrderBookFromSSE(d.book);
+        setSSELiveStatus(' · snapshot OK');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[sse] snapshot parse error', err);
+      }
+    });
+
+    es.addEventListener('kline', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        const c = d.candle;
+        if (!c || !sseState.summary) return;
+        if (d.interval !== sseState.summary.interval) return; // 不同周期忽略
+        const idx = sseState.candles.findIndex((x) => x.openTime === c.openTime);
+        if (idx >= 0) sseState.candles[idx] = c;
+        else sseState.candles.push(c);
+        if (sseState.candles.length > 1500) {
+          sseState.candles.splice(0, sseState.candles.length - 1500);
+        }
+        sseState.lastKlineAt = Date.now();
+        scheduleSSERender();
+      } catch (_) { /* swallow */ }
+    });
+
+    es.addEventListener('book', (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        renderOrderBookFromSSE(d);
+        sseState.lastBookAt = Date.now();
+      } catch (_) { /* swallow */ }
+    });
+
+    es.addEventListener('error', () => {
+      // EventSource 内置自动重连，但 readyState=2 (CLOSED) 表示彻底断了
+      if (es.readyState === EventSource.CLOSED) {
+        sseState.active = false;
+        sseState.ready = false;
+        setStatus('实时连接断开，5s 后重连 / SSE disconnected, retrying', true);
+        scheduleSSEReconnect();
+      } else {
+        setStatus('实时连接抖动… / SSE blip, auto-retry', true);
+      }
+    });
+    return true;
+  }
+
+  function stopSSE() {
+    if (sseState.es) {
+      try { sseState.es.close(); } catch (_) { /* noop */ }
+    }
+    sseState.es = null;
+    sseState.active = false;
+    sseState.ready = false;
+    if (sseState.renderTimer) {
+      clearTimeout(sseState.renderTimer);
+      sseState.renderTimer = null;
+    }
+    if (sseState.reconnectTimer) {
+      clearTimeout(sseState.reconnectTimer);
+      sseState.reconnectTimer = null;
+    }
+  }
+
+  function scheduleSSEReconnect() {
+    if (sseState.reconnectTimer) return;
+    const delay = Math.min(sseState.backoffMs, 30_000);
+    sseState.reconnectTimer = setTimeout(() => {
+      sseState.reconnectTimer = null;
+      sseState.backoffMs = Math.min(sseState.backoffMs * 2, 30_000);
+      startSSE();
+    }, delay);
+  }
+
+  function restartSSE() {
+    if (!sseState.supported) return;
+    stopSSE();
+    sseState.backoffMs = 1000;
+    startSSE();
+  }
+
   // ---- 主轮询循环 (Main poll cycle) ----
   let inFlight = false;
   async function poll() {
@@ -1154,18 +1353,36 @@
       // (Order-book depth scales with interval so longer timeframes show
       //  more levels and shorter ones zoom in on the touch.)
       const obDepth = obDepthForInterval(interval);
+      const sseDriving = isSSEDriving();
+      // SSE 驱动时跳过订单簿请求（重复且耗资源），仍拉 K 线接口拿 FVG / Voids
+      const obFetch = sseDriving
+        ? Promise.resolve(null)
+        : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
       const [kData, obData, signal, alerts] = await Promise.all([
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=200&market=${market}&detectPatterns=true`),
-        fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`),
+        obFetch,
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
         fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`)
       ]);
 
       const failed = [];
-      // CVD 副图由 renderMain 内基于 K 线派生，无需独立请求
-      // (CVD sub-chart is derived from candles inside renderMain.)
-      if (kData) renderMain(kData); else failed.push('klines');
-      if (obData) renderOrderBook(obData); else failed.push('orderbook');
+      if (kData) {
+        if (sseDriving) {
+          // SSE 已经驱动 candles；这里只把 FVG / Liquidity Voids 更新到状态并触发重绘
+          sseState.patterns = {
+            fvgs: kData.fvgs || [],
+            liquidityVoids: kData.liquidityVoids || []
+          };
+          scheduleSSERender();
+        } else {
+          renderMain(kData);
+        }
+      } else failed.push('klines');
+      if (sseDriving) {
+        // 订单簿由 SSE 驱动，不依赖 obData
+      } else if (obData) {
+        renderOrderBook(obData);
+      } else failed.push('orderbook');
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       fitCharts();
@@ -1180,6 +1397,8 @@
           `部分失败 / Partial: ${failed.join(',')} · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)${detail}`,
           true
         );
+      } else if (sseDriving) {
+        setSSELiveStatus(` · poll ${elapsed}ms`);
       } else {
         setStatus(`已更新 / Updated · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)`);
       }
@@ -1200,13 +1419,14 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
-  els.refresh.addEventListener('click', poll);
-  els.symbol.addEventListener('change', poll);
-  els.market.addEventListener('change', poll);
+  els.refresh.addEventListener('click', () => { poll(); restartSSE(); });
+  els.symbol.addEventListener('change', () => { poll(); restartSSE(); });
+  els.market.addEventListener('change', () => { poll(); restartSSE(); });
   els.interval.addEventListener('change', () => {
     // 先即时更新副图标题，避免请求未返回前副图依旧显示旧周期
     refreshSubTitles();
     poll();
+    restartSSE();
   });
   // 页面加载时先把副图标题渲染成当前 interval
   refreshSubTitles();
@@ -1571,5 +1791,7 @@
     fitCharts();
     poll();
     if (autoOn) startAutoPoll();
+    // 启动 SSE 实时通道：浏览器不支持时静默 fallback 到 10s 轮询
+    if (sseState.supported) startSSE();
   }, 100);
 })();

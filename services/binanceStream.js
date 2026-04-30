@@ -23,6 +23,7 @@
  *  - 缓存对外只读，内部以单线程事件循环安全更新。
  */
 
+const EventEmitter = require('events');
 const WebSocket = require('ws');
 const { HttpsProxyAgent } = require('https-proxy-agent');
 const { BinanceService } = require('./binance');
@@ -116,8 +117,11 @@ function _candleToRestArray(c) {
 
 // ---------------- StreamHub：单 (symbol, market) 的 WS 连接 ----------------
 
-class StreamHub {
+class StreamHub extends EventEmitter {
   constructor(symbol, market) {
+    super();
+    // 多 SSE 客户端并发订阅时避免 Node 默认 10 个 listener 警告
+    this.setMaxListeners(64);
     this.symbol = String(symbol).toUpperCase();
     this.market = market === 'spot' ? 'spot' : 'futures';
     this.lower = this.symbol.toLowerCase();
@@ -431,6 +435,8 @@ class StreamHub {
     entry.candles.set(c.openTime, c);
     entry.lastEventAt = _now();
     this._trimKlineCache(entry);
+    // 广播给 SSE 订阅者：interval / candle / 是否最终
+    try { this.emit('kline', { interval: itv, candle: c }); } catch (_) { /* noop */ }
   }
 
   _trimKlineCache(entry) {
@@ -558,6 +564,8 @@ class StreamHub {
     this.bookState.lastU = u;
     this.bookState.lastEventAt = _now();
     this._refreshBestPrices();
+    // 广播给 SSE 订阅者（订阅者侧自己做 100ms 节流，hub 不替它节流）
+    try { this.emit('book', { lastUpdateId: u }); } catch (_) { /* noop */ }
   }
 
   _applyDepthDiff(ev) {
@@ -611,13 +619,15 @@ class StreamHub {
 
   _handleAggTrade(data) {
     // data 字段：a, p, q, f, l, T, m, M
-    this.aggTrades.push({
+    const t = {
       a: data.a, p: data.p, q: data.q, f: data.f, l: data.l,
       T: data.T, m: data.m, M: data.M
-    });
+    };
+    this.aggTrades.push(t);
     if (this.aggTrades.length > AGG_TRADES_BUFFER) {
       this.aggTrades.splice(0, this.aggTrades.length - AGG_TRADES_BUFFER);
     }
+    try { this.emit('trade', t); } catch (_) { /* noop */ }
   }
 
   // -------------- 销毁 --------------
