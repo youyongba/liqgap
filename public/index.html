@@ -406,6 +406,86 @@
         background: var(--bg-2);
         border-radius: 4px;
       }
+
+      /* 主图右键菜单 / Main chart context menu */
+      .ctx-menu {
+        position: fixed;
+        z-index: 1000;
+        min-width: 220px;
+        padding: 4px;
+        background: var(--bg-1);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        font-size: 12px;
+        user-select: none;
+      }
+      .ctx-menu .ctx-header {
+        padding: 6px 10px 8px;
+        color: var(--fg-2);
+        font-size: 11px;
+        letter-spacing: 0.4px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 4px;
+      }
+      .ctx-menu .ctx-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 6px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        color: var(--fg-0);
+      }
+      .ctx-menu .ctx-item:hover {
+        background: var(--bg-2);
+        color: var(--accent-blue);
+      }
+      .ctx-menu .ctx-item .ctx-label {
+        color: var(--fg-1);
+      }
+      .ctx-menu .ctx-item:hover .ctx-label {
+        color: var(--fg-0);
+      }
+      .ctx-menu .ctx-item .ctx-value {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+      .ctx-menu .ctx-divider {
+        height: 1px;
+        background: var(--border);
+        margin: 4px 0;
+      }
+
+      /* 复制成功提示 / Copy toast */
+      .copy-toast {
+        position: fixed;
+        z-index: 1001;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        padding: 8px 16px;
+        background: rgba(74, 222, 128, 0.18);
+        color: var(--accent);
+        border: 1px solid rgba(74, 222, 128, 0.5);
+        border-radius: 8px;
+        font-size: 12px;
+        font-weight: 600;
+        box-shadow: var(--shadow);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 160ms ease, transform 160ms ease;
+      }
+      .copy-toast.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(-4px);
+      }
+      .copy-toast.error {
+        background: rgba(248, 113, 113, 0.16);
+        color: var(--accent-down);
+        border-color: rgba(248, 113, 113, 0.5);
+      }
     </style>
   </head>
   <body>

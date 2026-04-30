@@ -249,10 +249,219 @@
     }
   }
 
+  // ---- 主图右键菜单 / 复制价格 (Main chart context menu) ----
+  // 缓存最近一次渲染的 K 线，便于右键时定位 OHLC
+  // (Cache last-rendered candles so context menu can show OHLC for the
+  //  bar under the cursor.)
+  let lastCandles = [];
+  let ctxMenuEl = null;
+  let copyToastEl = null;
+  let copyToastTimer = null;
+
+  function getMainSymbolMeta() {
+    return {
+      symbol: (els.symbol.value || '').trim().toUpperCase() || 'BTCUSDT',
+      market: els.market.value,
+      interval: els.interval.value
+    };
+  }
+
+  // 自动决定价格小数位：>=1000 取 2 位，>=1 取 4 位，更小取 6 位
+  // (Auto-pick price precision so BTC/SOL/小币 都得到合理的显示。)
+  function pickPriceDigits(price) {
+    if (price == null || !Number.isFinite(price)) return 4;
+    const ap = Math.abs(price);
+    if (ap >= 1000) return 2;
+    if (ap >= 1) return 4;
+    if (ap >= 0.01) return 5;
+    return 8;
+  }
+  function fmtPrice(price) {
+    if (price == null || !Number.isFinite(price)) return '-';
+    return Number(price).toFixed(pickPriceDigits(price));
+  }
+
+  async function copyToClipboard(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch (_) { /* fall through */ }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function showCopyToast(text, isError = false) {
+    if (!copyToastEl) {
+      copyToastEl = document.createElement('div');
+      copyToastEl.className = 'copy-toast';
+      document.body.appendChild(copyToastEl);
+    }
+    copyToastEl.textContent = text;
+    copyToastEl.classList.toggle('error', !!isError);
+    void copyToastEl.offsetWidth;
+    copyToastEl.classList.add('show');
+    if (copyToastTimer) clearTimeout(copyToastTimer);
+    copyToastTimer = setTimeout(() => {
+      if (copyToastEl) copyToastEl.classList.remove('show');
+    }, 1400);
+  }
+
+  function hideCtxMenu() {
+    if (ctxMenuEl && ctxMenuEl.parentNode) {
+      ctxMenuEl.parentNode.removeChild(ctxMenuEl);
+    }
+    ctxMenuEl = null;
+  }
+
+  function findCandleByTime(timeSec) {
+    if (!Array.isArray(lastCandles) || lastCandles.length === 0 || timeSec == null) {
+      return null;
+    }
+    let best = null;
+    let bestDiff = Infinity;
+    for (const c of lastCandles) {
+      const ts = toLwSeconds(c.openTime);
+      const d = Math.abs(ts - timeSec);
+      if (d < bestDiff) { bestDiff = d; best = c; }
+    }
+    return best;
+  }
+
+  function buildCtxMenu(items, header) {
+    hideCtxMenu();
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    if (header) {
+      const h = document.createElement('div');
+      h.className = 'ctx-header';
+      h.textContent = header;
+      menu.appendChild(h);
+    }
+    items.forEach((it, idx) => {
+      if (it === 'divider') {
+        const d = document.createElement('div');
+        d.className = 'ctx-divider';
+        menu.appendChild(d);
+        return;
+      }
+      const row = document.createElement('div');
+      row.className = 'ctx-item';
+      row.innerHTML =
+        `<span class="ctx-label">${it.label}</span>` +
+        `<span class="ctx-value">${it.display ?? it.value}</span>`;
+      row.addEventListener('click', async () => {
+        const ok = await copyToClipboard(String(it.value));
+        if (ok) showCopyToast(`已复制 / Copied · ${it.label}: ${it.display ?? it.value}`);
+        else showCopyToast('复制失败 / Copy failed', true);
+        hideCtxMenu();
+      });
+      menu.appendChild(row);
+    });
+    return menu;
+  }
+
+  function showCtxMenuAt(clientX, clientY, items, header) {
+    const menu = buildCtxMenu(items, header);
+    menu.style.left = '0px';
+    menu.style.top = '0px';
+    menu.style.visibility = 'hidden';
+    document.body.appendChild(menu);
+    ctxMenuEl = menu;
+    const rect = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = clientX;
+    let y = clientY;
+    if (x + rect.width + 8 > vw) x = vw - rect.width - 8;
+    if (y + rect.height + 8 > vh) y = vh - rect.height - 8;
+    if (x < 4) x = 4;
+    if (y < 4) y = 4;
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.style.visibility = 'visible';
+  }
+
+  function onMainChartContextMenu(ev) {
+    ev.preventDefault();
+    const rect = els.mainChart.getBoundingClientRect();
+    const x = ev.clientX - rect.left;
+    const y = ev.clientY - rect.top;
+
+    // Y 轴坐标 -> 价格（鼠标位置对应的纵轴价位）
+    const cursorPrice = candleSeries.coordinateToPrice(y);
+    // X 轴坐标 -> 时间，找到对应 K 线
+    const ts = mainChart.timeScale().coordinateToTime(x);
+    const candle = findCandleByTime(typeof ts === 'number' ? ts : null);
+
+    const meta = getMainSymbolMeta();
+    const items = [];
+    if (cursorPrice != null && Number.isFinite(cursorPrice)) {
+      const v = Number(cursorPrice).toFixed(pickPriceDigits(cursorPrice));
+      items.push({
+        label: '光标价 / Cursor Price',
+        value: v,
+        display: v
+      });
+    }
+    if (candle) {
+      items.push('divider');
+      items.push({ label: '开 / Open',  value: fmtPrice(candle.open),  display: fmtPrice(candle.open) });
+      items.push({ label: '高 / High',  value: fmtPrice(candle.high),  display: fmtPrice(candle.high) });
+      items.push({ label: '低 / Low',   value: fmtPrice(candle.low),   display: fmtPrice(candle.low) });
+      items.push({ label: '收 / Close', value: fmtPrice(candle.close), display: fmtPrice(candle.close) });
+      if (candle.vwap != null && Number.isFinite(candle.vwap)) {
+        items.push({ label: 'VWAP', value: fmtPrice(candle.vwap), display: fmtPrice(candle.vwap) });
+      }
+    }
+    if (items.length === 0) {
+      // 没有可用价格（比如鼠标在空白区域），仍然给一个提示项
+      items.push({ label: '无价格 / No price', value: '', display: '-' });
+    }
+
+    let header = `${meta.symbol} · ${meta.market} · ${meta.interval}`;
+    if (candle) {
+      const t = new Date(candle.openTime);
+      header += ` · ${t.toLocaleString('zh-CN', {
+        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
+      })}`;
+    }
+    showCtxMenuAt(ev.clientX, ev.clientY, items, header);
+  }
+
+  els.mainChart.addEventListener('contextmenu', onMainChartContextMenu);
+  // 在菜单上右键也阻止默认浏览器菜单（保持自定义菜单一致）
+  document.addEventListener('contextmenu', (e) => {
+    if (ctxMenuEl && ctxMenuEl.contains(e.target)) e.preventDefault();
+  });
+  // 任意位置点击 / Esc / 滚动 / 失焦 都关闭菜单
+  document.addEventListener('mousedown', (e) => {
+    if (ctxMenuEl && !ctxMenuEl.contains(e.target)) hideCtxMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideCtxMenu();
+  });
+  window.addEventListener('blur', hideCtxMenu);
+  window.addEventListener('resize', hideCtxMenu);
+  els.mainChart.addEventListener('wheel', hideCtxMenu, { passive: true });
+
   // ---- 各种渲染器 (Renderers) ----
   function renderMain(klinesData) {
     const { candles, fvgs = [], liquidityVoids = [], summary } = klinesData;
     if (!candles.length) return;
+    lastCandles = candles;
 
     const mapped = candles.map((c) => ({
       time: toLwSeconds(c.openTime),

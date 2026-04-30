@@ -264,7 +264,7 @@ async function sendText(content) {
 
 /** 发送交互式卡片 (Send an interactive card) */
 async function sendCard(card) {
-  return ;
+  return ; // 这里后继得打开
   return postFeishu({ msg_type: 'interactive', card });
 }
 
