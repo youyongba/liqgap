@@ -50,11 +50,12 @@
   // (Per-interval policy for sub-chart data fetching.)
   //   - CVD 是从 K 线 takerBuyBase 派生，直接跟主图同步，所以这里的"interval"
   //     就是用户在 header 里选的那个；
-  //   - 订单簿是即时快照，但不同周期下展示的档位深度不同（短周期看细盘、
-  //     长周期看深盘），由 depth 决定。
-  const INTERVAL_OB_DEPTH = { '15m': 15, '1h': 20, '4h': 30, '1d': 50 };
+  //   - 订单簿是即时快照，但不同周期下展示的档位深度不同（短周期看贴盘细盘、
+  //     长周期看更深的盘口墙），由 depth 决定。后端会自动把 depth 对齐到
+  //     Binance 允许的合法档位 (5/10/20/50/100/500/1000) 再切片返回。
+  const INTERVAL_OB_DEPTH = { '15m': 20, '1h': 50, '4h': 100, '1d': 200 };
   function obDepthForInterval(interval) {
-    return INTERVAL_OB_DEPTH[interval] || 20;
+    return INTERVAL_OB_DEPTH[interval] || 50;
   }
   function intervalLabel(interval) {
     return ({ '15m': '15 分钟', '1h': '1 小时', '4h': '4 小时', '1d': '1 天' }[interval]) || interval;
@@ -71,6 +72,59 @@
   let pollTimer = null;
   let autoOn = true;
 
+  // ===== 东八区时间统一格式化 (Beijing-time formatters · UTC+8) =====
+  // 项目要求所有时间显示采用东八区，避免不同终端时区导致解读不一致。
+  // (Project mandates Beijing time everywhere to keep readings consistent
+  //  regardless of the viewer's local timezone.)
+  const BJ_OFFSET_MS = 8 * 60 * 60 * 1000;
+  function _bjShift(ms) { return new Date(Number(ms) + BJ_OFFSET_MS); }
+  function _pad2(n) { return String(n).padStart(2, '0'); }
+  function fmtBJDateTime(ms) {
+    if (ms == null || !Number.isFinite(Number(ms))) return '-';
+    const d = _bjShift(ms);
+    return `${d.getUTCFullYear()}-${_pad2(d.getUTCMonth() + 1)}-${_pad2(d.getUTCDate())} ` +
+           `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}`;
+  }
+  function fmtBJShortDateTime(ms) {
+    if (ms == null || !Number.isFinite(Number(ms))) return '-';
+    const d = _bjShift(ms);
+    return `${_pad2(d.getUTCMonth() + 1)}/${_pad2(d.getUTCDate())} ` +
+           `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}`;
+  }
+  function fmtBJDate(ms) {
+    if (ms == null || !Number.isFinite(Number(ms))) return '-';
+    const d = _bjShift(ms);
+    return `${_pad2(d.getUTCMonth() + 1)}/${_pad2(d.getUTCDate())}`;
+  }
+  function fmtBJTimeHMS(ms) {
+    if (ms == null || !Number.isFinite(Number(ms))) return '-';
+    const d = _bjShift(ms);
+    return `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}:${_pad2(d.getUTCSeconds())}`;
+  }
+  // 给状态栏/小时间戳用：HH:mm:ss (BJ)
+  function nowBJTimeHMS() { return fmtBJTimeHMS(Date.now()); }
+
+  // lightweight-charts 时间轴 tick 格式化：
+  // tickMarkType 枚举 0=Year, 1=Month, 2=DayOfMonth, 3=Time, 4=TimeWithSeconds
+  function lwTickFormatter(timeSec, tickMarkType) {
+    const ms = Number(timeSec) * 1000;
+    const d = _bjShift(ms);
+    switch (Number(tickMarkType)) {
+      case 0: return String(d.getUTCFullYear());
+      case 1: return `${d.getUTCFullYear()}-${_pad2(d.getUTCMonth() + 1)}`;
+      case 2: return `${_pad2(d.getUTCMonth() + 1)}-${_pad2(d.getUTCDate())}`;
+      case 3: return `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}`;
+      case 4:
+      default:
+        return `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}:${_pad2(d.getUTCSeconds())}`;
+    }
+  }
+  // crosshair 浮窗里的时间 (整段 datetime)
+  const lwLocalization = {
+    timeFormatter: (timeSec) => fmtBJDateTime(Number(timeSec) * 1000),
+    dateFormat: 'yyyy-MM-dd'
+  };
+
   // ---- 主图 K 线 (Main candlestick chart · Lightweight Charts) ----
   const mainChart = LightweightCharts.createChart(els.mainChart, {
     layout: {
@@ -83,7 +137,13 @@
     },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     rightPriceScale: { borderColor: '#1f2837' },
-    timeScale: { borderColor: '#1f2837', timeVisible: true, secondsVisible: false }
+    timeScale: {
+      borderColor: '#1f2837',
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: lwTickFormatter
+    },
+    localization: lwLocalization
   });
   const candleSeries = mainChart.addCandlestickSeries({
     upColor: '#4ade80',
@@ -106,8 +166,14 @@
       vertLines: { color: '#1f2837' },
       horzLines: { color: '#1f2837' }
     },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#1f2837' },
-    rightPriceScale: { borderColor: '#1f2837' }
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      borderColor: '#1f2837',
+      tickMarkFormatter: lwTickFormatter
+    },
+    rightPriceScale: { borderColor: '#1f2837' },
+    localization: lwLocalization
   });
   const volumeSeries = volumeChart.addHistogramSeries({
     color: '#60a5fa',
@@ -121,8 +187,14 @@
       vertLines: { color: '#1f2837' },
       horzLines: { color: '#1f2837' }
     },
-    timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#1f2837' },
-    rightPriceScale: { borderColor: '#1f2837' }
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      borderColor: '#1f2837',
+      tickMarkFormatter: lwTickFormatter
+    },
+    rightPriceScale: { borderColor: '#1f2837' },
+    localization: lwLocalization
   });
   const cvdSeries = cvdChart.addLineSeries({
     color: '#4ade80',
@@ -137,48 +209,94 @@
   }
   window.addEventListener('resize', fitCharts);
 
-  // ---- 订单簿深度图 (Order book · Chart.js) ----
+  // ---- 订单簿深度图 (Order book · 累积阶梯深度图 / cumulative depth chart) ----
+  // 设计 (Design)：
+  //   X 轴 = 价格 (linear scale)，Y 轴 = 从最优档累积的名义额 (USDT)。
+  //   两条阶梯曲线：
+  //     - bids 从 best bid 出发往低价方向累积，stepped:'before' 渲染为
+  //       右高左低的"绿色买墙"。
+  //     - asks 从 best ask 出发往高价方向累积，stepped:'after' 渲染为
+  //       左低右高的"红色卖墙"。
+  //   这种图天然适合展示 100~500+ 档，远比逐档条形图易读。
+  // (Replaced the per-level horizontal bar with a classic depth-book curve
+  //  so hundreds of levels render cleanly and price scale stays continuous.)
   let orderbookChart = null;
+  // mid 价垂直参考线 plugin（订单簿专用）
+  // (Vertical mid-price guide line plugin for the order-book chart only.)
+  const obMidLinePlugin = {
+    id: 'obMidLine',
+    afterDatasetsDraw(chart, _args, opts) {
+      const mid = opts && opts.mid;
+      if (mid == null || !Number.isFinite(mid)) return;
+      const xScale = chart.scales.x;
+      const yScale = chart.scales.y;
+      if (!xScale || !yScale) return;
+      const x = xScale.getPixelForValue(mid);
+      if (x < xScale.left || x > xScale.right) return;
+      const ctx = chart.ctx;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(250, 204, 21, 0.65)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x, yScale.top);
+      ctx.lineTo(x, yScale.bottom);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(250, 204, 21, 0.85)';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('mid ' + Number(mid).toLocaleString('en-US', { maximumFractionDigits: 2 }),
+                   x, yScale.top + 10);
+      ctx.restore();
+    }
+  };
+
   function ensureOrderbookChart() {
     if (orderbookChart) return orderbookChart;
     const ctx = els.orderbookCanvas.getContext('2d');
     orderbookChart = new Chart(ctx, {
-      type: 'bar',
+      type: 'line',
       data: {
-        labels: [],
         datasets: [
           {
-            label: '买单累计 / Bids (cum.)',
+            label: '买单累计 / Bids (cum. USDT)',
             data: [],
-            backgroundColor: 'rgba(74, 222, 128, 0.5)',
-            borderColor: 'rgba(74, 222, 128, 1)',
-            borderWidth: 1
+            backgroundColor: 'rgba(74, 222, 128, 0.20)',
+            borderColor: 'rgba(74, 222, 128, 0.95)',
+            borderWidth: 1.5,
+            stepped: 'before',
+            fill: 'origin',
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            tension: 0
           },
           {
-            label: '卖单累计 / Asks (cum.)',
+            label: '卖单累计 / Asks (cum. USDT)',
             data: [],
-            backgroundColor: 'rgba(248, 113, 113, 0.5)',
-            borderColor: 'rgba(248, 113, 113, 1)',
-            borderWidth: 1
+            backgroundColor: 'rgba(248, 113, 113, 0.20)',
+            borderColor: 'rgba(248, 113, 113, 0.95)',
+            borderWidth: 1.5,
+            stepped: 'after',
+            fill: 'origin',
+            pointRadius: 0,
+            pointHoverRadius: 3,
+            tension: 0
           }
         ]
       },
       options: {
-        indexAxis: 'y',
         responsive: true,
         maintainAspectRatio: false,
-        // 修复 tooltip 不灵敏：mode:'index' + intersect:false 让光标
-        // 在条形图区域任意位置都能触发同价位档的 tooltip。
-        // (Make tooltip & hover responsive across the whole bar area.)
-        interaction: {
-          mode: 'index',
-          intersect: false,
-          axis: 'y'
-        },
+        parsing: false,
+        animation: false,
+        normalized: true,
+        interaction: { mode: 'nearest', axis: 'x', intersect: false },
         plugins: {
           legend: { labels: { color: '#9aa7b8', boxWidth: 12 } },
           tooltip: {
-            mode: 'index',
+            mode: 'nearest',
+            axis: 'x',
             intersect: false,
             backgroundColor: '#11161f',
             borderColor: '#1f2837',
@@ -186,33 +304,44 @@
             titleColor: '#e6edf3',
             bodyColor: '#9aa7b8',
             callbacks: {
-              title: (items) => {
-                if (!items.length) return '';
-                return '价位 / Price: ' + items[0].label;
-              },
-              label: (item) => {
-                const v = Number(item.raw) || 0;
-                if (v <= 0) return null;
-                return `${item.dataset.label}: ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
-              }
+              title: (items) => items.length
+                ? '价位 / Price: ' + Number(items[0].parsed.x)
+                    .toLocaleString('en-US', { maximumFractionDigits: 4 })
+                : '',
+              label: (item) =>
+                `${item.dataset.label}: ${Number(item.parsed.y)
+                  .toLocaleString('en-US', { maximumFractionDigits: 0 })}`
             }
-          }
-        },
-        hover: {
-          mode: 'index',
-          intersect: false
+          },
+          obMidLine: { mid: null }
         },
         scales: {
           x: {
-            ticks: { color: '#5e6b7c' },
+            type: 'linear',
+            ticks: {
+              color: '#5e6b7c',
+              maxTicksLimit: 6,
+              callback: (v) => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 })
+            },
             grid: { color: '#1f2837' }
           },
           y: {
-            ticks: { color: '#9aa7b8', autoSkip: true, maxTicksLimit: 18 },
+            type: 'linear',
+            beginAtZero: true,
+            ticks: {
+              color: '#9aa7b8',
+              callback: (v) => {
+                const n = Number(v);
+                if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+                if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+                return n.toFixed(0);
+              }
+            },
             grid: { color: '#1f2837' }
           }
         }
-      }
+      },
+      plugins: [obMidLinePlugin]
     });
     return orderbookChart;
   }
@@ -457,10 +586,7 @@
 
     let header = `${meta.symbol} · ${meta.market} · ${meta.interval}`;
     if (candle) {
-      const t = new Date(candle.openTime);
-      header += ` · ${t.toLocaleString('zh-CN', {
-        month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
-      })}`;
+      header += ` · ${fmtBJShortDateTime(candle.openTime)} (UTC+8)`;
     }
     showCtxMenuAt(ev.clientX, ev.clientY, items, header);
   }
@@ -861,31 +987,46 @@
 
   function renderOrderBook(book) {
     const chart = ensureOrderbookChart();
-    const bids = (book.bids || []).slice(0, 18);
-    const asks = (book.asks || []).slice(0, 18);
 
-    // 聚合 (价 -> 名义额) 并按价格升序排列
-    // (Aggregate (price -> notional) and arrange bids ASC, asks ASC by price.)
-    const bidSorted = [...bids].sort((a, b) => Number(a[0]) - Number(b[0]));
-    const askSorted = [...asks].sort((a, b) => Number(a[0]) - Number(b[0]));
+    // 把 [price, qty] 字符串数组转成数值二元组并排序
+    const bidsRaw = (book.bids || [])
+      .map((l) => [Number(l[0]), Number(l[1])])
+      .filter(([p, q]) => Number.isFinite(p) && Number.isFinite(q) && q > 0);
+    const asksRaw = (book.asks || [])
+      .map((l) => [Number(l[0]), Number(l[1])])
+      .filter(([p, q]) => Number.isFinite(p) && Number.isFinite(q) && q > 0);
 
-    const labels = [
-      ...bidSorted.map((l) => Number(l[0]).toFixed(2)),
-      ...askSorted.map((l) => Number(l[0]).toFixed(2))
-    ];
+    // bids 累积：从 best bid（最高价）出发，往低价累加 → 远离 mid 处累积量大
+    bidsRaw.sort((a, b) => b[0] - a[0]);
+    let cb = 0;
+    const bidPts = [];
+    for (const [p, q] of bidsRaw) {
+      cb += p * q;
+      bidPts.push({ x: p, y: cb });
+    }
+    // 渲染要求 X 升序
+    bidPts.sort((a, b) => a.x - b.x);
 
-    const bidValues = [
-      ...bidSorted.map((l) => Number(l[0]) * Number(l[1])),
-      ...askSorted.map(() => 0)
-    ];
-    const askValues = [
-      ...bidSorted.map(() => 0),
-      ...askSorted.map((l) => Number(l[0]) * Number(l[1]))
-    ];
+    // asks 累积：从 best ask（最低价）出发，往高价累加
+    asksRaw.sort((a, b) => a[0] - b[0]);
+    let ca = 0;
+    const askPts = [];
+    for (const [p, q] of asksRaw) {
+      ca += p * q;
+      askPts.push({ x: p, y: ca });
+    }
 
-    chart.data.labels = labels;
-    chart.data.datasets[0].data = bidValues;
-    chart.data.datasets[1].data = askValues;
+    chart.data.datasets[0].data = bidPts;
+    chart.data.datasets[1].data = askPts;
+
+    // mid 价：优先用后端给的 midPrice，缺失则用 bestBid/bestAsk 中点
+    const mid = Number.isFinite(Number(book.midPrice))
+      ? Number(book.midPrice)
+      : (Number.isFinite(Number(book.bestBid)) && Number.isFinite(Number(book.bestAsk))
+        ? (Number(book.bestBid) + Number(book.bestAsk)) / 2
+        : null);
+    chart.options.plugins.obMidLine.mid = mid;
+
     chart.update('none');
   }
 
@@ -1036,11 +1177,11 @@
         const firstErr = Object.values(fetchJsonSoft.lastErrors)[0] || '';
         const detail = firstErr ? ` — ${firstErr}` : '';
         setStatus(
-          `部分失败 / Partial: ${failed.join(',')} · ${new Date().toLocaleTimeString()} (${elapsed}ms)${detail}`,
+          `部分失败 / Partial: ${failed.join(',')} · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)${detail}`,
           true
         );
       } else {
-        setStatus(`已更新 / Updated · ${new Date().toLocaleTimeString()} (${elapsed}ms)`);
+        setStatus(`已更新 / Updated · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)`);
       }
     } catch (err) {
       setStatus('错误 / Error: ' + err.message, true);
@@ -1113,7 +1254,7 @@
       const fvg = d.fvgState && d.fvgState[symKey];
       const cooldownMin = Math.round((d.cooldownMs || 0) / 60000);
       let lastTxt = last
-        ? `上次信号 ${last.signal} @ ${new Date(last.ts).toLocaleTimeString()}`
+        ? `上次信号 ${last.signal} @ ${fmtBJTimeHMS(last.ts)} (UTC+8)`
         : '尚未推送信号 / no signals pushed';
       let fvgTxt = '';
       if (fvg) {
@@ -1141,7 +1282,7 @@
       });
       const j = await r.json();
       if (j.success) {
-        setFsStatus(`已推送 / Pushed · ${j.data.signal} · ${new Date().toLocaleTimeString()}`, 'ok');
+        setFsStatus(`已推送 / Pushed · ${j.data.signal} · ${nowBJTimeHMS()} (UTC+8)`, 'ok');
       } else {
         setFsStatus('推送跳过 / Skip: ' + j.error, 'warn');
       }
@@ -1288,7 +1429,7 @@
     // 资金曲线 / Equity curve
     const chart = ensureEquityChart();
     const curve = data.equityCurve || [];
-    chart.data.labels = curve.map((p) => new Date(p.time).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }));
+    chart.data.labels = curve.map((p) => fmtBJDate(p.time));
     chart.data.datasets[0].data = curve.map((p) => Number(p.equity));
     chart.update('none');
 
@@ -1387,8 +1528,7 @@
 
   function formatDateTime(ts) {
     if (!ts) return '-';
-    const d = new Date(ts);
-    return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return fmtBJShortDateTime(ts);
   }
   function escapeHtml(s) {
     return String(s == null ? '' : s)
@@ -1415,7 +1555,7 @@
       const took = ((Date.now() - startedAt) / 1000).toFixed(1);
       setBtStatus(
         `完成 / Done · ${data.totalTrades || 0} 笔 · 耗时 ${took}s · ` +
-        new Date().toLocaleTimeString()
+        nowBJTimeHMS() + ' (UTC+8)'
       );
     } catch (err) {
       setBtStatus('错误 / Error: ' + err.message, true);

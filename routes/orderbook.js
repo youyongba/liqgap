@@ -22,17 +22,30 @@ const { computeOrderBookIndicators } = require('../indicators/orderbookIndicator
 
 const router = express.Router();
 
+// Binance 深度接口允许的离散 limit 集合：
+//   现货 (Spot)    : 5 / 10 / 20 / 50 / 100 / 500 / 1000 / 5000
+//   合约 (Futures) : 5 / 10 / 20 / 50 / 100 / 500 / 1000
+// 任何不在此集合中的 limit 会被 Binance 拒绝。
+// 我们把任意 depth 向上对齐到该集合中 ≥ depth 的最小值，再本地切片返回前 depth 档。
+// (Align any requested depth to the next allowed Binance bucket and slice locally.)
+function alignBinanceDepth(d, market) {
+  const allowed = market === 'spot'
+    ? [5, 10, 20, 50, 100, 500, 1000, 5000]
+    : [5, 10, 20, 50, 100, 500, 1000];
+  for (const v of allowed) if (d <= v) return v;
+  return allowed[allowed.length - 1];
+}
+
 router.get('/orderbook/indicators', async (req, res) => {
   try {
     const symbol = (req.query.symbol || 'BTCUSDT').toUpperCase();
-    const depth = Math.min(Number(req.query.depth) || 20, 1000);
-    const probeQty = Number(req.query.probeQty) || 0.1;
     // 默认合约 (default to futures)
     const market = req.query.market === 'spot' ? 'spot' : 'futures';
+    const maxDepth = market === 'spot' ? 5000 : 1000;
+    const depth = Math.min(Math.max(Number(req.query.depth) || 20, 1), maxDepth);
+    const probeQty = Number(req.query.probeQty) || 0.1;
 
-    // Binance depth 接口只接受预设档数；先抓宽再本地切片
-    // (Binance only allows preset depth sizes; we slice locally.)
-    const fetchDepth = Math.max(depth, 100);
+    const fetchDepth = alignBinanceDepth(Math.max(depth, 100), market);
     const book = await BinanceService.getOrderBook(symbol, fetchDepth, market);
     const indicators = computeOrderBookIndicators(book, depth, probeQty);
 
@@ -42,6 +55,8 @@ router.get('/orderbook/indicators', async (req, res) => {
         ...indicators,
         symbol,
         market,
+        depth,
+        fetchDepth,
         bids: book.bids.slice(0, depth),
         asks: book.asks.slice(0, depth)
       }
