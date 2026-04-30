@@ -42,8 +42,9 @@ if (PROXY_AGENT) {
 const SPOT_WS_BASE    = 'wss://stream.binance.com:9443';
 const FUTURES_WS_BASE = 'wss://fstream.binance.com';
 
-const KLINE_MAX_HISTORY = 1500; // 单 interval 最多保留 1500 根
-const AGG_TRADES_BUFFER = 1500; // 聚合成交滚动 buffer 上限
+const KLINE_MAX_HISTORY  = 1500; // 单 interval 最多保留 1500 根
+const AGG_TRADES_BUFFER  = 1500; // 聚合成交滚动 buffer 上限（内存）
+const AGG_REST_LIMIT_MAX = 1000; // Binance REST aggTrades 接口 limit 上限
 
 const IDLE_TIMEOUT_MS   = 10 * 60 * 1000; // 10 分钟无访问 → 断开
 const PING_INTERVAL_MS  = 30 * 1000;       // 客户端 30s 主动 ping
@@ -599,7 +600,10 @@ class StreamHub extends EventEmitter {
     if (this.aggTradesInit) return this.aggTradesInit;
     this.aggTradesInit = (async () => {
       try {
-        const seed = await BinanceService.getAggTrades(this.symbol, AGG_TRADES_BUFFER, this.market);
+        // REST seed 不能超过 Binance 接口的硬上限（1000），
+        // WS 流后续会持续向 buffer 追加直到 AGG_TRADES_BUFFER。
+        const seedLimit = Math.min(AGG_TRADES_BUFFER, AGG_REST_LIMIT_MAX);
+        const seed = await BinanceService.getAggTrades(this.symbol, seedLimit, this.market);
         // REST seed 给出最近 N 笔；若 WS 已经 push 进若干，我们按 a 字段去重
         const seenA = new Set(this.aggTrades.map((t) => t.a));
         const merged = [];

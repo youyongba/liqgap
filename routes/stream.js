@@ -52,7 +52,8 @@ router.get('/stream/sse', async (req, res) => {
   const klineLimit = Math.min(Math.max(Number(req.query.limit) || 200, 10), 1500);
   const maxDepth = market === 'spot' ? 5000 : 1000;
   const depth = Math.min(Math.max(Number(req.query.depth) || 50, 5), maxDepth);
-  const aggLimit = Math.min(Math.max(Number(req.query.aggLimit) || 200, 1), 1500);
+  // Binance REST aggTrades 限定 ≤1000；缓存 buffer 可更多但 seed 不能超
+  const aggLimit = Math.min(Math.max(Number(req.query.aggLimit) || 200, 1), 1000);
 
   // SSE headers
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');

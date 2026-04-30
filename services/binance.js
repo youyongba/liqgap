@@ -145,10 +145,14 @@ const BinanceService = {
    *   其中 m 即 isBuyerMaker (m === isBuyerMaker)。
    */
   async getAggTrades(symbol, limit = 500, marketType = 'spot') {
+    // Binance aggTrades 接口 limit 上限为 1000（spot 与 futures 一致）。
+    // 调用方传 >1000 会被 Binance 直接拒绝（400 'limit not valid'），
+    // 因此在底层封装做硬上限防护，避免业务层反复处理。
     const url = resolveBaseUrl(marketType) + resolveAggTradesPath(marketType);
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 500, 1000));
     return get(url, {
       symbol: String(symbol).toUpperCase(),
-      limit
+      limit: safeLimit
     });
   },
 
