@@ -1144,11 +1144,18 @@
   // SSE 异常会自动 fallback：状态栏标红 + 继续依赖 10s 轮询数据。
   // ============================================================
   const SSE_RENDER_THROTTLE_MS = 200;
+  // K 线静默超过此阈值 → 主动重连 SSE（而非降级到 10s 轮询）
+  // 选择 30s 是因为 1m / 15m / 1h K 线在该时间内必有更新
+  const KLINE_STALE_MS = 30_000;
+  // watchdog 检查频率
+  const WATCHDOG_INTERVAL_MS = 5_000;
+
   const sseState = {
     supported: typeof EventSource !== 'undefined',
     es: null,
     active: false,
-    ready: false,           // 是否收到首帧 snapshot
+    ready: false,           // 当前是否处于推送中
+    everReady: false,       // 是否至少 ready 过一次（用于决定 poll 是否还需要做主图 seed）
     candles: [],            // 由 SSE 推送维护的 K 线序列
     summary: null,
     patterns: { fvgs: [], liquidityVoids: [] }, // 由 10s poll 维护
@@ -1157,19 +1164,17 @@
     lastKlineAt: 0,
     lastErrorAt: 0,
     reconnectTimer: null,
-    backoffMs: 1000,
-    statusEl: null
+    watchdogTimer: null,
+    backoffMs: 1000
   };
 
-  // 超过 KLINE_STALE_MS 没收到 kline 事件视为 SSE "假活"，让 10s 轮询接管
-  // (Treat SSE as stale if no kline event for this long; poll falls back in.)
-  const KLINE_STALE_MS = 30_000;
+  // 主图当前是否由 SSE 实时驱动；用于 poll 内决定是否跳过订单簿请求
   function isSSEDriving() {
-    if (!sseState.active || !sseState.ready) return false;
-    if (sseState.lastKlineAt && (Date.now() - sseState.lastKlineAt) > KLINE_STALE_MS) {
-      return false;
-    }
-    return true;
+    return sseState.active && sseState.ready;
+  }
+  // 主图是否已经由 SSE 接管渲染（即便 SSE 此刻断线，K 线也不再让 poll 周期性跳动）
+  function sseOwnsMainChart() {
+    return sseState.everReady;
   }
 
   function buildSSEUrl() {
@@ -1254,8 +1259,10 @@
           count: sseState.candles.length
         };
         sseState.ready = true;
+        sseState.everReady = true;
         sseState.lastKlineAt = Date.now(); // snapshot 视为一次 fresh K 线
         sseState.backoffMs = 1000;
+        startWatchdog();
         renderMain({
           candles: sseState.candles,
           summary: sseState.summary,
@@ -1296,9 +1303,8 @@
     });
 
     es.addEventListener('error', () => {
-      // ⚠️ 关键：任何 error 都视为推送暂停，让 10s 轮询暂时接管主图渲染。
-      //   重连成功后服务端会重新发 'snapshot' 事件，handler 里再把 ready 置 true。
-      //   否则 ready=true 长期保留 → poll 永远跳过 renderMain → K 线静止。
+      // 任何 error 都立刻 ready=false，停掉 pending 渲染。
+      // 主图不再降级到 poll —— 等 EventSource 自动重连成功后 snapshot 会再来。
       sseState.ready = false;
       if (sseState.renderTimer) {
         clearTimeout(sseState.renderTimer);
@@ -1310,10 +1316,10 @@
       sseState.lastErrorAt = nowMs;
       if (es.readyState === EventSource.CLOSED) {
         sseState.active = false;
-        setStatus('实时连接断开，重连中 / SSE retry · 轮询接管', true);
+        setStatus('实时连接断开，重连中… / SSE disconnected, reconnecting', true);
         scheduleSSEReconnect();
       } else {
-        setStatus('实时连接抖动 / SSE blip · 轮询接管中', true);
+        setStatus('实时连接抖动，自动重连中 / SSE blip, auto-retry', true);
       }
     });
     return true;
@@ -1333,6 +1339,33 @@
     if (sseState.reconnectTimer) {
       clearTimeout(sseState.reconnectTimer);
       sseState.reconnectTimer = null;
+    }
+    stopWatchdog();
+  }
+
+  // ---- Watchdog：监控 K 线推送活性，必要时主动重连 ------------------
+  // 主图完全由 SSE 驱动；如果 SSE 仍 active+ready 但 K 线静默 > 30s，
+  // 视为推送中断（路径阻塞 / Binance 限流 / 反代 buffer 等），
+  // 直接 close + 重新建立连接，而不是降级到 10s 轮询。
+  // (Main chart is SSE-driven only. If SSE looks alive but no kline arrived
+  //  for 30s, force a reconnect instead of falling back to polling.)
+  function startWatchdog() {
+    stopWatchdog();
+    sseState.watchdogTimer = setInterval(() => {
+      if (!sseState.active || !sseState.ready) return;
+      const idle = Date.now() - (sseState.lastKlineAt || 0);
+      if (idle > KLINE_STALE_MS) {
+        // eslint-disable-next-line no-console
+        console.warn(`[sse] watchdog: K-line idle ${idle}ms, forcing reconnect`);
+        setStatus(`实时静默 ${Math.round(idle / 1000)}s，强制重连 / SSE idle, force reconnect`, true);
+        restartSSE();
+      }
+    }, WATCHDOG_INTERVAL_MS);
+  }
+  function stopWatchdog() {
+    if (sseState.watchdogTimer) {
+      clearInterval(sseState.watchdogTimer);
+      sseState.watchdogTimer = null;
     }
   }
 
@@ -1370,9 +1403,11 @@
       // (Order-book depth scales with interval so longer timeframes show
       //  more levels and shorter ones zoom in on the touch.)
       const obDepth = obDepthForInterval(interval);
-      const sseDriving = isSSEDriving();
-      // SSE 驱动时跳过订单簿请求（重复且耗资源），仍拉 K 线接口拿 FVG / Voids
-      const obFetch = sseDriving
+      // 主图归 SSE 管：一旦 SSE 成功过一次，就不再拉订单簿（避免 10s 跳动 + 节省请求）
+      // (Once SSE has succeeded at least once, the main chart and order book
+      //  are owned by SSE; poll skips fetching them entirely.)
+      const sseOwns = sseOwnsMainChart();
+      const obFetch = sseOwns
         ? Promise.resolve(null)
         : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
       const [kData, obData, signal, alerts] = await Promise.all([
@@ -1384,39 +1419,40 @@
 
       const failed = [];
       if (kData) {
-        if (sseDriving) {
-          // SSE 已经驱动 candles；这里只把 FVG / Liquidity Voids 更新到状态并触发重绘
+        if (sseOwns) {
+          // SSE 接管 K 线渲染：这里只更新 FVG / Liquidity Voids
+          // 当 SSE 此刻仍在推送时触发一次重绘把新 patterns 叠上去；
+          // SSE 断线期间不重绘，等重连后由 SSE 自己恢复。
           sseState.patterns = {
             fvgs: kData.fvgs || [],
             liquidityVoids: kData.liquidityVoids || []
           };
-          scheduleSSERender();
+          if (isSSEDriving()) scheduleSSERender();
         } else {
+          // 启动后首屏：SSE 还没成功过，poll 负责一次性把主图 seed 出来
           renderMain(kData);
         }
       } else failed.push('klines');
-      if (sseDriving) {
-        // 订单簿由 SSE 驱动，不依赖 obData
-      } else if (obData) {
-        renderOrderBook(obData);
-      } else failed.push('orderbook');
+
+      if (!sseOwns) {
+        if (obData) renderOrderBook(obData);
+        else failed.push('orderbook');
+      }
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       fitCharts();
 
       const elapsed = Date.now() - startedAt;
       if (failed.length) {
-        // 取第一条具体错误信息展示在状态栏（便于一眼看出 403 / ECONNRESET 等）
-        // (Surface the first concrete error so 403 / ECONNRESET is visible at a glance.)
         const firstErr = Object.values(fetchJsonSoft.lastErrors)[0] || '';
         const detail = firstErr ? ` — ${firstErr}` : '';
         setStatus(
           `部分失败 / Partial: ${failed.join(',')} · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)${detail}`,
           true
         );
-      } else if (sseDriving) {
-        setSSELiveStatus(` · poll ${elapsed}ms`);
-      } else {
+      } else if (isSSEDriving()) {
+        // SSE 在线时不写"已更新"以免覆盖"实时 / Live"状态
+      } else if (!sseOwns) {
         setStatus(`已更新 / Updated · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)`);
       }
     } catch (err) {
