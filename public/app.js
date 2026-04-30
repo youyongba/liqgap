@@ -22,7 +22,6 @@
     market: document.getElementById('market'),
     interval: document.getElementById('interval'),
     refresh: document.getElementById('refresh'),
-    auto: document.getElementById('auto'),
     status: document.getElementById('status'),
     mainChart: document.getElementById('main-chart'),
     volumePane: document.getElementById('volume-pane'),
@@ -70,7 +69,6 @@
 
   const POLL_INTERVAL_MS = 10000;
   let pollTimer = null;
-  let autoOn = true;
 
   // ===== 东八区时间统一格式化 (Beijing-time formatters · UTC+8) =====
   // 项目要求所有时间显示采用东八区，避免不同终端时区导致解读不一致。
@@ -1157,13 +1155,21 @@
     renderTimer: null,
     lastBookAt: 0,
     lastKlineAt: 0,
+    lastErrorAt: 0,
     reconnectTimer: null,
     backoffMs: 1000,
     statusEl: null
   };
 
+  // 超过 KLINE_STALE_MS 没收到 kline 事件视为 SSE "假活"，让 10s 轮询接管
+  // (Treat SSE as stale if no kline event for this long; poll falls back in.)
+  const KLINE_STALE_MS = 30_000;
   function isSSEDriving() {
-    return sseState.active && sseState.ready;
+    if (!sseState.active || !sseState.ready) return false;
+    if (sseState.lastKlineAt && (Date.now() - sseState.lastKlineAt) > KLINE_STALE_MS) {
+      return false;
+    }
+    return true;
   }
 
   function buildSSEUrl() {
@@ -1248,6 +1254,7 @@
           count: sseState.candles.length
         };
         sseState.ready = true;
+        sseState.lastKlineAt = Date.now(); // snapshot 视为一次 fresh K 线
         sseState.backoffMs = 1000;
         renderMain({
           candles: sseState.candles,
@@ -1289,14 +1296,24 @@
     });
 
     es.addEventListener('error', () => {
-      // EventSource 内置自动重连，但 readyState=2 (CLOSED) 表示彻底断了
+      // ⚠️ 关键：任何 error 都视为推送暂停，让 10s 轮询暂时接管主图渲染。
+      //   重连成功后服务端会重新发 'snapshot' 事件，handler 里再把 ready 置 true。
+      //   否则 ready=true 长期保留 → poll 永远跳过 renderMain → K 线静止。
+      sseState.ready = false;
+      if (sseState.renderTimer) {
+        clearTimeout(sseState.renderTimer);
+        sseState.renderTimer = null;
+      }
+      // 状态文本节流，避免每秒刷屏
+      const nowMs = Date.now();
+      if (nowMs - sseState.lastErrorAt < 3000) return;
+      sseState.lastErrorAt = nowMs;
       if (es.readyState === EventSource.CLOSED) {
         sseState.active = false;
-        sseState.ready = false;
-        setStatus('实时连接断开，5s 后重连 / SSE disconnected, retrying', true);
+        setStatus('实时连接断开，重连中 / SSE retry · 轮询接管', true);
         scheduleSSEReconnect();
       } else {
-        setStatus('实时连接抖动… / SSE blip, auto-retry', true);
+        setStatus('实时连接抖动 / SSE blip · 轮询接管中', true);
       }
     });
     return true;
@@ -1430,14 +1447,6 @@
   });
   // 页面加载时先把副图标题渲染成当前 interval
   refreshSubTitles();
-  els.auto.addEventListener('click', () => {
-    autoOn = !autoOn;
-    els.auto.textContent = autoOn
-      ? '自动 10s · 开 / Auto · ON'
-      : '自动 10s · 关 / Auto · OFF';
-    if (autoOn) startAutoPoll();
-    else stopAutoPoll();
-  });
 
   // ============================================================
   // 飞书推送 (Feishu push controls)
@@ -1790,7 +1799,7 @@
   setTimeout(() => {
     fitCharts();
     poll();
-    if (autoOn) startAutoPoll();
+    startAutoPoll(); // 10s 轮询常开（信号 / 警报 / FVG 仍需要它）
     // 启动 SSE 实时通道：浏览器不支持时静默 fallback 到 10s 轮询
     if (sseState.supported) startSSE();
   }, 100);
