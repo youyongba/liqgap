@@ -457,6 +457,265 @@
   window.addEventListener('resize', hideCtxMenu);
   els.mainChart.addEventListener('wheel', hideCtxMenu, { passive: true });
 
+  // ============================================================
+  // 测量工具 (Measurement tool · drag-to-measure on main chart)
+  // ============================================================
+  const measureBtn = document.getElementById('measure-toggle');
+
+  // 在主图容器内创建覆盖层 (overlay layer) ----------------------
+  // mainChart 容器的 position 已由 lightweight-charts 内部设置成 relative
+  const measureLayer = document.createElement('div');
+  measureLayer.style.cssText =
+    'position:absolute;inset:0;display:none;z-index:5;pointer-events:none;';
+
+  const measureCanvas = document.createElement('canvas');
+  measureCanvas.style.cssText =
+    'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
+  measureLayer.appendChild(measureCanvas);
+
+  const measureLabel = document.createElement('div');
+  measureLabel.className = 'measure-label';
+  measureLabel.style.display = 'none';
+  measureLayer.appendChild(measureLabel);
+
+  els.mainChart.appendChild(measureLayer);
+
+  let measureActive = false;
+  let measureDrag = null;     // 拖拽中的测量
+  let measureResult = null;   // 上一次完成的测量（用于 resize 重绘）
+
+  // 把 K 线周期映射成秒，用于估算"几根 K 线"
+  // (Map interval string to seconds so we can compute bar counts.)
+  function intervalToSeconds(intervalStr) {
+    const m = String(intervalStr || '').match(/^(\d+)([smhdw])$/i);
+    if (!m) return 3600;
+    const n = Number(m[1]);
+    const unit = m[2].toLowerCase();
+    const mult = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 }[unit] || 60;
+    return n * mult;
+  }
+
+  function fmtDuration(seconds) {
+    const s = Math.abs(Number(seconds) || 0);
+    if (s < 60) return Math.round(s) + ' s';
+    if (s < 3600) return (s / 60).toFixed(1) + ' min';
+    if (s < 86400) return (s / 3600).toFixed(2) + ' h';
+    return (s / 86400).toFixed(2) + ' d';
+  }
+
+  function fmtSigned(n, digits) {
+    const sign = n >= 0 ? '+' : '';
+    return sign + Number(n).toFixed(digits);
+  }
+
+  function resizeMeasureCanvas() {
+    const w = els.mainChart.clientWidth;
+    const h = els.mainChart.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    measureCanvas.width = Math.round(w * dpr);
+    measureCanvas.height = Math.round(h * dpr);
+    measureCanvas.style.width = w + 'px';
+    measureCanvas.style.height = h + 'px';
+    const ctx = measureCanvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function clearMeasureCanvas() {
+    const ctx = measureCanvas.getContext('2d');
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, measureCanvas.width, measureCanvas.height);
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function drawMeasure(start, end) {
+    resizeMeasureCanvas();
+    const ctx = measureCanvas.getContext('2d');
+    const w = els.mainChart.clientWidth;
+    const h = els.mainChart.clientHeight;
+    ctx.clearRect(0, 0, w, h);
+
+    const x0 = Math.min(start.x, end.x);
+    const x1 = Math.max(start.x, end.x);
+    const y0 = Math.min(start.y, end.y);
+    const y1 = Math.max(start.y, end.y);
+
+    const isUp = end.price >= start.price;
+    const fill = isUp ? 'rgba(74, 222, 128, 0.14)' : 'rgba(248, 113, 113, 0.14)';
+    const stroke = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
+
+    ctx.fillStyle = fill;
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
+    ctx.setLineDash([]);
+
+    // 起点->终点 实线连线
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+
+    // 起止圆点
+    ctx.fillStyle = stroke;
+    [[start.x, start.y], [end.x, end.y]].forEach(([px, py]) => {
+      ctx.beginPath();
+      ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function updateMeasureLabel(start, end) {
+    const dPrice = end.price - start.price;
+    const pct = start.price !== 0 && Number.isFinite(start.price)
+      ? (dPrice / start.price) * 100
+      : 0;
+    const intervalSec = intervalToSeconds(els.interval.value);
+    const dTimeSec = (end.time != null && start.time != null)
+      ? (end.time - start.time)
+      : 0;
+    const bars = intervalSec ? Math.round(Math.abs(dTimeSec) / intervalSec) : 0;
+
+    const isUp = dPrice >= 0;
+    const arrow = isUp ? '▲' : '▼';
+    const color = isUp ? 'var(--accent)' : 'var(--accent-down)';
+    const digits = pickPriceDigits(Math.max(Math.abs(start.price || 0), Math.abs(end.price || 0)));
+
+    measureLabel.innerHTML = `
+      <div class="ml-headline" style="color:${color}">
+        ${arrow} ${fmtSigned(dPrice, digits)} (${fmtSigned(pct, 2)}%)
+      </div>
+      <div class="ml-row"><span class="ml-k">起 / From</span><span class="ml-v">${fmtPrice(start.price)}</span></div>
+      <div class="ml-row"><span class="ml-k">止 / To</span><span class="ml-v">${fmtPrice(end.price)}</span></div>
+      <div class="ml-row"><span class="ml-k">时长 / Duration</span><span class="ml-v">${fmtDuration(dTimeSec)}</span></div>
+      <div class="ml-row"><span class="ml-k">K 线 / Bars</span><span class="ml-v">${bars}</span></div>
+      <div class="ml-hint">Esc 清除 / clear · 再次点击按钮退出</div>
+    `;
+
+    // 定位标签：跟随终点，避免越界
+    measureLabel.style.display = 'block';
+    measureLabel.style.left = '0px';
+    measureLabel.style.top = '0px';
+    const lr = measureLabel.getBoundingClientRect();
+    const cw = els.mainChart.clientWidth;
+    const ch = els.mainChart.clientHeight;
+    const padX = 12, padY = 12;
+    let lx = end.x + padX;
+    let ly = end.y + padY;
+    if (lx + lr.width > cw - 4) lx = end.x - lr.width - padX;
+    if (ly + lr.height > ch - 4) ly = end.y - lr.height - padY;
+    if (lx < 4) lx = 4;
+    if (ly < 4) ly = 4;
+    measureLabel.style.left = lx + 'px';
+    measureLabel.style.top = ly + 'px';
+  }
+
+  function getMeasurePoint(ev) {
+    const rect = els.mainChart.getBoundingClientRect();
+    const x = Math.max(0, Math.min(els.mainChart.clientWidth, ev.clientX - rect.left));
+    const y = Math.max(0, Math.min(els.mainChart.clientHeight, ev.clientY - rect.top));
+    const price = candleSeries.coordinateToPrice(y);
+    const t = mainChart.timeScale().coordinateToTime(x);
+    return { x, y, price: Number(price), time: typeof t === 'number' ? t : null };
+  }
+
+  function setMeasureActive(on) {
+    measureActive = !!on;
+    if (measureActive) {
+      measureBtn.classList.add('active');
+      measureBtn.textContent = '📏 测量中 / Measuring';
+      measureLayer.style.display = 'block';
+      measureLayer.style.pointerEvents = 'auto';
+      measureLayer.style.cursor = 'crosshair';
+      // 暂停 chart 的拖拽与缩放，避免与测量手势冲突
+      mainChart.applyOptions({ handleScroll: false, handleScale: false });
+    } else {
+      measureBtn.classList.remove('active');
+      measureBtn.textContent = '📏 测量 / Measure';
+      measureLayer.style.pointerEvents = 'none';
+      // 退出时清除残留并隐藏覆盖层
+      measureDrag = null;
+      measureResult = null;
+      clearMeasureCanvas();
+      measureLabel.style.display = 'none';
+      measureLayer.style.display = 'none';
+      mainChart.applyOptions({ handleScroll: true, handleScale: true });
+    }
+  }
+
+  function clearCurrentMeasure() {
+    measureDrag = null;
+    measureResult = null;
+    clearMeasureCanvas();
+    measureLabel.style.display = 'none';
+  }
+
+  if (measureBtn) {
+    measureBtn.addEventListener('click', () => setMeasureActive(!measureActive));
+  }
+
+  measureLayer.addEventListener('mousedown', (ev) => {
+    if (!measureActive || ev.button !== 0) return;
+    ev.preventDefault();
+    resizeMeasureCanvas();
+    const start = getMeasurePoint(ev);
+    if (!Number.isFinite(start.price)) return;
+    measureDrag = { start, end: start };
+    measureResult = null;
+    drawMeasure(start, start);
+    updateMeasureLabel(start, start);
+  });
+
+  measureLayer.addEventListener('mousemove', (ev) => {
+    if (!measureActive || !measureDrag) return;
+    const end = getMeasurePoint(ev);
+    if (!Number.isFinite(end.price)) return;
+    measureDrag.end = end;
+    drawMeasure(measureDrag.start, end);
+    updateMeasureLabel(measureDrag.start, end);
+  });
+
+  // 在 window 上监听 mouseup，让用户在覆盖层外松开也能完成测量
+  window.addEventListener('mouseup', (ev) => {
+    if (!measureActive || !measureDrag) return;
+    const end = getMeasurePoint(ev);
+    if (Number.isFinite(end.price)) {
+      measureDrag.end = end;
+      drawMeasure(measureDrag.start, end);
+      updateMeasureLabel(measureDrag.start, end);
+    }
+    measureResult = measureDrag;
+    measureDrag = null;
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape') return;
+    if (!measureActive) return;
+    if (measureDrag || measureResult) {
+      clearCurrentMeasure();
+    } else {
+      setMeasureActive(false);
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (!measureActive) return;
+    // resize 后图表坐标系会变，旧测量像素位置已不可信，直接清空。
+    clearCurrentMeasure();
+    resizeMeasureCanvas();
+  });
+
+  // 切换交易对/市场/周期/刷新数据时清空测量结果，避免错位
+  if (els.symbol)   els.symbol.addEventListener('change', clearCurrentMeasure);
+  if (els.market)   els.market.addEventListener('change', clearCurrentMeasure);
+  if (els.interval) els.interval.addEventListener('change', clearCurrentMeasure);
+  if (els.refresh)  els.refresh.addEventListener('click', clearCurrentMeasure);
+
   // ---- 各种渲染器 (Renderers) ----
   function renderMain(klinesData) {
     const { candles, fvgs = [], liquidityVoids = [], summary } = klinesData;

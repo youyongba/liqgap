@@ -486,6 +486,60 @@
         color: var(--accent-down);
         border-color: rgba(248, 113, 113, 0.5);
       }
+
+      /* 主图工具栏 / Card tools */
+      .card-tools {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .tool-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: 6px;
+      }
+      .tool-btn.active {
+        background: var(--accent-yellow);
+        color: var(--bg-0);
+        border-color: var(--accent-yellow);
+      }
+
+      /* 测量工具浮动信息卡 / Measure tool info card */
+      .measure-label {
+        position: absolute;
+        pointer-events: none;
+        background: rgba(17, 22, 31, 0.96);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 11px;
+        color: var(--fg-0);
+        font-variant-numeric: tabular-nums;
+        box-shadow: var(--shadow);
+        white-space: nowrap;
+        min-width: 180px;
+        z-index: 6;
+      }
+      .measure-label .ml-headline {
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 6px;
+      }
+      .measure-label .ml-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        margin-top: 2px;
+      }
+      .measure-label .ml-row .ml-k { color: var(--fg-1); }
+      .measure-label .ml-row .ml-v { color: var(--fg-0); }
+      .measure-label .ml-hint {
+        margin-top: 6px;
+        font-size: 10px;
+        color: var(--fg-2);
+        font-weight: 400;
+      }
     </style>
   </head>
   <body>
@@ -515,7 +569,11 @@
       <section id="main-card" class="card">
         <div class="card-header">
           <h2 id="main-title">主图 · 价格 / VWAP / FVG / 流动性空白 (Price · VWAP · FVG · Liquidity Voids)</h2>
-          <span class="meta" id="main-meta"></span>
+          <div class="card-tools">
+            <button id="measure-toggle" class="ghost tool-btn" type="button"
+                    title="开启后在主图按住左键拖动以测量价格变化与时间跨度 (Esc 清除)">📏 测量 / Measure</button>
+            <span class="meta" id="main-meta"></span>
+          </div>
         </div>
         <div id="main-chart"></div>
       </section>
