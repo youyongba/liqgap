@@ -14,7 +14,7 @@
  */
 
 const express = require('express');
-const { BinanceService } = require('../services/binance');
+const { BinanceLive: BinanceService } = require('../services/binanceLive');
 const { simulateSlippage } = require('../indicators/orderbookIndicators');
 
 const router = express.Router();

@@ -27,7 +27,10 @@
  */
 
 const express = require('express');
-const { BinanceService } = require('../services/binance');
+// 注：实时面板走 WS 缓存优先；BinanceLive 与 BinanceService 方法签名一致，
+// 这里用 alias 保持下游代码无需更名。
+// (Live dashboards prefer the WS-cache facade; signature matches REST exactly.)
+const { BinanceLive: BinanceService } = require('../services/binanceLive');
 const {
   normalizeKlines,
   computeVWAP,

@@ -16,7 +16,7 @@
  */
 
 const express = require('express');
-const { BinanceService } = require('../services/binance');
+const { BinanceLive: BinanceService } = require('../services/binanceLive');
 const {
   normalizeKlines,
   computeVWAP

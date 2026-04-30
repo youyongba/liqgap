@@ -13,7 +13,7 @@
  */
 
 const express = require('express');
-const { BinanceService } = require('../services/binance');
+const { BinanceLive: BinanceService } = require('../services/binanceLive');
 const { computeTradeIndicators } = require('../indicators/tradeIndicators');
 
 const router = express.Router();
