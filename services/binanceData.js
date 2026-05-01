@@ -24,8 +24,83 @@
 const axios = require('axios');
 const readline = require('readline');
 const unzipper = require('unzipper');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 
 const DATA_BASE = 'https://data.binance.vision';
+
+// ---------------------------------------------------------------------------
+// 缓存 (Cache)
+// ---------------------------------------------------------------------------
+//
+// daily aggTrades 文件是「历史不变量」，一旦下载并解析过，再次需要时直接读
+// 内存 / 磁盘缓存即可，避免重复下载几百 MB 的 zip。
+//
+//   - 内存：进程启动后第一次读盘 → 落 Map<key, dayBuckets>
+//   - 磁盘：JSON 文件，键为 (market, symbol, date)，值是 24 个小时桶
+//
+// 默认目录：$BINANCE_DATA_CACHE_DIR ?? <tmpdir>/liqgap-binance-data-cache
+//
+const CACHE_DIR =
+  process.env.BINANCE_DATA_CACHE_DIR
+  || path.join(os.tmpdir(), 'liqgap-binance-data-cache');
+
+try { fs.mkdirSync(CACHE_DIR, { recursive: true }); } catch (_) { /* noop */ }
+// eslint-disable-next-line no-console
+console.log(`[binanceData] daily aggTrades cache dir: ${CACHE_DIR}`);
+
+const _memCache = new Map(); // key -> Map<hourTs, bucket>
+
+function _cacheKey(symbol, market, dateStr) {
+  return `${market}|${String(symbol).toUpperCase()}|${dateStr}`;
+}
+function _cachePath(symbol, market, dateStr) {
+  return path.join(
+    CACHE_DIR,
+    `${market}-${String(symbol).toUpperCase()}-${dateStr}.json`
+  );
+}
+function _readCachedDay(symbol, market, dateStr) {
+  const key = _cacheKey(symbol, market, dateStr);
+  if (_memCache.has(key)) return _memCache.get(key);
+  let raw;
+  try { raw = fs.readFileSync(_cachePath(symbol, market, dateStr), 'utf8'); }
+  catch (_) { return null; }
+  try {
+    const obj = JSON.parse(raw);
+    if (!obj || !Array.isArray(obj.entries)) return null;
+    const m = new Map(obj.entries.map(([k, v]) => [Number(k), v]));
+    _memCache.set(key, m);
+    return m;
+  } catch (_) {
+    return null;
+  }
+}
+function _writeCachedDay(symbol, market, dateStr, dayBuckets) {
+  const key = _cacheKey(symbol, market, dateStr);
+  _memCache.set(key, dayBuckets);
+  try {
+    fs.writeFileSync(
+      _cachePath(symbol, market, dateStr),
+      JSON.stringify({ entries: Array.from(dayBuckets.entries()) })
+    );
+  } catch (_) { /* 缓存写失败不影响业务 */ }
+}
+function _mergeBuckets(target, source) {
+  for (const [k, b] of source.entries()) {
+    const cur = target.get(k);
+    if (cur) {
+      cur.buyVolume  += b.buyVolume;
+      cur.sellVolume += b.sellVolume;
+      cur.buyQuote   += b.buyQuote;
+      cur.sellQuote  += b.sellQuote;
+      cur.trades     += b.trades;
+    } else {
+      target.set(k, { ...b });
+    }
+  }
+}
 
 // 浏览器风格 headers，避免 Cloudflare 把 axios 当成爬虫拦截
 // (Browser-like headers to dodge Cloudflare bot challenge.)
@@ -87,6 +162,22 @@ async function downloadDailyAggTrades(symbol, market, dateStr, hourlyBuckets) {
   const url = dailyZipUrl(symbol, market, dateStr);
   const startedAt = Date.now();
 
+  // —— 缓存命中：直接合并到 hourlyBuckets 跳过下载 —— //
+  const cached = _readCachedDay(symbol, market, dateStr);
+  if (cached) {
+    _mergeBuckets(hourlyBuckets, cached);
+    let cachedTrades = 0;
+    for (const b of cached.values()) cachedTrades += b.trades;
+    return {
+      date: dateStr,
+      processed: cachedTrades,
+      url,
+      bytes: 0,
+      durationMs: Date.now() - startedAt,
+      cached: true
+    };
+  }
+
   let res;
   try {
     res = await axios.get(url, {
@@ -123,6 +214,10 @@ async function downloadDailyAggTrades(symbol, market, dateStr, hourlyBuckets) {
   }
 
   const totalBytes = Number(res.headers['content-length'] || 0);
+  // 局部 dayBuckets 收集本日数据，结束后 (a) 写缓存 (b) merge 到 hourlyBuckets
+  // 这种 "下载-缓冲-合并" 模式让多 worker 并发安全：每个 worker 持有自己的
+  // dayBuckets，最后由 caller 串行合并到全局 buckets，避免竞态。
+  const dayBuckets = new Map();
   let processed = 0;
   let parseErrors = 0;
 
@@ -169,23 +264,21 @@ async function downloadDailyAggTrades(symbol, market, dateStr, hourlyBuckets) {
         isBuyerMakerRaw === 'true' || isBuyerMakerRaw === 'True' || isBuyerMakerRaw === '1';
 
       // 归到对应的 1 小时桶（UTC）
-      // (Bucket by 1-hour UTC timestamp.)
       const hourTs = Math.floor(ts / HOUR_MS) * HOUR_MS;
-      let bucket = hourlyBuckets.get(hourTs);
+      let bucket = dayBuckets.get(hourTs);
       if (!bucket) {
         bucket = {
-          buyVolume: 0,   // 主动买量 (base asset)
-          sellVolume: 0,  // 主动卖量 (base asset)
-          buyQuote: 0,    // 主动买的名义额 (quote asset)
-          sellQuote: 0,   // 主动卖的名义额
+          buyVolume: 0,
+          sellVolume: 0,
+          buyQuote: 0,
+          sellQuote: 0,
           trades: 0
         };
-        hourlyBuckets.set(hourTs, bucket);
+        dayBuckets.set(hourTs, bucket);
       }
 
       const notional = price * qty;
       if (isBuyerMaker) {
-        // 买家挂单成交 → 卖方主动 (seller is taker)
         bucket.sellVolume += qty;
         bucket.sellQuote += notional;
       } else {
@@ -208,13 +301,18 @@ async function downloadDailyAggTrades(symbol, market, dateStr, hourlyBuckets) {
     rl.on('error', safeReject);
   });
 
+  // 落缓存（内存 + 磁盘）+ 合并到调用方的全局桶
+  _writeCachedDay(symbol, market, dateStr, dayBuckets);
+  _mergeBuckets(hourlyBuckets, dayBuckets);
+
   return {
     date: dateStr,
     processed,
     url,
     bytes: totalBytes,
     durationMs: Date.now() - startedAt,
-    parseErrors
+    parseErrors,
+    cached: false
   };
 }
 
@@ -245,7 +343,7 @@ async function downloadDailyAggTrades(symbol, market, dateStr, hourlyBuckets) {
  *   source: string
  * }>}
  */
-async function fetchHistoricalAggTrades({ symbol, market, days, log }) {
+async function fetchHistoricalAggTrades({ symbol, market, days, log, concurrency }) {
   if (!symbol) throw new Error('symbol is required');
   if (market !== 'spot' && market !== 'futures') {
     throw new Error(`unsupported market: ${market}`);
@@ -255,6 +353,8 @@ async function fetchHistoricalAggTrades({ symbol, market, days, log }) {
   }
 
   const buckets = new Map();
+  // 注意：downloads 的顺序在并发场景下与 dates 顺序未必一致，使用前如需顺序请按
+  // meta.date 重排。  callers (回测) 不依赖顺序，直接遍历桶时间戳。
   const downloads = [];
   const missingDays = [];
 
@@ -263,18 +363,51 @@ async function fetchHistoricalAggTrades({ symbol, market, days, log }) {
   const now = new Date();
   const yesterdayUtc = new Date(utcDayStart(now) - 86400000);
 
+  // 准备 days 个待下载日期
+  const dates = [];
   for (let i = 0; i < days; i += 1) {
     const day = new Date(yesterdayUtc.getTime() - i * 86400000);
-    const dateStr = utcDateStr(day);
-    if (typeof log === 'function') log(`[binanceData] downloading ${symbol} ${market} ${dateStr}…`);
-    const meta = await downloadDailyAggTrades(symbol, market, dateStr, buckets);
-    downloads.push(meta);
-    if (meta.missing) {
-      missingDays.push({ date: dateStr, status: meta.status, url: meta.url, reason: meta.reason });
+    dates.push(utcDateStr(day));
+  }
+
+  // 限制并发：默认 6 路并行，命中缓存的天会瞬间返回不占名额
+  // (Worker-pool style: parallel downloads cap to avoid hammering the CDN.)
+  const conc = Math.max(1, Math.min(Number(concurrency) || 6, 12));
+  let cursor = 0;
+  let cachedCount = 0;
+  let downloadedCount = 0;
+
+  async function worker() {
+    while (cursor < dates.length) {
+      const idx = cursor;
+      cursor += 1;
+      const dateStr = dates[idx];
       if (typeof log === 'function') {
-        log(`[binanceData] ${dateStr} → 404, daily zip 未上架，跳过 (will be skipped)`);
+        log(`[binanceData] fetch ${symbol} ${market} ${dateStr}… (${idx + 1}/${dates.length})`);
+      }
+      try {
+        const meta = await downloadDailyAggTrades(symbol, market, dateStr, buckets);
+        downloads.push(meta);
+        if (meta.cached) cachedCount += 1; else if (!meta.missing) downloadedCount += 1;
+        if (meta.missing) {
+          missingDays.push({ date: dateStr, status: meta.status, url: meta.url, reason: meta.reason });
+          if (typeof log === 'function') {
+            log(`[binanceData] ${dateStr} → 404, daily zip 未上架，跳过 (will be skipped)`);
+          }
+        }
+      } catch (err) {
+        // 直接向上抛，让所有 worker 终止
+        throw err;
       }
     }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(conc, dates.length) }, () => worker())
+  );
+
+  if (typeof log === 'function') {
+    log(`[binanceData] aggTrades fetch done · cached=${cachedCount} downloaded=${downloadedCount} missing=${missingDays.length}`);
   }
 
   // 全部缺失 = 数据无法获取，整体中止
@@ -314,5 +447,6 @@ module.exports = {
   fetchHistoricalAggTrades,
   downloadDailyAggTrades,
   dailyZipUrl,
-  DATA_BASE
+  DATA_BASE,
+  CACHE_DIR
 };
