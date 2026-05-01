@@ -250,8 +250,30 @@ class StreamHub extends EventEmitter {
         // eslint-disable-next-line no-console
         console.log(`[stream] ${this.symbol} ${this.market} idle > ${IDLE_TIMEOUT_MS / 1000}s, closing`);
         this.destroy();
+        return;
       }
-    }, IDLE_TIMEOUT_MS / 2);
+      // 订单簿活性兜底：订阅了 depth 但 ready=false / 长时间无增量 → 主动 resync
+      // (Health-check fallback so a missed reconcile doesn't freeze the book.)
+      const depthStream = `${this.lower}@depth@100ms`;
+      if (this.subscribedStreams.has(depthStream)) {
+        const idleMs = this.bookState.lastEventAt
+          ? _now() - this.bookState.lastEventAt
+          : Infinity;
+        if (!this.bookState.ready) {
+          // 一直没 ready → 持续重试
+          this._scheduleBookResync(100);
+        } else if (idleMs > 30_000) {
+          // ready 但超过 30s 没新 depth event → 视为假活，强制重建
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[stream] ${this.symbol} ${this.market} book idle ${(idleMs / 1000).toFixed(1)}s, force resync`
+          );
+          this.bookState.ready = false;
+          this.bookState.buffer = [];
+          this._scheduleBookResync(100);
+        }
+      }
+    }, Math.min(IDLE_TIMEOUT_MS / 2, 15_000));
   }
 
   /**
@@ -645,11 +667,7 @@ class StreamHub extends EventEmitter {
       console.warn(`[stream] ${this.symbol} futures depth gap (pu=${pu} expected=${this.bookState.lastU}), resync`);
       this.bookState.ready = false;
       this.bookState.buffer = [];
-      // 立即触发 reconcile（不阻塞当前 message handler）
-      setImmediate(() => this._ensureOrderBookReady(100).catch((e) => {
-        // eslint-disable-next-line no-console
-        console.warn('[stream] resync failed', e.message);
-      }));
+      this._scheduleBookResync(100);
       return;
     }
     if (this.market === 'spot' && u <= this.bookState.lastUpdateId) return;
@@ -660,6 +678,40 @@ class StreamHub extends EventEmitter {
     this._refreshBestPrices();
     // 广播给 SSE 订阅者（订阅者侧自己做 100ms 节流，hub 不替它节流）
     try { this.emit('book', { lastUpdateId: u }); } catch (_) { /* noop */ }
+  }
+
+  /**
+   * 调度订单簿 resync：失败自动指数退避重试。
+   * 解决"reconcile 因 REST 限流 / 网络瞬断而失败 → ready 永远停在 false → 订单簿冻结"的问题。
+   * (Self-healing reconcile loop with exponential backoff so a single
+   *  REST failure doesn't leave the book frozen forever.)
+   */
+  _scheduleBookResync(depthHint = 100) {
+    if (this._bookResyncRunning) return; // 已有任务在跑
+    this._bookResyncRunning = true;
+    const attempt = (n) => {
+      // 已被 destroy / 取消订阅 → 退出
+      if (!this.idleTimer || !this.subscribedStreams.has(`${this.lower}@depth@100ms`)) {
+        this._bookResyncRunning = false;
+        return;
+      }
+      this._ensureOrderBookReady(depthHint)
+        .then(() => {
+          this._bookResyncRunning = false;
+          // eslint-disable-next-line no-console
+          console.log(`[stream] ${this.symbol} ${this.market} book resynced after ${n} attempt(s)`);
+        })
+        .catch((err) => {
+          const delay = Math.min(2000 * (2 ** Math.min(n - 1, 5)), 60_000);
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[stream] ${this.symbol} ${this.market} book resync attempt ${n} failed:`
+            + ` ${err.message} · retry in ${delay}ms`
+          );
+          setTimeout(() => attempt(n + 1), delay);
+        });
+    };
+    attempt(1);
   }
 
   _applyDepthDiff(ev) {
