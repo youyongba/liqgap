@@ -262,10 +262,16 @@ async function sendText(content) {
   return postFeishu({ msg_type: 'text', content: { text: String(content) } });
 }
 
-/** 发送交互式卡片 (Send an interactive card) */
+/** 发送交互式卡片 (Send an interactive card)
+ *  注意：当前临时禁用了卡片推送（保持只用 sendText），
+ *  返回标准的 {ok, skipped, reason} 结构，避免调用方 .ok 解引用 undefined。
+ *  (Card sending is temporarily gated off; return a no-op result so callers
+ *   reading `result.ok` don't throw.)
+ */
 async function sendCard(card) {
-  return ; // 这里后继得打开
-  return postFeishu({ msg_type: 'interactive', card });
+  return { ok: false, skipped: true, reason: 'sendCard disabled (text-only mode)' };
+  // 解禁开关：放开下面一行即可恢复卡片推送
+  // return postFeishu({ msg_type: 'interactive', card });
 }
 
 // ============================================================================
