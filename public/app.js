@@ -887,6 +887,22 @@
     }));
     candleSeries.setData(mapped);
 
+    // VWAP 兜底：SSE 推送的 candle 没有 vwap 字段（hub 缓存的是 raw kline），
+    // 这里若任何一根 candle 缺 vwap 就本地累积计算一次，并回写到 candle 上，
+    // 让 tooltip 里的"VWAP"行也能显示。避免出现"刷新后 VWAP 一闪即消失"。
+    // (Re-derive VWAP locally when candles arrive from the SSE stream — the
+    //  server-side hub caches raw klines without VWAP enrichment.)
+    if (candles.some((c) => !Number.isFinite(c.vwap))) {
+      let cumPV = 0;
+      let cumVol = 0;
+      for (const c of candles) {
+        const tp = (Number(c.high) + Number(c.low) + Number(c.close)) / 3;
+        const v = Number(c.volume) || 0;
+        cumPV += tp * v;
+        cumVol += v;
+        c.vwap = cumVol > 0 ? cumPV / cumVol : tp;
+      }
+    }
     const vwapPoints = candles
       .map((c) => ({ time: toLwSeconds(c.openTime), value: c.vwap }))
       .filter((p) => p.value !== null && Number.isFinite(p.value));
