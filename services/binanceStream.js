@@ -42,13 +42,23 @@ if (PROXY_AGENT) {
 }
 
 // ---------------- 配置 (Configuration) ----------------
-const SPOT_WS_BASE    = 'wss://stream.binance.com:9443';
-// 2026-03 Binance USDⓈ-M Futures WebSocket 升级后：
-//   /ws/ 与 /stream 仅支持 /public 类（@depth、@trade ...）；
-//   /market/ws/ 与 /market/stream 才能收到 @kline、@markPrice、@aggTrade
-//   等 /market 类推送。直接用旧路径会"连得上但永远收不到 K 线" silent fail。
-//   ref: https://developers.binance.com/docs/derivatives/usds-margined-futures
-const FUTURES_WS_BASE = 'wss://fstream.binance.com/market';
+// 2026-03 Binance USDⓈ-M Futures WebSocket 升级后，单连接被拆成两类路径：
+//   /stream         (a.k.a. /ws/)         → 仅推 /public 类（@depth, @trade,
+//                                              @bookTicker, @forceOrder ...）
+//   /market/stream  (a.k.a. /market/ws/)  → 仅推 /market 类（@kline,
+//                                              @aggTrade, @markPrice ...）
+// 同一条连接只能订阅同一类，否则跨类的 stream 会"silent fail"——
+// SUBSCRIBE 回 result=null（成功），但永远收不到任何 event。
+// 现货保持单连接 (wss://stream.binance.com:9443/stream)。
+//
+// ref: https://developers.binance.com/docs/derivatives/usds-margined-futures
+const SPOT_WS_HOST       = 'wss://stream.binance.com:9443';
+const FUTURES_WS_HOST    = 'wss://fstream.binance.com';
+const FUTURES_MARKET_WS  = `${FUTURES_WS_HOST}/market`;
+//
+// 路由规则：传入 stream 名 → 应该走哪条 channel 的 base
+//   futures: kline/aggTrade/markPrice → market；其余 → public
+//   spot:    全部 → market（spot 没有第二条 path）
 
 const KLINE_MAX_HISTORY  = 1500; // 单 interval 最多保留 1500 根
 const AGG_TRADES_BUFFER  = 1500; // 聚合成交滚动 buffer 上限（内存）
@@ -75,7 +85,21 @@ function _now() { return Date.now(); }
 function _key(symbol, market) {
   return `${String(symbol).toUpperCase()}|${market === 'spot' ? 'spot' : 'futures'}`;
 }
-function _wsBase(market) { return market === 'spot' ? SPOT_WS_BASE : FUTURES_WS_BASE; }
+/**
+ * 按 stream 名判断该走哪条 channel。
+ * (Binance 2026-03 split: /market vs /public — they refuse cross-category
+ *  streams on the same socket.)
+ */
+function _classifyStream(name, market) {
+  if (market === 'spot') return 'market';
+  // futures：market 类（推送在 /market 路径）
+  if (/@kline_/.test(name)) return 'market';
+  if (/@aggTrade$/.test(name)) return 'market';
+  if (/@markPrice/.test(name)) return 'market';
+  if (/@miniTicker/.test(name) || /@ticker$/.test(name)) return 'market';
+  // 其它（@depth, @trade, @bookTicker, @forceOrder ...）默认走 public
+  return 'public';
+}
 
 // 把 WS 推送的 K 线对象转成 normalizeKlines 一致的字段
 function _wsKlineToCandle(k) {
@@ -124,6 +148,188 @@ function _candleToRestArray(c) {
   ];
 }
 
+// ---------------- StreamChannel：单条 WS 连接 ----------------
+//
+// 一个 channel 对应一条 underlying WebSocket，按 base URL 区分：
+//   - spot:           wss://stream.binance.com:9443/stream
+//   - futures market: wss://fstream.binance.com/market/stream  (kline/aggTrade)
+//   - futures public: wss://fstream.binance.com/stream         (depth/trade)
+//
+// channel 只管 ws 生命周期（连接、重连、心跳、URL-bound 订阅），
+// 实际 message 解析仍交给 hub._onMessage 统一处理。
+//
+class StreamChannel {
+  constructor({ label, baseUrl, hub }) {
+    this.label = label;          // 'market' | 'public'
+    this.baseUrl = baseUrl;      // 不带 /stream 后缀
+    this.hub = hub;              // 父 hub（用于回调消息处理 & 取 symbol/market 标签）
+    this.alive = true;
+    this.ws = null;
+    this.connected = false;
+    this.connecting = null;
+    this.reconnectAttempt = 0;
+    this.subscribedStreams = new Set();
+    this.connectedStreamsSnapshot = null;
+    this.pingTimer = null;
+    this.pongTimer = null;
+    this._subscribeFlush = null;
+  }
+
+  _tag() { return `${this.hub.symbol} ${this.hub.market}/${this.label}`; }
+
+  /** 把 streams 加入订阅集合并确保 ws URL 已包含它们（同 tick 多次调用会合并） */
+  async subscribe(streams) {
+    if (!streams || streams.length === 0) return;
+    streams.forEach((s) => this.subscribedStreams.add(s));
+    if (!this._subscribeFlush) {
+      this._subscribeFlush = Promise.resolve().then(async () => {
+        this._subscribeFlush = null;
+        await this._doConnectIfNeeded();
+      });
+    }
+    return this._subscribeFlush;
+  }
+
+  async _doConnectIfNeeded() {
+    if (!this.connected) {
+      await this._ensureConnected();
+      return;
+    }
+    const inUrl = this.connectedStreamsSnapshot || new Set();
+    let needsReconnect = false;
+    for (const s of this.subscribedStreams) {
+      if (!inUrl.has(s)) { needsReconnect = true; break; }
+    }
+    if (needsReconnect) await this._reconnectForNewStreams();
+  }
+
+  async _ensureConnected() {
+    if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) return;
+    if (this.connecting) return this.connecting;
+
+    this.connecting = new Promise((resolve, reject) => {
+      const streamsList = Array.from(this.subscribedStreams);
+      // 没订阅就不连——subscribe 才是入口
+      if (streamsList.length === 0) {
+        this.connecting = null;
+        resolve();
+        return;
+      }
+      const url = `${this.baseUrl}/stream?streams=${streamsList.join('/')}`;
+      // eslint-disable-next-line no-console
+      console.log(`[stream] ${this._tag()} connecting ${url}`);
+      const wsOpts = { handshakeTimeout: 10_000 };
+      if (PROXY_AGENT) wsOpts.agent = PROXY_AGENT;
+      const ws = new WebSocket(url, wsOpts);
+      this.ws = ws;
+      this.connectedStreamsSnapshot = new Set(streamsList);
+
+      const onOpen = () => {
+        this.connected = true;
+        this.reconnectAttempt = 0;
+        this.connecting = null;
+        this._setupHeartbeat();
+        // eslint-disable-next-line no-console
+        console.log(`[stream] ${this._tag()} connected (streams=${streamsList.length})`);
+        // 通知 hub：channel 重建后跟它有关的缓存需要 invalidate
+        try { this.hub._onChannelConnected(this); } catch (_) { /* noop */ }
+        resolve();
+      };
+      const onErrorEvt = (err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[stream] ${this._tag()} ws error: ${err.message}`);
+        if (this.connecting) { this.connecting = null; reject(err); }
+      };
+      const onCloseEvt = (code, reason) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[stream] ${this._tag()} ws closed (${code} ${reason})`);
+        this.connected = false;
+        this.connecting = null;
+        this._teardownHeartbeat();
+        if (this.alive) this._scheduleReconnect();
+      };
+
+      ws.on('open', onOpen);
+      ws.on('error', onErrorEvt);
+      ws.on('close', onCloseEvt);
+      ws.on('message', (data) => this.hub._onMessage(data, this));
+      ws.on('pong', () => this._onPong());
+    });
+    return this.connecting;
+  }
+
+  async _reconnectForNewStreams() {
+    if (this.ws) {
+      try { this.ws.removeAllListeners('close'); } catch (_) { /* noop */ }
+      try { this.ws.removeAllListeners('error'); } catch (_) { /* noop */ }
+      try { this.ws.removeAllListeners('message'); } catch (_) { /* noop */ }
+      try { this.ws.removeAllListeners('pong'); } catch (_) { /* noop */ }
+      try { this.ws.close(); } catch (_) { /* noop */ }
+      this.ws = null;
+    }
+    this.connected = false;
+    this.connecting = null;
+    this._teardownHeartbeat();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[stream] ${this._tag()} reconnect with new URL streams=${Array.from(this.subscribedStreams).join(',')}`
+    );
+    return this._ensureConnected();
+  }
+
+  _setupHeartbeat() {
+    this._teardownHeartbeat();
+    this.pingTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      try { this.ws.ping(); } catch (_) { /* noop */ }
+      this.pongTimer = setTimeout(() => {
+        // eslint-disable-next-line no-console
+        console.warn(`[stream] ${this._tag()} pong timeout, terminating`);
+        try { this.ws.terminate(); } catch (_) { /* noop */ }
+      }, PONG_TIMEOUT_MS);
+    }, PING_INTERVAL_MS);
+  }
+  _teardownHeartbeat() {
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+    if (this.pongTimer) { clearTimeout(this.pongTimer); this.pongTimer = null; }
+  }
+  _onPong() {
+    if (this.pongTimer) { clearTimeout(this.pongTimer); this.pongTimer = null; }
+  }
+
+  _scheduleReconnect() {
+    const delay = RECONNECT_BACKOFF_MS[Math.min(this.reconnectAttempt, RECONNECT_BACKOFF_MS.length - 1)];
+    this.reconnectAttempt += 1;
+    // eslint-disable-next-line no-console
+    console.log(`[stream] ${this._tag()} reconnect in ${delay}ms (attempt ${this.reconnectAttempt})`);
+    setTimeout(() => {
+      if (!this.alive) return;
+      this._ensureConnected().catch(() => { /* close handler will reschedule */ });
+    }, delay);
+  }
+
+  destroy() {
+    this.alive = false;
+    if (this.ws) {
+      try { this.ws.removeAllListeners(); this.ws.close(); } catch (_) { /* noop */ }
+      this.ws = null;
+    }
+    this.connected = false;
+    this.connecting = null;
+    this._teardownHeartbeat();
+    this.subscribedStreams.clear();
+  }
+
+  status() {
+    return {
+      label: this.label,
+      url: this.ws ? this.ws.url : null,
+      connected: this.connected,
+      streams: Array.from(this.subscribedStreams)
+    };
+  }
+}
+
 // ---------------- StreamHub：单 (symbol, market) 的 WS 连接 ----------------
 
 class StreamHub extends EventEmitter {
@@ -135,16 +341,26 @@ class StreamHub extends EventEmitter {
     this.market = market === 'spot' ? 'spot' : 'futures';
     this.lower = this.symbol.toLowerCase();
 
-    // ws 连接相关 (connection state)
-    this.ws = null;
-    this.connected = false;
-    this.connecting = null; // Promise 用于并发等待连接完成
-    this.reconnectAttempt = 0;
-    this.pingTimer = null;
-    this.pongTimer = null;
-    this.subId = 1;
-    // 已订阅的流名称集合（用于断线重连时恢复）
-    this.subscribedStreams = new Set();
+    // 连接通道：spot 单条；futures 拆 market / public（必须 — Binance 2026-03 规则）
+    this.channels = {};
+    if (this.market === 'spot') {
+      this.channels.market = new StreamChannel({
+        label: 'spot',
+        baseUrl: SPOT_WS_HOST,
+        hub: this
+      });
+    } else {
+      this.channels.market = new StreamChannel({
+        label: 'market',
+        baseUrl: FUTURES_MARKET_WS,
+        hub: this
+      });
+      this.channels.public = new StreamChannel({
+        label: 'public',
+        baseUrl: FUTURES_WS_HOST,
+        hub: this
+      });
+    }
 
     // 缓存 (caches)
     //   K 线：interval -> { candles: Map<openTime, candle>, lastEventAt }
@@ -208,13 +424,49 @@ class StreamHub extends EventEmitter {
     return this.aggTrades.slice(-lim);
   }
 
+  // -------------- channel 工具 --------------
+
+  /** 合并所有 channel 已订阅 stream（用于 healthcheck / has() 等读检查） */
+  get subscribedStreams() {
+    const all = new Set();
+    for (const ch of Object.values(this.channels)) {
+      for (const s of ch.subscribedStreams) all.add(s);
+    }
+    return all;
+  }
+
+  /** 把 stream 路由到正确的 channel（按 Binance 2026-03 split 规则） */
+  _channelFor(streamName) {
+    const cls = _classifyStream(streamName, this.market);
+    return this.channels[cls] || this.channels.market;
+  }
+
+  /** channel 重新连上时被回调：让相关缓存 invalidate（增量序列断了） */
+  _onChannelConnected(ch) {
+    // public channel 重连 → 订单簿增量序列已断，需要重拉 snapshot
+    if (this.market === 'spot' || ch.label === 'public') {
+      this.bookState.ready = false;
+      this.bookState.buffer = [];
+    }
+    // market channel 重连 → aggTrade 流也断了
+    if (ch.label === 'market' || ch.label === 'spot') {
+      this.aggTradesReady = false;
+    }
+  }
+
+  /** 任一 channel 是否已连接 */
+  get connected() {
+    const chs = Object.values(this.channels);
+    if (chs.length === 0) return false;
+    return chs.every((c) => c.connected);
+  }
+
   /** 状态信息（供 /api/stream/status） */
   getStatus() {
     return {
       symbol: this.symbol,
       market: this.market,
-      ws: this.ws ? this.ws.url : null,
-      connected: this.connected,
+      channels: Object.values(this.channels).map((c) => c.status()),
       streams: Array.from(this.subscribedStreams),
       klineIntervals: Array.from(this.klineCache.keys()).map((k) => ({
         interval: k,
@@ -276,179 +528,40 @@ class StreamHub extends EventEmitter {
     }, Math.min(IDLE_TIMEOUT_MS / 2, 15_000));
   }
 
-  /**
-   * 建立或复用 WS 连接（URL 已包含所有当前订阅的 stream）。
-   *
-   * 实现说明：之前曾用 `/stream` + 动态 SUBSCRIBE 命令，但实测合约
-   * fstream 在某些 IP / 账户组合下，对单条 K 线 stream 的 SUBSCRIBE
-   * 会回 result=null（成功）但实际不推送任何 kline 帧（depth / aggTrade
-   * 在同一连接上正常）。改成 `/stream?streams=A/B/C` 一次性 URL-bound
-   * 订阅，最稳。
-   */
-  async _ensureConnected() {
-    if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) return;
-    if (this.connecting) return this.connecting;
-
-    this.connecting = new Promise((resolve, reject) => {
-      const streamsList = Array.from(this.subscribedStreams);
-      const base = `${_wsBase(this.market)}/stream`;
-      // streams 为空时不连接 —— 等到 _subscribe 时再建
-      // (但 _subscribe 自己会调 _ensureConnected，所以这里 streamsList 总会有值)
-      const url = streamsList.length > 0
-        ? `${base}?streams=${streamsList.join('/')}`
-        : base;
-      // eslint-disable-next-line no-console
-      console.log(`[stream] ${this.symbol} ${this.market} connecting ${url}`);
-      const wsOpts = { handshakeTimeout: 10_000 };
-      if (PROXY_AGENT) wsOpts.agent = PROXY_AGENT;
-      const ws = new WebSocket(url, wsOpts);
-      this.ws = ws;
-      this.connectedStreamsSnapshot = new Set(streamsList);
-
-      const onOpen = () => {
-        this.connected = true;
-        this.reconnectAttempt = 0;
-        this.connecting = null;
-        this._setupHeartbeat();
-        // 重连后订单簿 / aggTrade 缓存必须重建（增量序列已断）
-        this.bookState.ready = false;
-        this.bookState.buffer = [];
-        this.aggTradesReady = false;
-        // eslint-disable-next-line no-console
-        console.log(`[stream] ${this.symbol} ${this.market} connected (streams=${streamsList.length})`);
-        resolve();
-      };
-      const onError = (err) => {
-        // eslint-disable-next-line no-console
-        console.warn(`[stream] ${this.symbol} ${this.market} ws error: ${err.message}`);
-        if (this.connecting) {
-          this.connecting = null;
-          reject(err);
-        }
-      };
-      const onClose = (code, reason) => {
-        // eslint-disable-next-line no-console
-        console.warn(`[stream] ${this.symbol} ${this.market} ws closed (${code} ${reason})`);
-        this.connected = false;
-        this.connecting = null;
-        this._teardownHeartbeat();
-        if (this.idleTimer) {
-          // 仅在非主动 destroy 时重连
-          this._scheduleReconnect();
-        }
-      };
-
-      ws.on('open', onOpen);
-      ws.on('error', onError);
-      ws.on('close', onClose);
-      ws.on('message', (data) => this._onMessage(data));
-      ws.on('pong', () => this._onPong());
-    });
-    return this.connecting;
-  }
+  // 注：连接 / 重连 / 心跳逻辑已搬到 StreamChannel；hub 只负责按 stream
+  // 路由订阅到对应 channel，并在 channel 重连后由 _onChannelConnected 兜底
+  // 重置缓存。
 
   /**
-   * 主动断开当前 ws 重连（用于 URL streams 集合需要更新时）。
-   * 不触发自动重连（会被 _scheduleReconnect 顶上）。
-   */
-  async _reconnectForNewStreams() {
-    if (this.ws) {
-      try { this.ws.removeAllListeners('close'); } catch (_) { /* noop */ }
-      try { this.ws.removeAllListeners('error'); } catch (_) { /* noop */ }
-      try { this.ws.removeAllListeners('message'); } catch (_) { /* noop */ }
-      try { this.ws.removeAllListeners('pong'); } catch (_) { /* noop */ }
-      try { this.ws.close(); } catch (_) { /* noop */ }
-      this.ws = null;
-    }
-    this.connected = false;
-    this.connecting = null;
-    this._teardownHeartbeat();
-    // eslint-disable-next-line no-console
-    console.log(
-      `[stream] ${this.symbol} ${this.market} reconnect with new URL streams=${Array.from(this.subscribedStreams).join(',')}`
-    );
-    return this._ensureConnected();
-  }
-
-  _setupHeartbeat() {
-    this._teardownHeartbeat();
-    this.pingTimer = setInterval(() => {
-      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-      try { this.ws.ping(); } catch (_) { /* noop */ }
-      this.pongTimer = setTimeout(() => {
-        // eslint-disable-next-line no-console
-        console.warn(`[stream] ${this.symbol} ${this.market} pong timeout, terminating`);
-        try { this.ws.terminate(); } catch (_) { /* noop */ }
-      }, PONG_TIMEOUT_MS);
-    }, PING_INTERVAL_MS);
-  }
-  _teardownHeartbeat() {
-    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
-    if (this.pongTimer) { clearTimeout(this.pongTimer); this.pongTimer = null; }
-  }
-  _onPong() {
-    if (this.pongTimer) { clearTimeout(this.pongTimer); this.pongTimer = null; }
-  }
-
-  _scheduleReconnect() {
-    const delay = RECONNECT_BACKOFF_MS[Math.min(this.reconnectAttempt, RECONNECT_BACKOFF_MS.length - 1)];
-    this.reconnectAttempt += 1;
-    // eslint-disable-next-line no-console
-    console.log(`[stream] ${this.symbol} ${this.market} reconnect in ${delay}ms (attempt ${this.reconnectAttempt})`);
-    setTimeout(() => {
-      // 已经被 destroy 就不再重连
-      if (!this.idleTimer) return;
-      this._ensureConnected().catch(() => { /* will close → reschedule */ });
-    }, delay);
-  }
-
-  _sendRaw(obj) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify(obj));
-    return true;
-  }
-
-  /**
-   * 把若干 stream 加入订阅集合并确保 WS URL 包含它们。
-   *
-   * 实现要点：
-   *   - 同 tick 内并发的多个 _subscribe 调用会通过 microtask flush 合并，
-   *     避免每个 stream 都触发一次重连（首次 SSE 同时订阅 kline+depth+aggTrade）。
-   *   - 如果当前 ws URL 已包含所有 stream，直接 reuse；否则主动重连用新 URL。
-   *   - 不再使用 Binance 的 SUBSCRIBE 命令，因为对部分账户/IP 它会回
-   *     result=null 但不推送（合约 K 线 stream 上观察到）。
+   * 把若干 stream 路由到对应 channel 后订阅。
+   * (Group by channel so we issue at most one URL-bound reconnect per channel
+   *  even if e.g. SSE seeds kline+depth+aggTrade in one tick.)
    */
   async _subscribe(streams) {
-    streams.forEach((s) => this.subscribedStreams.add(s));
-    if (!this._subscribeFlush) {
-      this._subscribeFlush = Promise.resolve().then(async () => {
-        // microtask 边界 → 同 tick 的所有 _subscribe 都已 add 完
-        this._subscribeFlush = null;
-        await this._doConnectIfNeeded();
-      });
+    if (!streams || streams.length === 0) return;
+    const byChannel = new Map();
+    for (const s of streams) {
+      const ch = this._channelFor(s);
+      if (!byChannel.has(ch)) byChannel.set(ch, []);
+      byChannel.get(ch).push(s);
     }
-    return this._subscribeFlush;
+    await Promise.all(
+      Array.from(byChannel.entries()).map(([ch, list]) => ch.subscribe(list))
+    );
   }
 
-  /** 内部：当前订阅集合 vs 已连接 URL 的集合对比，按需重连 */
+  /** 兼容旧调用：等所有 channel 都连上 */
   async _doConnectIfNeeded() {
-    if (!this.connected) {
-      await this._ensureConnected();
-      return;
-    }
-    // 已连接：检查 URL streams 是否包含所有当前订阅
-    const inUrl = this.connectedStreamsSnapshot || new Set();
-    let needsReconnect = false;
-    for (const s of this.subscribedStreams) {
-      if (!inUrl.has(s)) { needsReconnect = true; break; }
-    }
-    if (needsReconnect) {
-      await this._reconnectForNewStreams();
-    }
+    await Promise.all(
+      Object.values(this.channels).map((c) =>
+        c.subscribedStreams.size > 0 ? c._doConnectIfNeeded() : Promise.resolve()
+      )
+    );
   }
 
   // -------------- WS 消息分发 --------------
-  _onMessage(raw) {
+  // 第二个参数 channel 仅用于日志 / 路由判定，不影响事件解析
+  _onMessage(raw, _channel) {
     let pkt;
     try { pkt = JSON.parse(raw.toString()); } catch (_) { return; }
     // 订阅确认 / 错误回包
@@ -472,8 +585,9 @@ class StreamHub extends EventEmitter {
     if (!this._seenEventTypes) this._seenEventTypes = new Set();
     if (!this._seenEventTypes.has(data.e)) {
       this._seenEventTypes.add(data.e);
+      const chLabel = _channel ? _channel.label : '?';
       // eslint-disable-next-line no-console
-      console.log(`[stream] ${this.symbol} ${this.market} first '${data.e}' arrived (stream=${stream})`);
+      console.log(`[stream] ${this.symbol} ${this.market}/${chLabel} first '${data.e}' arrived (stream=${stream})`);
     }
     switch (data.e) {
       case 'kline':         this._handleKline(data, stream); break;
@@ -784,13 +898,9 @@ class StreamHub extends EventEmitter {
   // -------------- 销毁 --------------
   destroy() {
     if (this.idleTimer) { clearInterval(this.idleTimer); this.idleTimer = null; }
-    this._teardownHeartbeat();
-    if (this.ws) {
-      try { this.ws.removeAllListeners(); this.ws.close(); } catch (_) { /* noop */ }
-      this.ws = null;
+    for (const ch of Object.values(this.channels)) {
+      try { ch.destroy(); } catch (_) { /* noop */ }
     }
-    this.connected = false;
-    this.subscribedStreams.clear();
     this.bookState.ready = false;
     this.bookState.buffer = [];
     this.aggTradesReady = false;
