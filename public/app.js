@@ -1584,11 +1584,38 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
+  /**
+   * Binance USDⓈ-M Futures 不支持 1 秒 K 线（最小 1m），现货才有 1s。
+   * 用户切 market / interval 时，自动调整另一项保持组合合法。
+   * source 标识哪个控件是用户主动改的，从而决定回退哪一边：
+   *   - 'interval'：用户刚选了 1s → 把 market 改到 spot
+   *   - 'market':   用户刚改了 market → 把 interval 改回 15m
+   * (Keep market+interval pair compatible; futures has no 1s klines.)
+   */
+  function enforceIntervalMarketCompat(source) {
+    const market = els.market.value;
+    const interval = els.interval.value;
+    if (interval !== '1s' || market !== 'futures') return false;
+    if (source === 'interval') {
+      els.market.value = 'spot';
+      setStatus('合约不支持 1 秒 K 线，已切换到现货 / Futures has no 1s kline, switched to Spot', true);
+    } else {
+      els.interval.value = '15m';
+      setStatus('合约不支持 1 秒 K 线，周期已切回 15m / Futures has no 1s kline, interval reset to 15m', true);
+    }
+    return true;
+  }
+
   els.refresh.addEventListener('click', () => { markChartsNeedFit(); poll(); restartSSE(); });
   els.symbol.addEventListener('change', () => { markChartsNeedFit(); poll(); restartSSE(); });
-  els.market.addEventListener('change', () => { markChartsNeedFit(); poll(); restartSSE(); });
+  els.market.addEventListener('change', () => {
+    enforceIntervalMarketCompat('market');
+    markChartsNeedFit();
+    poll();
+    restartSSE();
+  });
   els.interval.addEventListener('change', () => {
-    // 先即时更新副图标题，避免请求未返回前副图依旧显示旧周期
+    enforceIntervalMarketCompat('interval');
     refreshSubTitles();
     markChartsNeedFit();
     poll();
