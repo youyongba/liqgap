@@ -246,37 +246,46 @@ class StreamHub extends EventEmitter {
     }, IDLE_TIMEOUT_MS / 2);
   }
 
-  /** 建立或复用 WS 连接 */
+  /**
+   * 建立或复用 WS 连接（URL 已包含所有当前订阅的 stream）。
+   *
+   * 实现说明：之前曾用 `/stream` + 动态 SUBSCRIBE 命令，但实测合约
+   * fstream 在某些 IP / 账户组合下，对单条 K 线 stream 的 SUBSCRIBE
+   * 会回 result=null（成功）但实际不推送任何 kline 帧（depth / aggTrade
+   * 在同一连接上正常）。改成 `/stream?streams=A/B/C` 一次性 URL-bound
+   * 订阅，最稳。
+   */
   async _ensureConnected() {
     if (this.connected && this.ws && this.ws.readyState === WebSocket.OPEN) return;
     if (this.connecting) return this.connecting;
 
     this.connecting = new Promise((resolve, reject) => {
-      const url = `${_wsBase(this.market)}/stream`;
+      const streamsList = Array.from(this.subscribedStreams);
+      const base = `${_wsBase(this.market)}/stream`;
+      // streams 为空时不连接 —— 等到 _subscribe 时再建
+      // (但 _subscribe 自己会调 _ensureConnected，所以这里 streamsList 总会有值)
+      const url = streamsList.length > 0
+        ? `${base}?streams=${streamsList.join('/')}`
+        : base;
       // eslint-disable-next-line no-console
       console.log(`[stream] ${this.symbol} ${this.market} connecting ${url}`);
       const wsOpts = { handshakeTimeout: 10_000 };
       if (PROXY_AGENT) wsOpts.agent = PROXY_AGENT;
       const ws = new WebSocket(url, wsOpts);
       this.ws = ws;
+      this.connectedStreamsSnapshot = new Set(streamsList);
 
       const onOpen = () => {
         this.connected = true;
         this.reconnectAttempt = 0;
         this.connecting = null;
         this._setupHeartbeat();
-        // 重连后恢复订阅
-        if (this.subscribedStreams.size > 0) {
-          this._sendRaw({
-            method: 'SUBSCRIBE',
-            params: Array.from(this.subscribedStreams),
-            id: this.subId++
-          });
-          // 订单簿/聚合成交需要重新建立缓存
-          this.bookState.ready = false;
-          this.bookState.buffer = [];
-          this.aggTradesReady = false;
-        }
+        // 重连后订单簿 / aggTrade 缓存必须重建（增量序列已断）
+        this.bookState.ready = false;
+        this.bookState.buffer = [];
+        this.aggTradesReady = false;
+        // eslint-disable-next-line no-console
+        console.log(`[stream] ${this.symbol} ${this.market} connected (streams=${streamsList.length})`);
         resolve();
       };
       const onError = (err) => {
@@ -306,6 +315,29 @@ class StreamHub extends EventEmitter {
       ws.on('pong', () => this._onPong());
     });
     return this.connecting;
+  }
+
+  /**
+   * 主动断开当前 ws 重连（用于 URL streams 集合需要更新时）。
+   * 不触发自动重连（会被 _scheduleReconnect 顶上）。
+   */
+  async _reconnectForNewStreams() {
+    if (this.ws) {
+      try { this.ws.removeAllListeners('close'); } catch (_) { /* noop */ }
+      try { this.ws.removeAllListeners('error'); } catch (_) { /* noop */ }
+      try { this.ws.removeAllListeners('message'); } catch (_) { /* noop */ }
+      try { this.ws.removeAllListeners('pong'); } catch (_) { /* noop */ }
+      try { this.ws.close(); } catch (_) { /* noop */ }
+      this.ws = null;
+    }
+    this.connected = false;
+    this.connecting = null;
+    this._teardownHeartbeat();
+    // eslint-disable-next-line no-console
+    console.log(
+      `[stream] ${this.symbol} ${this.market} reconnect with new URL streams=${Array.from(this.subscribedStreams).join(',')}`
+    );
+    return this._ensureConnected();
   }
 
   _setupHeartbeat() {
@@ -346,32 +378,43 @@ class StreamHub extends EventEmitter {
     return true;
   }
 
+  /**
+   * 把若干 stream 加入订阅集合并确保 WS URL 包含它们。
+   *
+   * 实现要点：
+   *   - 同 tick 内并发的多个 _subscribe 调用会通过 microtask flush 合并，
+   *     避免每个 stream 都触发一次重连（首次 SSE 同时订阅 kline+depth+aggTrade）。
+   *   - 如果当前 ws URL 已包含所有 stream，直接 reuse；否则主动重连用新 URL。
+   *   - 不再使用 Binance 的 SUBSCRIBE 命令，因为对部分账户/IP 它会回
+   *     result=null 但不推送（合约 K 线 stream 上观察到）。
+   */
   async _subscribe(streams) {
-    await this._ensureConnected();
-    const fresh = streams.filter((s) => !this.subscribedStreams.has(s));
-    if (fresh.length === 0) return;
-    fresh.forEach((s) => this.subscribedStreams.add(s));
-    const id = this.subId++;
-    // eslint-disable-next-line no-console
-    console.log(`[stream] ${this.symbol} ${this.market} SUBSCRIBE id=${id} streams=${JSON.stringify(fresh)}`);
-    const ok = this._sendRaw({
-      method: 'SUBSCRIBE',
-      params: fresh,
-      id
-    });
-    if (!ok) {
-      // eslint-disable-next-line no-console
-      console.warn(`[stream] ${this.symbol} ${this.market} SUBSCRIBE failed (ws not OPEN), will retry on reconnect`);
+    streams.forEach((s) => this.subscribedStreams.add(s));
+    if (!this._subscribeFlush) {
+      this._subscribeFlush = Promise.resolve().then(async () => {
+        // microtask 边界 → 同 tick 的所有 _subscribe 都已 add 完
+        this._subscribeFlush = null;
+        await this._doConnectIfNeeded();
+      });
     }
+    return this._subscribeFlush;
   }
 
-  /** 强制再发一次 SUBSCRIBE（用于自愈：订阅命令发了但服务端没生效） */
-  _resubscribe(streams) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    const id = this.subId++;
-    // eslint-disable-next-line no-console
-    console.log(`[stream] ${this.symbol} ${this.market} RE-SUBSCRIBE id=${id} streams=${JSON.stringify(streams)}`);
-    this._sendRaw({ method: 'SUBSCRIBE', params: streams, id });
+  /** 内部：当前订阅集合 vs 已连接 URL 的集合对比，按需重连 */
+  async _doConnectIfNeeded() {
+    if (!this.connected) {
+      await this._ensureConnected();
+      return;
+    }
+    // 已连接：检查 URL streams 是否包含所有当前订阅
+    const inUrl = this.connectedStreamsSnapshot || new Set();
+    let needsReconnect = false;
+    for (const s of this.subscribedStreams) {
+      if (!inUrl.has(s)) { needsReconnect = true; break; }
+    }
+    if (needsReconnect) {
+      await this._reconnectForNewStreams();
+    }
   }
 
   // -------------- WS 消息分发 --------------
@@ -417,35 +460,16 @@ class StreamHub extends EventEmitter {
         candles: new Map(),
         lastEventAt: 0,
         seeding: null,
-        ready: false,
-        watchdogScheduled: false
+        ready: false
       });
     }
     const entry = this.klineCache.get(interval);
     const stream = `${this.lower}@kline_${interval}`;
     if (!this.subscribedStreams.has(stream)) {
       await this._subscribe([stream]);
-    }
-    // 自愈 watchdog：订阅后 5s/10s 内没收到任何 K 线，重发 SUBSCRIBE。
-    // 解决某些情况下 SUBSCRIBE 命令被服务端静默忽略的问题
-    // (Self-heal: Binance occasionally swallows a SUBSCRIBE command silently;
-    //  re-issue it if no data arrives within a few seconds.)
-    if (!entry.watchdogScheduled) {
-      entry.watchdogScheduled = true;
-      const tryHeal = (attempt) => {
-        if (!this.connected) return;
-        if (entry.lastEventAt > 0) return; // 已有数据，OK
-        if (!this.subscribedStreams.has(stream)) return; // 已 unsubscribe
-        // eslint-disable-next-line no-console
-        console.warn(
-          `[stream] ${this.symbol} ${this.market} K-line ${interval} silent for >${attempt * 5}s`
-          + ', re-issuing SUBSCRIBE'
-        );
-        this._resubscribe([stream]);
-      };
-      setTimeout(() => tryHeal(1), 5_000);
-      setTimeout(() => tryHeal(2), 10_000);
-      setTimeout(() => tryHeal(3), 20_000);
+    } else {
+      // 已订阅但可能尚未连接（首次并发场景）→ 仍需 await 确保 ws OPEN
+      await this._doConnectIfNeeded();
     }
     if (!entry.ready) {
       if (!entry.seeding) {
@@ -521,6 +545,8 @@ class StreamHub extends EventEmitter {
     const stream = `${this.lower}@depth@100ms`;
     if (!this.subscribedStreams.has(stream)) {
       await this._subscribe([stream]);
+    } else {
+      await this._doConnectIfNeeded();
     }
     if (this.bookState.ready) return;
     if (this.bookState.reconciling) return this.bookState.reconciling;
@@ -654,6 +680,8 @@ class StreamHub extends EventEmitter {
     const stream = `${this.lower}@aggTrade`;
     if (!this.subscribedStreams.has(stream)) {
       await this._subscribe([stream]);
+    } else {
+      await this._doConnectIfNeeded();
     }
     if (this.aggTradesReady) return;
     if (this.aggTradesInit) return this.aggTradesInit;
