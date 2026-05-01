@@ -864,6 +864,14 @@
   if (els.interval) els.interval.addEventListener('change', clearCurrentMeasure);
   if (els.refresh)  els.refresh.addEventListener('click', clearCurrentMeasure);
 
+  // 主图是否已经做过初次 fitContent。
+  // 切换 symbol/market/interval 或点刷新时 reset，让下次 render 重新 fit；
+  // 实时增量更新（SSE / directWS）不会 reset，保留用户拖动 / 缩放的位置。
+  // (Track whether we've fitted the time scale already; live updates must
+  //  not reset the user's drag/zoom state.)
+  let chartsFitted = false;
+  function markChartsNeedFit() { chartsFitted = false; }
+
   // ---- 各种渲染器 (Renderers) ----
   function renderMain(klinesData) {
     const { candles, fvgs = [], liquidityVoids = [], summary } = klinesData;
@@ -950,8 +958,12 @@
     // (Derive CVD from the same candles so it auto-aligns with the chosen interval.)
     renderCvdFromCandles(candles);
 
-    mainChart.timeScale().fitContent();
-    volumeChart.timeScale().fitContent();
+    // 只在首次渲染或用户主动重置时 fitContent，避免实时刷新打断用户拖动
+    if (!chartsFitted) {
+      mainChart.timeScale().fitContent();
+      volumeChart.timeScale().fitContent();
+      chartsFitted = true;
+    }
   }
 
   // ---- CVD 副图：从 K 线 takerBuyBase 派生 (Derive CVD from K-line takerBuyBase) ----
@@ -980,7 +992,10 @@
       }
     }
     cvdSeries.setData(points);
-    cvdChart.timeScale().fitContent();
+    // 同样只在首次/手动重置时 fitContent，避免实时增量重置 CVD 时间轴
+    if (!chartsFitted) {
+      cvdChart.timeScale().fitContent();
+    }
   }
 
   function renderOrderBook(book) {
@@ -1750,12 +1765,13 @@
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
-  els.refresh.addEventListener('click', () => { poll(); restartSSE(); });
-  els.symbol.addEventListener('change', () => { poll(); restartSSE(); });
-  els.market.addEventListener('change', () => { poll(); restartSSE(); });
+  els.refresh.addEventListener('click', () => { markChartsNeedFit(); poll(); restartSSE(); });
+  els.symbol.addEventListener('change', () => { markChartsNeedFit(); poll(); restartSSE(); });
+  els.market.addEventListener('change', () => { markChartsNeedFit(); poll(); restartSSE(); });
   els.interval.addEventListener('change', () => {
     // 先即时更新副图标题，避免请求未返回前副图依旧显示旧周期
     refreshSubTitles();
+    markChartsNeedFit();
     poll();
     restartSSE();
   });
