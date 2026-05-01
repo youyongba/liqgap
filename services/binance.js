@@ -45,6 +45,52 @@ const httpClient = axios.create({
   headers: BROWSER_HEADERS
 });
 
+// ---------------------------------------------------------------------------
+// 429 / 418 全局退避 (Global rate-limit cooldown)
+// ---------------------------------------------------------------------------
+//
+// 当任意 REST 请求收到 429/418 时，把对应市场（spot / futures）置入冷却期：
+//   - 默认 30s（可被 Retry-After header 覆盖）
+//   - 冷却期内所有 REST 请求直接 throw，绕过网络往返，让 binanceLive 的
+//     fallback 链路立即用 stream cache / 上层缓存兜底
+//   - 防止"轮询风暴"在 IP 已被限流时火上浇油
+//
+// 设计：分 spot 和 futures 两个独立计时器（Binance 也是独立 weight 池）
+const cooldown = {
+  spot: 0,        // 解封时间戳 (ms epoch)
+  futures: 0
+};
+const DEFAULT_COOLDOWN_MS = 30_000;
+const MAX_COOLDOWN_MS = 5 * 60 * 1000;
+
+function _market(url) {
+  return /\/fapi\//.test(url) ? 'futures' : 'spot';
+}
+
+function _isCoolingDown(market) {
+  return cooldown[market] > Date.now();
+}
+
+function _setCooldown(market, ms) {
+  const until = Date.now() + Math.min(MAX_COOLDOWN_MS, Math.max(1000, ms));
+  if (until > cooldown[market]) {
+    cooldown[market] = until;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[binance] ${market} REST cooled down for ${Math.round(ms / 1000)}s`
+      + ` until ${new Date(until).toISOString()} (rate-limited; will use stream cache)`
+    );
+  }
+}
+
+function getRateLimitState() {
+  const now = Date.now();
+  return {
+    spot: { coolingDown: cooldown.spot > now, untilMs: cooldown.spot },
+    futures: { coolingDown: cooldown.futures > now, untilMs: cooldown.futures }
+  };
+}
+
 // 根据市场类型选择 base URL (Resolve base URL by market type)
 function resolveBaseUrl(marketType) {
   return marketType === 'futures' ? FUTURES_BASE_URL : SPOT_BASE_URL;
@@ -73,7 +119,21 @@ function resolveTickerPath(marketType) {
 // 通用 GET 请求 + 错误包装 (Generic GET with error wrapping)
 //   错误信息里附带 HTTP 状态码与 URL 路径，便于排查
 //   ECONNRESET / 403 / 451 / 429 等具体原因。
+//
+//   429/418 被检测到时，对应市场进入冷却期，期内的请求直接抛出
+//   "rate-limit cooldown" 不再发起网络请求，避免雪崩。
 async function get(url, params) {
+  const market = _market(url);
+  if (_isCoolingDown(market)) {
+    const remainMs = cooldown[market] - Date.now();
+    const path = (url || '').replace(/^https?:\/\/[^/]+/, '');
+    const err = new Error(
+      `Binance API ${path} skipped (rate-limit cooldown ${Math.ceil(remainMs / 1000)}s remaining)`
+    );
+    err.cooldown = true;
+    err.status = 429;
+    throw err;
+  }
   try {
     const response = await httpClient.get(url, { params });
     return response.data;
@@ -91,6 +151,16 @@ async function get(url, params) {
              ' likely geo-block / Cloudflare bot challenge — try HTTPS_PROXY in .env）';
     } else if (status === 429 || status === 418) {
       hint = '（被币安限流 rate-limited，请降低轮询频率）';
+      // 触发对应市场冷却期：优先尊重 Retry-After header，否则用默认值
+      // (Prefer Retry-After header; fall back to default cooldown.)
+      const retryAfter = err.response && err.response.headers
+        ? err.response.headers['retry-after']
+        : null;
+      const seconds = Number(retryAfter);
+      const ms = Number.isFinite(seconds) && seconds > 0
+        ? seconds * 1000
+        : DEFAULT_COOLDOWN_MS;
+      _setCooldown(market, ms);
     }
     const path = (url || '').replace(/^https?:\/\/[^/]+/, '');
     const wrapped = new Error(
@@ -170,5 +240,6 @@ const BinanceService = {
 module.exports = {
   BinanceService,
   SPOT_BASE_URL,
-  FUTURES_BASE_URL
+  FUTURES_BASE_URL,
+  getRateLimitState
 };

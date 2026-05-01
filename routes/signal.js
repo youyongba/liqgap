@@ -58,8 +58,10 @@ router.get('/trade/signal', async (req, res) => {
     const atrMultTP3 = Number(req.query.atrMultiplierTP3) || 5;
 
     // 一次性并行抓取所需数据 (Fetch all upstream data in parallel)
-    const [latestPrice, klinesRaw, dailyRaw, book, trades] = await Promise.all([
-      BinanceService.getCurrentPrice(symbol, market),
+    // latestPrice 不再单独走 ticker REST，直接从 1h K 线最后一根 close 派生，
+    // 既避免无谓 weight 消耗（在被 IP 限流时尤其重要），
+    // 又能复用 stream 缓存里的实时数据。
+    const [klinesRaw, dailyRaw, book, trades] = await Promise.all([
       BinanceService.getKlines(symbol, '1h', 20, market),
       BinanceService.getKlines(symbol, '1d', 30, market),
       BinanceService.getOrderBook(symbol, 100, market),
@@ -67,6 +69,9 @@ router.get('/trade/signal', async (req, res) => {
     ]);
 
     const candles = normalizeKlines(klinesRaw);
+    const latestPrice = candles.length > 0
+      ? Number(candles[candles.length - 1].close)
+      : null;
     if (candles.length < 5) {
       return res.json({
         success: true,

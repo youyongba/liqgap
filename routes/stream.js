@@ -25,6 +25,7 @@
 const express = require('express');
 const { getStreamStatus } = require('../services/binanceLive');
 const { getHub } = require('../services/binanceStream');
+const { getRateLimitState } = require('../services/binance');
 
 const router = express.Router();
 
@@ -33,7 +34,12 @@ router.get('/stream/status', (_req, res) => {
     const hubs = getStreamStatus();
     res.json({
       success: true,
-      data: { hubCount: hubs.length, now: Date.now(), hubs }
+      data: {
+        hubCount: hubs.length,
+        now: Date.now(),
+        hubs,
+        rateLimit: getRateLimitState()
+      }
     });
   } catch (err) {
     res.json({ success: false, error: err.message });

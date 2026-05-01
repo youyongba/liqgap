@@ -82,8 +82,29 @@ const BinanceLive = {
     );
   },
 
-  // 最新价：直接透传 REST（轻量、无需 WS 维护单独 ticker 流）
-  getCurrentPrice: (sym, market) => BinanceService.getCurrentPrice(sym, market)
+  /**
+   * 最新价：优先复用 hub 已订阅的 K 线缓存最后一根 close（0 weight），
+   * 完全没有任何 K 线缓存时才退回 REST ticker，避免在被 IP 限流的情况下
+   * 还无谓消耗 weight。
+   */
+  async getCurrentPrice(symbol, marketType = 'spot') {
+    return _withFallback(
+      `currentPrice ${symbol} ${marketType}`,
+      async () => {
+        const hub = stream.getHub(symbol, marketType);
+        const status = hub.getStatus();
+        const intervals = (status.klineIntervals || [])
+          .filter((x) => x.bars > 0)
+          .map((x) => x.interval);
+        if (intervals.length === 0) throw new Error('no kline cache to derive price');
+        const itv = intervals[0];
+        const candles = await hub.getKlines(itv, 1);
+        if (!candles.length) throw new Error('kline cache empty');
+        return Number(candles[candles.length - 1].close);
+      },
+      () => BinanceService.getCurrentPrice(symbol, marketType)
+    );
+  }
 };
 
 module.exports = {

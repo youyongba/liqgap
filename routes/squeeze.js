@@ -48,17 +48,21 @@ async function loadSqueezeBundle(symbol, period = '1h', oiLimit = 100) {
     topPos,
     takerVol,
     forceOrders,
-    klines,
-    currentPrice
+    klines
   ] = await Promise.all([
     safe(BinanceFutures.getFundingRate(symbol, oiLimit)),
     safe(BinanceFutures.getOpenInterestHist(symbol, period, oiLimit)),
     safe(BinanceFutures.getTopLongShortPositionRatio(symbol, period, oiLimit)),
     safe(BinanceFutures.getTakerBuySellVol(symbol, period, oiLimit)),
     safe(BinanceFutures.getAllForceOrders(symbol, 100)),
-    safe(BinanceService.getKlines(symbol, period, 100, 'futures')),
-    safe(BinanceService.getCurrentPrice(symbol, 'futures'))
+    safe(BinanceService.getKlines(symbol, period, 100, 'futures'))
   ]);
+
+  // 最新价直接从 K 线最后一根 close 派生；省掉一次 ticker REST，
+  // 在 IP 被限流时尤其关键
+  const klineArr = klines.ok && Array.isArray(klines.v) ? klines.v : [];
+  const lastKline = klineArr.length > 0 ? klineArr[klineArr.length - 1] : null;
+  const currentPrice = lastKline ? Number(lastKline[4]) : null;
 
   return {
     fundingRate: fr.ok ? fr.v : [],
@@ -67,7 +71,7 @@ async function loadSqueezeBundle(symbol, period = '1h', oiLimit = 100) {
     takerVol: takerVol.ok ? takerVol.v : [],
     forceOrders: forceOrders.ok ? forceOrders.v : { degraded: true, data: [] },
     klines: klines.ok ? klines.v : [],
-    currentPrice: currentPrice.ok ? currentPrice.v : null,
+    currentPrice,
     errors: {
       fundingRate: fr.ok ? null : fr.e,
       oiHist: oiHist.ok ? null : oiHist.e,
@@ -75,7 +79,7 @@ async function loadSqueezeBundle(symbol, period = '1h', oiLimit = 100) {
       takerVol: takerVol.ok ? null : takerVol.e,
       forceOrders: forceOrders.ok ? null : forceOrders.e,
       klines: klines.ok ? null : klines.e,
-      currentPrice: currentPrice.ok ? null : currentPrice.e
+      currentPrice: null
     }
   };
 }
@@ -177,13 +181,15 @@ router.get('/squeeze/heatmap', async (req, res) => {
     const buckets = Math.min(Number(req.query.buckets) || 50, 500);
 
     // 用 safe() 包裹两个上游 (Wrap both upstream calls)
-    const [forceRes, priceRes] = await Promise.all([
+    // 最新价从 1m K 线最后一根 close 派生（走 stream cache，0 weight）
+    const [forceRes, klineRes] = await Promise.all([
       safe(BinanceFutures.getAllForceOrders(symbol, 200)),
-      safe(BinanceService.getCurrentPrice(symbol, 'futures'))
+      safe(BinanceService.getKlines(symbol, '1m', 1, 'futures'))
     ]);
 
     const forceOrders = forceRes.ok ? forceRes.v : { degraded: true, data: [] };
-    const currentPrice = priceRes.ok ? priceRes.v : null;
+    const klineArr = klineRes.ok && Array.isArray(klineRes.v) ? klineRes.v : [];
+    const currentPrice = klineArr.length > 0 ? Number(klineArr[klineArr.length - 1][4]) : null;
 
     const heatmap = buildLiquidationHeatmap({
       liquidations: forceOrders.data || [],
