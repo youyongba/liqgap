@@ -351,11 +351,27 @@ class StreamHub extends EventEmitter {
     const fresh = streams.filter((s) => !this.subscribedStreams.has(s));
     if (fresh.length === 0) return;
     fresh.forEach((s) => this.subscribedStreams.add(s));
-    this._sendRaw({
+    const id = this.subId++;
+    // eslint-disable-next-line no-console
+    console.log(`[stream] ${this.symbol} ${this.market} SUBSCRIBE id=${id} streams=${JSON.stringify(fresh)}`);
+    const ok = this._sendRaw({
       method: 'SUBSCRIBE',
       params: fresh,
-      id: this.subId++
+      id
     });
+    if (!ok) {
+      // eslint-disable-next-line no-console
+      console.warn(`[stream] ${this.symbol} ${this.market} SUBSCRIBE failed (ws not OPEN), will retry on reconnect`);
+    }
+  }
+
+  /** 强制再发一次 SUBSCRIBE（用于自愈：订阅命令发了但服务端没生效） */
+  _resubscribe(streams) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const id = this.subId++;
+    // eslint-disable-next-line no-console
+    console.log(`[stream] ${this.symbol} ${this.market} RE-SUBSCRIBE id=${id} streams=${JSON.stringify(streams)}`);
+    this._sendRaw({ method: 'SUBSCRIBE', params: streams, id });
   }
 
   // -------------- WS 消息分发 --------------
@@ -366,7 +382,10 @@ class StreamHub extends EventEmitter {
     if (pkt && (pkt.result !== undefined || pkt.error)) {
       if (pkt.error) {
         // eslint-disable-next-line no-console
-        console.warn('[stream] sub error', this.symbol, this.market, pkt.error);
+        console.warn('[stream] sub error', this.symbol, this.market, JSON.stringify(pkt));
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(`[stream] ${this.symbol} ${this.market} sub-ack id=${pkt.id} result=${JSON.stringify(pkt.result)}`);
       }
       return;
     }
@@ -374,9 +393,14 @@ class StreamHub extends EventEmitter {
     const data = pkt && pkt.data ? pkt.data : pkt;
     const stream = pkt && pkt.stream ? pkt.stream : '';
     if (!data || !data.e) {
-      // depth 帧 e=depthUpdate；kline e=kline；aggTrade e=aggTrade
-      // 也可能是订阅响应等
       return;
+    }
+    // 首次收到每种事件 e 时打日志，方便定位"订阅生效但分发失败"的问题
+    if (!this._seenEventTypes) this._seenEventTypes = new Set();
+    if (!this._seenEventTypes.has(data.e)) {
+      this._seenEventTypes.add(data.e);
+      // eslint-disable-next-line no-console
+      console.log(`[stream] ${this.symbol} ${this.market} first '${data.e}' arrived (stream=${stream})`);
     }
     switch (data.e) {
       case 'kline':         this._handleKline(data, stream); break;
@@ -393,13 +417,35 @@ class StreamHub extends EventEmitter {
         candles: new Map(),
         lastEventAt: 0,
         seeding: null,
-        ready: false
+        ready: false,
+        watchdogScheduled: false
       });
     }
     const entry = this.klineCache.get(interval);
     const stream = `${this.lower}@kline_${interval}`;
     if (!this.subscribedStreams.has(stream)) {
       await this._subscribe([stream]);
+    }
+    // 自愈 watchdog：订阅后 5s/10s 内没收到任何 K 线，重发 SUBSCRIBE。
+    // 解决某些情况下 SUBSCRIBE 命令被服务端静默忽略的问题
+    // (Self-heal: Binance occasionally swallows a SUBSCRIBE command silently;
+    //  re-issue it if no data arrives within a few seconds.)
+    if (!entry.watchdogScheduled) {
+      entry.watchdogScheduled = true;
+      const tryHeal = (attempt) => {
+        if (!this.connected) return;
+        if (entry.lastEventAt > 0) return; // 已有数据，OK
+        if (!this.subscribedStreams.has(stream)) return; // 已 unsubscribe
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[stream] ${this.symbol} ${this.market} K-line ${interval} silent for >${attempt * 5}s`
+          + ', re-issuing SUBSCRIBE'
+        );
+        this._resubscribe([stream]);
+      };
+      setTimeout(() => tryHeal(1), 5_000);
+      setTimeout(() => tryHeal(2), 10_000);
+      setTimeout(() => tryHeal(3), 20_000);
     }
     if (!entry.ready) {
       if (!entry.seeding) {
@@ -431,12 +477,25 @@ class StreamHub extends EventEmitter {
     const itv = data.k && data.k.i;
     if (!itv) return;
     const entry = this.klineCache.get(itv);
-    if (!entry) return; // 我们没订阅这个 interval（不应该发生）
+    if (!entry) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[stream] ${this.symbol} ${this.market} got kline ${itv}`
+        + ` but no cache entry (subscribed=${Array.from(this.subscribedStreams).join(',')})`
+      );
+      return;
+    }
     const c = _wsKlineToCandle(data.k);
     entry.candles.set(c.openTime, c);
     entry.lastEventAt = _now();
     this._trimKlineCache(entry);
-    // 广播给 SSE 订阅者：interval / candle / 是否最终
+    if (!this._loggedFirstKline) {
+      this._loggedFirstKline = true;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[stream] ${this.symbol} ${this.market} first kline cached (${itv} close=${c.close})`
+      );
+    }
     try { this.emit('kline', { interval: itv, candle: c }); } catch (_) { /* noop */ }
   }
 
