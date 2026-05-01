@@ -1185,6 +1185,169 @@
     return sseState.everReady;
   }
 
+  // ============================================================
+  // 浏览器直连 Binance WS 拿 K 线 (Direct browser ↔ Binance WS for kline)
+  // ============================================================
+  // 背景：观察到部分 VPS IP 上 Binance fstream 只推 depth、不推 kline，
+  // 即使 SUBSCRIBE / URL-bound 都试过。让浏览器侧直连 binance ws 走
+  // 用户家庭/办公网络出口，绕开服务器 IP 限制。
+  //
+  // 订单簿继续由 SSE 驱动（前端做 reconcile 复杂度高），K 线 / 增量
+  // 由这条 ws 接管，主图实时动起来。失败时自动 fallback 到 SSE 的 kline 事件。
+  // ============================================================
+  const BINANCE_WS_BASE = {
+    spot: 'wss://stream.binance.com:9443',
+    futures: 'wss://fstream.binance.com'
+  };
+  const DIRECT_WS_INIT_TIMEOUT_MS = 6000;
+
+  const directKlineWS = {
+    enabled: typeof WebSocket !== 'undefined',
+    ws: null,
+    active: false,
+    healthy: false,        // 是否已经成功收到至少一条 kline 帧
+    symbol: '', market: '', interval: '',
+    reconnectTimer: null,
+    initTimer: null,
+    attempts: 0,
+    eventCount: 0,
+    openedAt: 0,
+    onCandle: null,
+    onHealthChange: null
+  };
+
+  function _binanceKlineUrl(symbol, market, interval) {
+    const base = BINANCE_WS_BASE[market] || BINANCE_WS_BASE.futures;
+    return `${base}/ws/${String(symbol).toLowerCase()}@kline_${interval}`;
+  }
+
+  function _wsKToCandle(k) {
+    return {
+      openTime: Number(k.t),
+      open: Number(k.o), high: Number(k.h), low: Number(k.l), close: Number(k.c),
+      volume: Number(k.v),
+      closeTime: Number(k.T),
+      quoteVolume: Number(k.q),
+      trades: Number(k.n),
+      takerBuyBase: Number(k.V),
+      takerBuyQuote: Number(k.Q),
+      isFinal: !!k.x
+    };
+  }
+
+  function startDirectKlineWS({ symbol, market, interval, onCandle, onHealthChange }) {
+    if (!directKlineWS.enabled) return false;
+    stopDirectKlineWS({ silent: true });
+
+    directKlineWS.symbol = symbol;
+    directKlineWS.market = market;
+    directKlineWS.interval = interval;
+    directKlineWS.onCandle = onCandle || directKlineWS.onCandle;
+    directKlineWS.onHealthChange = onHealthChange || directKlineWS.onHealthChange;
+    directKlineWS.active = true;
+    directKlineWS.healthy = false;
+    directKlineWS.eventCount = 0;
+    directKlineWS.openedAt = Date.now();
+
+    const url = _binanceKlineUrl(symbol, market, interval);
+    // eslint-disable-next-line no-console
+    console.info('[directWS] connecting', url);
+
+    let ws;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[directWS] failed to construct:', err);
+      directKlineWS.active = false;
+      return false;
+    }
+    directKlineWS.ws = ws;
+
+    directKlineWS.initTimer = setTimeout(() => {
+      directKlineWS.initTimer = null;
+      if (directKlineWS.eventCount === 0 && directKlineWS.active) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[directWS] init timeout (${DIRECT_WS_INIT_TIMEOUT_MS}ms) — no kline frame; `
+          + 'browser可能无法直连 Binance（防火墙 / 区域限制）。fallback 到 SSE kline 事件。'
+        );
+        if (directKlineWS.onHealthChange) directKlineWS.onHealthChange(false, 'init-timeout');
+      }
+    }, DIRECT_WS_INIT_TIMEOUT_MS);
+
+    ws.onopen = () => {
+      directKlineWS.attempts = 0;
+      // eslint-disable-next-line no-console
+      console.info(`[directWS] open · latency=${Date.now() - directKlineWS.openedAt}ms`);
+    };
+    ws.onmessage = (ev) => {
+      try {
+        const d = JSON.parse(ev.data);
+        if (!d || d.e !== 'kline' || !d.k) return;
+        const c = _wsKToCandle(d.k);
+        directKlineWS.eventCount += 1;
+        if (directKlineWS.eventCount === 1) {
+          directKlineWS.healthy = true;
+          if (directKlineWS.initTimer) {
+            clearTimeout(directKlineWS.initTimer);
+            directKlineWS.initTimer = null;
+          }
+          // eslint-disable-next-line no-console
+          console.info(
+            `[directWS] first kline arrived after ${Date.now() - directKlineWS.openedAt}ms · close=${c.close}`
+          );
+          if (directKlineWS.onHealthChange) directKlineWS.onHealthChange(true, 'first-kline');
+        }
+        if (directKlineWS.onCandle) directKlineWS.onCandle(c);
+      } catch (_) { /* swallow */ }
+    };
+    ws.onerror = (err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[directWS] error', err);
+    };
+    ws.onclose = (ev) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[directWS] close · code=${ev && ev.code} reason=${ev && ev.reason}`);
+      if (!directKlineWS.active) return;
+      const delay = Math.min(1000 * (2 ** Math.min(directKlineWS.attempts, 5)), 30_000);
+      directKlineWS.attempts += 1;
+      directKlineWS.reconnectTimer = setTimeout(() => {
+        directKlineWS.reconnectTimer = null;
+        if (!directKlineWS.active) return;
+        startDirectKlineWS({
+          symbol: directKlineWS.symbol,
+          market: directKlineWS.market,
+          interval: directKlineWS.interval,
+          onCandle: directKlineWS.onCandle,
+          onHealthChange: directKlineWS.onHealthChange
+        });
+      }, delay);
+    };
+    return true;
+  }
+
+  function stopDirectKlineWS({ silent = false } = {}) {
+    directKlineWS.active = false;
+    if (directKlineWS.ws) {
+      try { directKlineWS.ws.onopen = directKlineWS.ws.onmessage = directKlineWS.ws.onerror = directKlineWS.ws.onclose = null; } catch (_) { /* noop */ }
+      try { directKlineWS.ws.close(); } catch (_) { /* noop */ }
+      directKlineWS.ws = null;
+    }
+    if (directKlineWS.reconnectTimer) {
+      clearTimeout(directKlineWS.reconnectTimer);
+      directKlineWS.reconnectTimer = null;
+    }
+    if (directKlineWS.initTimer) {
+      clearTimeout(directKlineWS.initTimer);
+      directKlineWS.initTimer = null;
+    }
+    if (!silent) {
+      // eslint-disable-next-line no-console
+      console.info('[directWS] stopped');
+    }
+  }
+
   function buildSSEUrl() {
     const symbol = (els.symbol.value || '').trim().toUpperCase() || 'BTCUSDT';
     const market = els.market.value;
@@ -1215,6 +1378,25 @@
     }, SSE_RENDER_THROTTLE_MS);
   }
 
+  // 浏览器直连 binance ws 收到一根新 / 更新的 K 线后调用
+  // 与 SSE 的 kline handler 共用 sseState.candles 和 scheduleSSERender，
+  // 用 openTime 做去重 / upsert，所以 SSE 也推同一根 K 线时也只是覆写一次
+  function applyDirectKlineCandle(c) {
+    if (!c || !sseState.summary) return;
+    if (sseState.summary.symbol && directKlineWS.symbol &&
+        sseState.summary.symbol.toUpperCase() !== directKlineWS.symbol.toUpperCase()) return;
+    if (directKlineWS.interval && sseState.summary.interval !== directKlineWS.interval) return;
+    const idx = sseState.candles.findIndex((x) => x.openTime === c.openTime);
+    if (idx >= 0) sseState.candles[idx] = c;
+    else sseState.candles.push(c);
+    if (sseState.candles.length > 1500) {
+      sseState.candles.splice(0, sseState.candles.length - 1500);
+    }
+    sseState.lastKlineAt = Date.now();
+    sseState.klineEventCount += 1;
+    scheduleSSERender();
+  }
+
   // 把 SSE book 推送的纯档位数据转换成 renderOrderBook 期望的形状
   function renderOrderBookFromSSE(book) {
     if (!book || !book.bids || !book.asks) return;
@@ -1237,12 +1419,15 @@
   function setSSELiveStatus(extra = '') {
     const cnt = sseState.klineEventCount;
     const tag = cnt > 0 ? ` · K线 ${cnt} 条` : '';
-    setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8)${tag}${extra}`);
+    const src = directKlineWS.healthy
+      ? ' · 浏览器直连'
+      : (directKlineWS.active ? ' · 直连建立中' : '');
+    setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8)${tag}${src}${extra}`);
   }
 
-  function startSSE() {
+  function startSSE({ keepDirect = false } = {}) {
     if (!sseState.supported) return false;
-    stopSSE();
+    stopSSE({ keepDirect });
     sseState.active = true;
     sseState.ready = false;
     sseState.candles = [];
@@ -1313,6 +1498,28 @@
           `[sse] snapshot received · symbol=${d.symbol} market=${d.market}`
           + ` interval=${d.interval} klines=${sseState.candles.length}`
         );
+        // 启动浏览器直连 binance ws 接管 K 线增量。
+        // 如果同 symbol/market/interval 的 directWS 已经健康，就不要重启
+        // —— 避免 SSE 自动重连导致 K 线推送也跟着中断
+        const sameTarget = directKlineWS.active
+          && directKlineWS.symbol === d.symbol
+          && directKlineWS.market === d.market
+          && directKlineWS.interval === d.interval;
+        if (!sameTarget || !directKlineWS.healthy) {
+          startDirectKlineWS({
+            symbol: d.symbol,
+            market: d.market,
+            interval: d.interval,
+            onCandle: applyDirectKlineCandle,
+            onHealthChange: (healthy, why) => {
+              // eslint-disable-next-line no-console
+              console.info(`[directWS] health=${healthy} (${why})`);
+              if (healthy) {
+                setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8) · 浏览器直连 Binance`);
+              }
+            }
+          });
+        }
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[sse] snapshot parse error', err);
@@ -1385,7 +1592,7 @@
     return true;
   }
 
-  function stopSSE() {
+  function stopSSE({ keepDirect = false } = {}) {
     if (sseState.es) {
       try { sseState.es.close(); } catch (_) { /* noop */ }
     }
@@ -1405,6 +1612,7 @@
       sseState.initTimer = null;
     }
     stopWatchdog();
+    if (!keepDirect) stopDirectKlineWS({ silent: true });
   }
 
   // ---- Watchdog：监控 K 线推送活性，必要时主动重连 ------------------
@@ -1433,16 +1641,18 @@
     }
   }
 
+  // SSE 自动重连：保留 directWS，因为它独立于服务端，不应被 SSE 抖动拖累
   function scheduleSSEReconnect() {
     if (sseState.reconnectTimer) return;
     const delay = Math.min(sseState.backoffMs, 30_000);
     sseState.reconnectTimer = setTimeout(() => {
       sseState.reconnectTimer = null;
       sseState.backoffMs = Math.min(sseState.backoffMs * 2, 30_000);
-      startSSE();
+      startSSE({ keepDirect: true });
     }, delay);
   }
 
+  // 用户主动 restart（切换 symbol/market/interval / 点刷新）：directWS 也要随之重启
   function restartSSE() {
     if (!sseState.supported) return;
     stopSSE();
