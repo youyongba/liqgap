@@ -45,6 +45,12 @@ router.get('/stream/status', (_req, res) => {
 // 就会过载。所以默认 100ms 节流，最多 10 fps。
 const BOOK_THROTTLE_MS = 100;
 
+// 起始 padding 大小：某些反代 / CDN 在缓冲区填满前不会向客户端 flush
+// 第一次响应 chunk。塞满 ~2KB 注释行可以强制立即 flush headers + 首条事件。
+// (Force CDN/proxy to flush right away by sending ~2KB of comment padding.)
+const INIT_PADDING_BYTES = 2048;
+const PADDING_LINE = ': ' + 'x'.repeat(INIT_PADDING_BYTES) + '\n\n';
+
 router.get('/stream/sse', async (req, res) => {
   const symbol = (req.query.symbol || 'BTCUSDT').toUpperCase();
   const market = req.query.market === 'spot' ? 'spot' : 'futures';
@@ -63,16 +69,35 @@ router.get('/stream/sse', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
-  const hub = getHub(symbol, market);
+  // 立即写入一段 padding 注释，强制反代 / 浏览器把首字节推给客户端，
+  // 否则一些代理会等到 buffer 填满（4-8KB）才向下游 flush，
+  // 导致 snapshot 之后的每条小事件长时间卡在中间层。
+  res.write(PADDING_LINE);
+  if (typeof res.flush === 'function') {
+    try { res.flush(); } catch (_) { /* noop */ }
+  }
 
+  const hub = getHub(symbol, market);
+  const connStartedAt = Date.now();
+  const connTag = `[sse ${symbol}/${market}/${interval}]`;
+  // eslint-disable-next-line no-console
+  console.info(`${connTag} open · klineLimit=${klineLimit} depth=${depth} aggLimit=${aggLimit}`);
+
+  function flushSafe() {
+    if (typeof res.flush === 'function') {
+      try { res.flush(); } catch (_) { /* noop */ }
+    }
+  }
   function send(eventName, payload) {
     if (res.writableEnded) return;
     res.write(`event: ${eventName}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    flushSafe();
   }
   function sendComment(text) {
     if (res.writableEnded) return;
     res.write(`: ${text}\n\n`);
+    flushSafe();
   }
 
   // 1) 触发订阅 + seed 三类缓存
@@ -109,9 +134,18 @@ router.get('/stream/sse', async (req, res) => {
   // 3) 注册事件监听
   let bookTimer = null;
   let bookDirty = false;
+  let klineCount = 0;
+  let bookCount = 0;
+  let firstKlineLogged = false;
 
   const onKline = (evt) => {
     if (evt.interval !== interval) return; // 这条 SSE 只关心当前 interval
+    klineCount += 1;
+    if (!firstKlineLogged) {
+      firstKlineLogged = true;
+      // eslint-disable-next-line no-console
+      console.info(`${connTag} first kline pushed @ ${Date.now() - connStartedAt}ms after connect`);
+    }
     send('kline', evt);
   };
   const onBook = () => {
@@ -123,6 +157,7 @@ router.get('/stream/sse', async (req, res) => {
       bookDirty = false;
       try {
         const book = await hub.getOrderBook(depth);
+        bookCount += 1;
         send('book', {
           bids: book.bids.slice(0, depth),
           asks: book.asks.slice(0, depth),
@@ -139,8 +174,12 @@ router.get('/stream/sse', async (req, res) => {
   hub.on('book', onBook);
   hub.on('trade', onTrade);
 
-  // 4) keep-alive ping (15s)，避免反代 / 浏览器关掉空闲连接
-  const pingTimer = setInterval(() => sendComment('ping ' + Date.now()), 15_000);
+  // 4) keep-alive ping (10s)，避免反代 / 浏览器关掉空闲连接
+  // 同时附带轻量统计，浏览器通过 EventSource 默认忽略注释行，但日志可通过
+  // server-side console / 网络抓包看到。
+  const pingTimer = setInterval(() => {
+    sendComment(`ping t=${Date.now()} k=${klineCount} b=${bookCount}`);
+  }, 10_000);
 
   // 5) 客户端断开 / server.end → 清理
   function cleanup() {
@@ -149,6 +188,11 @@ router.get('/stream/sse', async (req, res) => {
     hub.off('kline', onKline);
     hub.off('book', onBook);
     hub.off('trade', onTrade);
+    // eslint-disable-next-line no-console
+    console.info(
+      `${connTag} close · uptime=${Date.now() - connStartedAt}ms `
+      + `klineEvents=${klineCount} bookEvents=${bookCount}`
+    );
     if (!res.writableEnded) res.end();
   }
   req.on('close', cleanup);

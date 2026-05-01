@@ -1149,6 +1149,8 @@
   const KLINE_STALE_MS = 30_000;
   // watchdog 检查频率
   const WATCHDOG_INTERVAL_MS = 5_000;
+  // 建立连接后多久内必须收到 snapshot；超时即视为初始化失败重连
+  const SSE_INIT_TIMEOUT_MS = 8_000;
 
   const sseState = {
     supported: typeof EventSource !== 'undefined',
@@ -1165,7 +1167,13 @@
     lastErrorAt: 0,
     reconnectTimer: null,
     watchdogTimer: null,
-    backoffMs: 1000
+    initTimer: null,
+    backoffMs: 1000,
+    // 调试可观察
+    klineEventCount: 0,
+    bookEventCount: 0,
+    snapshotCount: 0,
+    openedAt: 0
   };
 
   // 主图当前是否由 SSE 实时驱动；用于 poll 内决定是否跳过订单簿请求
@@ -1227,7 +1235,9 @@
   }
 
   function setSSELiveStatus(extra = '') {
-    setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8)${extra}`);
+    const cnt = sseState.klineEventCount;
+    const tag = cnt > 0 ? ` · K线 ${cnt} 条` : '';
+    setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8)${tag}${extra}`);
   }
 
   function startSSE() {
@@ -1237,9 +1247,16 @@
     sseState.ready = false;
     sseState.candles = [];
     sseState.summary = null;
+    sseState.klineEventCount = 0;
+    sseState.bookEventCount = 0;
+    sseState.snapshotCount = 0;
+    sseState.openedAt = Date.now();
     setStatus('建立实时连接… / Connecting SSE…');
 
     const url = buildSSEUrl();
+    // eslint-disable-next-line no-console
+    console.info('[sse] connecting', url);
+
     let es;
     try {
       es = new EventSource(url);
@@ -1249,6 +1266,21 @@
       return false;
     }
     sseState.es = es;
+
+    sseState.initTimer = setTimeout(() => {
+      sseState.initTimer = null;
+      if (sseState.snapshotCount === 0 && sseState.active) {
+        // eslint-disable-next-line no-console
+        console.warn(`[sse] init timeout (${SSE_INIT_TIMEOUT_MS}ms) — no snapshot received, force reconnect`);
+        setStatus('实时连接超时，重连中… / SSE init timeout, retrying', true);
+        restartSSE();
+      }
+    }, SSE_INIT_TIMEOUT_MS);
+
+    es.addEventListener('open', () => {
+      // eslint-disable-next-line no-console
+      console.info(`[sse] open · readyState=${es.readyState} latency=${Date.now() - sseState.openedAt}ms`);
+    });
 
     es.addEventListener('snapshot', (ev) => {
       try {
@@ -1260,8 +1292,13 @@
         };
         sseState.ready = true;
         sseState.everReady = true;
+        sseState.snapshotCount += 1;
         sseState.lastKlineAt = Date.now(); // snapshot 视为一次 fresh K 线
         sseState.backoffMs = 1000;
+        if (sseState.initTimer) {
+          clearTimeout(sseState.initTimer);
+          sseState.initTimer = null;
+        }
         startWatchdog();
         renderMain({
           candles: sseState.candles,
@@ -1271,6 +1308,11 @@
         });
         renderOrderBookFromSSE(d.book);
         setSSELiveStatus(' · snapshot OK');
+        // eslint-disable-next-line no-console
+        console.info(
+          `[sse] snapshot received · symbol=${d.symbol} market=${d.market}`
+          + ` interval=${d.interval} klines=${sseState.candles.length}`
+        );
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn('[sse] snapshot parse error', err);
@@ -1290,6 +1332,11 @@
           sseState.candles.splice(0, sseState.candles.length - 1500);
         }
         sseState.lastKlineAt = Date.now();
+        sseState.klineEventCount += 1;
+        if (sseState.klineEventCount === 1) {
+          // eslint-disable-next-line no-console
+          console.info(`[sse] first kline arrived after ${Date.now() - sseState.openedAt}ms`);
+        }
         scheduleSSERender();
       } catch (_) { /* swallow */ }
     });
@@ -1299,10 +1346,11 @@
         const d = JSON.parse(ev.data);
         renderOrderBookFromSSE(d);
         sseState.lastBookAt = Date.now();
+        sseState.bookEventCount += 1;
       } catch (_) { /* swallow */ }
     });
 
-    es.addEventListener('error', () => {
+    es.addEventListener('error', (ev) => {
       // 任何 error 都立刻 ready=false，停掉 pending 渲染。
       // 主图不再降级到 poll —— 等 EventSource 自动重连成功后 snapshot 会再来。
       sseState.ready = false;
@@ -1310,6 +1358,18 @@
         clearTimeout(sseState.renderTimer);
         sseState.renderTimer = null;
       }
+      // 服务端通过 `event: error\ndata: ...` 主动报错（init 失败之类）
+      // 这种事件 ev.data 会有内容；普通连接错误 data 为空。
+      const serverErr = ev && ev.data ? (() => {
+        try { return JSON.parse(ev.data); } catch (_) { return ev.data; }
+      })() : null;
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[sse] error · readyState=' + (es && es.readyState),
+        'serverErr=', serverErr,
+        'klineEvents=', sseState.klineEventCount,
+        'bookEvents=', sseState.bookEventCount
+      );
       // 状态文本节流，避免每秒刷屏
       const nowMs = Date.now();
       if (nowMs - sseState.lastErrorAt < 3000) return;
@@ -1339,6 +1399,10 @@
     if (sseState.reconnectTimer) {
       clearTimeout(sseState.reconnectTimer);
       sseState.reconnectTimer = null;
+    }
+    if (sseState.initTimer) {
+      clearTimeout(sseState.initTimer);
+      sseState.initTimer = null;
     }
     stopWatchdog();
   }
