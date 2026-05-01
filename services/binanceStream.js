@@ -6,7 +6,10 @@
  * 职责 (Responsibilities)：
  *  - 按 (symbol, market) 维护 WS 连接：
  *      - 现货 (spot)    : wss://stream.binance.com:9443/stream
- *      - 合约 (futures) : wss://fstream.binance.com/stream
+ *      - 合约 (futures) : wss://fstream.binance.com/market/stream
+ *        （/market 路径于 2026-03 升级后才推送 @kline、@aggTrade、
+ *         @markPrice 等"market"类流；旧的 /stream 只支持 @depth 等
+ *         "public"类，所以不能直接用）
  *  - 订阅三类流并维护内存快照供 REST 路由零延迟读取：
  *      ① <sym>@kline_<interval>   滚动 K 线序列（每个 interval 独立缓存）
  *      ② <sym>@depth@100ms        订单簿增量 + REST snapshot 拼接出完整盘口
@@ -40,7 +43,12 @@ if (PROXY_AGENT) {
 
 // ---------------- 配置 (Configuration) ----------------
 const SPOT_WS_BASE    = 'wss://stream.binance.com:9443';
-const FUTURES_WS_BASE = 'wss://fstream.binance.com';
+// 2026-03 Binance USDⓈ-M Futures WebSocket 升级后：
+//   /ws/ 与 /stream 仅支持 /public 类（@depth、@trade ...）；
+//   /market/ws/ 与 /market/stream 才能收到 @kline、@markPrice、@aggTrade
+//   等 /market 类推送。直接用旧路径会"连得上但永远收不到 K 线" silent fail。
+//   ref: https://developers.binance.com/docs/derivatives/usds-margined-futures
+const FUTURES_WS_BASE = 'wss://fstream.binance.com/market';
 
 const KLINE_MAX_HISTORY  = 1500; // 单 interval 最多保留 1500 根
 const AGG_TRADES_BUFFER  = 1500; // 聚合成交滚动 buffer 上限（内存）

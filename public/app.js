@@ -1195,9 +1195,13 @@
   // 订单簿继续由 SSE 驱动（前端做 reconcile 复杂度高），K 线 / 增量
   // 由这条 ws 接管，主图实时动起来。失败时自动 fallback 到 SSE 的 kline 事件。
   // ============================================================
+  // 2026-03 Binance USDⓈ-M Futures WS 升级：
+  //   /ws/ 旧路径只支持 @depth/@trade 等 public 流；
+  //   @kline_<interval> 等 market 流必须走 /market/ws/。
+  //   旧路径连得上但 silent fail（不报错也不推数据）。
   const BINANCE_WS_BASE = {
     spot: 'wss://stream.binance.com:9443',
-    futures: 'wss://fstream.binance.com'
+    futures: 'wss://fstream.binance.com/market'
   };
   const DIRECT_WS_INIT_TIMEOUT_MS = 6000;
 
