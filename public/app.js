@@ -1637,6 +1637,7 @@
     pushForce: document.getElementById('fs-push-force'),
     test: document.getElementById('fs-test'),
     copy: document.getElementById('btn-copy-signal'),
+    btnAiAnalyze: document.getElementById('btn-ai-analyze'),
     status: document.getElementById('fs-status')
   };
 
