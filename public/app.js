@@ -1723,16 +1723,21 @@
 
   if (fsEls.copy) {
     fsEls.copy.addEventListener('click', () => {
-      if (!currentSignalData) {
+      // 只要有任何数据 (信号、快照、或者预警)，都可以复制
+      if (!currentSignalData && !currentAlertsData) {
         alert('暂无数据 / No data yet');
         return;
       }
       
-      const sig = currentSignalData;
+      const sig = currentSignalData || { signal: 'NONE' };
       const snap = sig.indicatorsSnapshot || {};
       const alerts = currentAlertsData || { flags: {}, riskScore: 0 };
       
-      const symbolInfo = snap.symbol ? `${snap.symbol} · ${snap.market}` : '';
+      // 如果没有指标快照，尝试从页面元素中抓取部分信息作为后备
+      const symbolInfo = snap.symbol 
+        ? `${snap.symbol} · ${snap.market}` 
+        : `${els.symbol.value.toUpperCase()} · ${els.market.value}`;
+        
       const sideStr = sig.signal === 'LONG' ? '🟢 做多 LONG' : (sig.signal === 'SHORT' ? '🔴 做空 SHORT' : '⚪ 无信号 NONE');
       
       const tps = Array.isArray(sig.takeProfits) 
@@ -1750,8 +1755,12 @@
       const longConds = snap.longConditions || {};
       const shortConds = snap.shortConditions || {};
       
-      const longStr = Object.entries(longConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n');
-      const shortStr = Object.entries(shortConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n');
+      const longStr = Object.keys(longConds).length > 0
+        ? Object.entries(longConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n')
+        : '无数据';
+      const shortStr = Object.keys(shortConds).length > 0
+        ? Object.entries(shortConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n')
+        : '无数据';
 
       // 组装预警字符串
       const flagLabels = {
