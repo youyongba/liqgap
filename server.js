@@ -34,6 +34,7 @@ const squeezeRoute = require('./routes/squeeze');
 const backtestRoute = require('./routes/backtest');
 const notifyRoute = require('./routes/notify');
 const streamRoute = require('./routes/stream');
+const aiRoute = require('./routes/ai');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -60,6 +61,7 @@ app.use('/api', squeezeRoute);
 app.use('/api', backtestRoute);
 app.use('/api', notifyRoute);
 app.use('/api', streamRoute);
+app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)
 app.get('/api/health', (_req, res) => {

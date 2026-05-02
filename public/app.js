@@ -1818,6 +1818,123 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
       });
     });
   }
+
+  if (fsEls.btnAiAnalyze) {
+    fsEls.btnAiAnalyze.addEventListener('click', async () => {
+      if (!currentSignalData && !currentAlertsData) {
+        alert('暂无数据 / No data yet');
+        return;
+      }
+      
+      const btn = fsEls.btnAiAnalyze;
+      const origText = btn.textContent;
+      btn.textContent = '分析中... / Analyzing...';
+      btn.disabled = true;
+      
+      try {
+        const sig = currentSignalData || { signal: 'NONE' };
+        const snap = sig.indicatorsSnapshot || {};
+        const alerts = currentAlertsData || { flags: {}, riskScore: 0 };
+        
+        const symbol = snap.symbol || els.symbol.value.toUpperCase();
+        const direction = sig.signal === 'NONE' ? null : sig.signal;
+        
+        const condLabels = {
+          bullishFvg: '看涨 FVG', depthDominant: '深度比 > 0.6', cvdPriceUp: 'CVD↑ & 价↑',
+          lliqLow: '流动性较好', riskLow: '综合风险 ≤2', vwapSupport: '价 > VWAP',
+          bearishFvg: '看跌 FVG', depthWeak: '深度比 < 0.4', cvdPriceDown: 'CVD↓ & 价↓',
+          vwapResist: '价 < VWAP'
+        };
+        const alertLabels = {
+          highSpread: '价差过大', lowDepth: '盘口深度薄弱', highIlliq: 'ILLIQ异常高',
+          cvdDivergence: 'CVD背离', flashCrashRisk: '闪崩风险', squeezeRisk: '逼空风险'
+        };
+
+        const longConditions = snap.longConditions 
+          ? Object.keys(snap.longConditions).filter(k => snap.longConditions[k]).map(k => condLabels[k] || k) 
+          : [];
+        const shortConditions = snap.shortConditions 
+          ? Object.keys(snap.shortConditions).filter(k => snap.shortConditions[k]).map(k => condLabels[k] || k) 
+          : [];
+        const liquidityAlerts = Object.keys(alerts.flags)
+          .filter(k => alerts.flags[k])
+          .map(k => alertLabels[k] || k);
+
+        const payload = {
+          symbol,
+          direction,
+          entry_price: sig.entryPrice,
+          stop_loss: sig.stopLoss,
+          take_profits: sig.takeProfits ? JSON.stringify(sig.takeProfits.map(tp => tp.price)) : undefined,
+          risk_amount: sig.riskAmount,
+          position_size: sig.positionSize,
+          notional: sig.positionSizeQuote,
+          long_conditions: longConditions.length ? JSON.stringify(longConditions) : undefined,
+          short_conditions: shortConditions.length ? JSON.stringify(shortConditions) : undefined,
+          liquidity_alerts: liquidityAlerts.length ? JSON.stringify(liquidityAlerts) : undefined,
+          risk_score: alerts.riskScore,
+          long_score: snap.longScore,
+          short_score: snap.shortScore,
+          last_price: snap.latestPrice,
+          vwap: snap.vwap,
+          atr14: snap.atr,
+          depth_ratio: snap.depthRatio,
+          spread: snap.spread,
+          cvd: snap.cvd,
+          cvd_price_corr: snap.cvdPriceCorr,
+          illiq: snap.latestIlliq
+        };
+
+        Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
+
+        // 1. 发送信号到 AI 代理
+        let res = await fetch('/api/ai/signals', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        if (!res.ok) throw new Error('提交失败: ' + res.statusText);
+        const created = await res.json();
+        const signalId = created.id;
+        
+        if (!signalId) throw new Error('未返回信号 ID');
+
+        // 2. 获取 AI 报告
+        const reportEl = document.getElementById('ai-report-content');
+        if (reportEl) reportEl.textContent = '等待分析报告... / Waiting for report...';
+        
+        // 简单重试机制获取报告
+        let detail;
+        for (let i = 0; i < 3; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          res = await fetch(`/api/ai/signals/${signalId}`);
+          if (res.ok) {
+            detail = await res.json();
+            if (detail.reports && detail.reports.length > 0) break;
+          }
+        }
+
+        if (reportEl && detail && detail.reports && detail.reports.length > 0) {
+          const report = detail.reports[detail.reports.length - 1];
+          reportEl.textContent = report.content;
+        } else if (reportEl) {
+          reportEl.textContent = '报告未生成或已超时 / No report returned or timeout';
+        }
+        
+        btn.textContent = '分析完成 / Done!';
+      } catch (err) {
+        alert('AI 分析出错 / AI Analyze error: ' + err.message);
+        btn.textContent = '出错 / Error';
+      } finally {
+        setTimeout(() => {
+          btn.textContent = origText;
+          btn.disabled = false;
+        }, 3000);
+      }
+    });
+  }
+
   // 启动时拉一下飞书状态；symbol/market 改变时也刷新
   refreshFeishuStatus();
   els.symbol.addEventListener('change', refreshFeishuStatus);

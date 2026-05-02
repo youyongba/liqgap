@@ -611,6 +611,7 @@
           <button id="fs-push-force" type="button" class="ghost" title="绕过冷却强制推送">强制推送 / Force</button>
           <button id="fs-test" type="button" class="ghost" title="发送一条测试消息验证 webhook">测试 webhook / Test</button>
           <button id="btn-copy-signal" type="button" class="ghost" title="复制当前交易信号信息">一键复制 / Copy</button>
+          <button id="btn-ai-analyze" type="button" class="ghost" title="发送数据进行 AI 分析">AI 分析 / AI Analyze</button>
           <span id="fs-status" class="meta">飞书状态加载中… / Loading…</span>
         </div>
 
@@ -638,6 +639,11 @@
 
         <div class="section-title">指标快照 / Indicators Snapshot</div>
         <div class="kv-grid" id="snapshot"></div>
+
+        <div class="section-title">AI 分析报告 / AI Analysis Report</div>
+        <div id="ai-report-content" style="font-size:12px;color:var(--fg-1);background:var(--bg-2);padding:10px;border-radius:6px;border:1px solid var(--border);margin-bottom:12px;white-space:pre-wrap;overflow-x:auto;">
+          暂无分析报告 / No report yet
+        </div>
 
         <!-- ====== 30 天策略回测 / 30-day Backtest ====== -->
         <div class="backtest-card">
