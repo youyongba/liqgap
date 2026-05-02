@@ -1821,7 +1821,9 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
 
   if (fsEls.btnAiAnalyze) {
     fsEls.btnAiAnalyze.addEventListener('click', async () => {
+      console.log('[AI Analyze] Button clicked');
       if (!currentSignalData && !currentAlertsData) {
+        console.warn('[AI Analyze] No data available');
         alert('暂无数据 / No data yet');
         return;
       }
@@ -1838,6 +1840,8 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
         
         const symbol = snap.symbol || els.symbol.value.toUpperCase();
         const direction = sig.signal === 'NONE' ? null : sig.signal;
+        
+        console.log('[AI Analyze] Preparing payload for symbol:', symbol);
         
         const condLabels = {
           bullishFvg: '看涨 FVG', depthDominant: '深度比 > 0.6', cvdPriceUp: 'CVD↑ & 价↑',
@@ -1856,7 +1860,7 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
         const shortConditions = snap.shortConditions 
           ? Object.keys(snap.shortConditions).filter(k => snap.shortConditions[k]).map(k => condLabels[k] || k) 
           : [];
-        const liquidityAlerts = Object.keys(alerts.flags)
+        const liquidityAlerts = Object.keys(alerts.flags || {})
           .filter(k => alerts.flags[k])
           .map(k => alertLabels[k] || k);
 
@@ -1886,16 +1890,24 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
         };
 
         Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
+        console.log('[AI Analyze] Payload ready:', payload);
 
         // 1. 发送信号到 AI 代理
+        console.log('[AI Analyze] Sending POST /api/ai/signals');
         let res = await fetch('/api/ai/signals', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
         
-        if (!res.ok) throw new Error('提交失败: ' + res.statusText);
+        if (!res.ok) {
+           const errText = await res.text();
+           console.error('[AI Analyze] Submit failed:', res.status, errText);
+           throw new Error('提交失败: ' + res.status + ' ' + res.statusText);
+        }
+        
         const created = await res.json();
+        console.log('[AI Analyze] Signal created:', created);
         const signalId = created.id;
         
         if (!signalId) throw new Error('未返回信号 ID');
@@ -1904,14 +1916,21 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
         const reportEl = document.getElementById('ai-report-content');
         if (reportEl) reportEl.textContent = '等待分析报告... / Waiting for report...';
         
+        console.log('[AI Analyze] Polling for reports, signalId:', signalId);
         // 简单重试机制获取报告
         let detail;
         for (let i = 0; i < 3; i++) {
+          console.log(`[AI Analyze] Polling attempt ${i+1}/3...`);
           await new Promise(r => setTimeout(r, 2000));
           res = await fetch(`/api/ai/signals/${signalId}`);
           if (res.ok) {
             detail = await res.json();
-            if (detail.reports && detail.reports.length > 0) break;
+            if (detail.reports && detail.reports.length > 0) {
+               console.log('[AI Analyze] Report received');
+               break;
+            }
+          } else {
+             console.warn(`[AI Analyze] Polling failed:`, res.status);
           }
         }
 
@@ -1919,11 +1938,13 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
           const report = detail.reports[detail.reports.length - 1];
           reportEl.textContent = report.content;
         } else if (reportEl) {
+          console.warn('[AI Analyze] Timeout or no report returned');
           reportEl.textContent = '报告未生成或已超时 / No report returned or timeout';
         }
         
         btn.textContent = '分析完成 / Done!';
       } catch (err) {
+        console.error('[AI Analyze] Error caught:', err);
         alert('AI 分析出错 / AI Analyze error: ' + err.message);
         btn.textContent = '出错 / Error';
       } finally {
