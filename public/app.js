@@ -1060,6 +1060,8 @@
   }
 
   let currentSignalData = null;
+  let currentAlertsData = null;
+
   function renderSignal(sig) {
     currentSignalData = sig;
     const banner = els.signalBanner;
@@ -1146,6 +1148,7 @@
   }
 
   function renderAlerts(alertData) {
+    currentAlertsData = alertData;
     const flagLabels = {
       spreadShock: '价差异常 / Spread shock (3σ)',
       illiqShock: '低流动性 / ILLIQ shock (>2x μ)',
@@ -1720,18 +1723,46 @@
 
   if (fsEls.copy) {
     fsEls.copy.addEventListener('click', () => {
-      if (!currentSignalData || currentSignalData.signal === 'NONE') {
-        alert('当前无有效信号可复制 / No active signal to copy');
+      if (!currentSignalData) {
+        alert('暂无数据 / No data yet');
         return;
       }
       
       const sig = currentSignalData;
-      const symbolInfo = sig.indicatorsSnapshot ? `${sig.indicatorsSnapshot.symbol} · ${sig.indicatorsSnapshot.market}` : '';
-      const sideStr = sig.signal === 'LONG' ? '🟢 做多 LONG' : '🔴 做空 SHORT';
+      const snap = sig.indicatorsSnapshot || {};
+      const alerts = currentAlertsData || { flags: {}, riskScore: 0 };
+      
+      const symbolInfo = snap.symbol ? `${snap.symbol} · ${snap.market}` : '';
+      const sideStr = sig.signal === 'LONG' ? '🟢 做多 LONG' : (sig.signal === 'SHORT' ? '🔴 做空 SHORT' : '⚪ 无信号 NONE');
       
       const tps = Array.isArray(sig.takeProfits) 
         ? sig.takeProfits.map((tp, i) => `TP${i+1}: ${fmt(tp.price, 4)} (平仓 ${(tp.closeFraction * 100).toFixed(0)}%)`).join('\n')
-        : '无';
+        : '无 / None';
+
+      // 组装条件评估字符串
+      const condLabels = {
+        bullishFvg: '看涨 FVG', depthDominant: '深度比 > 0.6', cvdPriceUp: 'CVD↑ & 价↑',
+        liquidityHealthy: '流动性健康', aboveVwap: '价 > VWAP',
+        bearishFvg: '看跌 FVG', depthDominantSell: '深度比 < -0.6', cvdPriceDown: 'CVD↓ & 价↓',
+        belowVwap: '价 < VWAP'
+      };
+      
+      const longConds = snap.longConditions || {};
+      const shortConds = snap.shortConditions || {};
+      
+      const longStr = Object.entries(longConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n');
+      const shortStr = Object.entries(shortConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n');
+
+      // 组装预警字符串
+      const flagLabels = {
+        spreadShock: '价差异常', illiqShock: '低流动性', depthImbalance: '深度失衡',
+        vwapDeviation: 'VWAP 偏离', cvdPriceDivergence: 'CVD/价格背离'
+      };
+      const alertStr = Object.entries(flagLabels).map(([k, label]) => {
+        const on = !!(alerts.flags && alerts.flags[k]);
+        return `${on ? '⚠️ 触发' : '➖ 正常'} : ${label}`;
+      }).join('\n');
+
       
       const text = `【交易信号 / Trade Signal】
 交易对: ${symbolInfo}
@@ -1746,8 +1777,27 @@
 【止盈目标 / Take-Profits】
 ${tps}
 
-【行情快照 / Snapshot】
-最新价 (Last Price): ${sig.indicatorsSnapshot ? fmt(sig.indicatorsSnapshot.latestPrice, 4) : '-'}
+【条件评估 / Condition Check】
+[多头 / LONG]
+${longStr}
+
+[空头 / SHORT]
+${shortStr}
+
+【流动性预警 / Liquidity Alerts】
+${alertStr}
+综合风险分数: ${alerts.riskScore || 0}/5
+
+【指标快照 / Indicators Snapshot】
+最新价 (Last Price): ${snap.latestPrice != null ? fmt(snap.latestPrice, 4) : '-'}
+VWAP: ${snap.vwap != null ? fmt(snap.vwap, 4) : '-'}
+ATR(14): ${snap.atr != null ? fmt(snap.atr, 4) : '-'}
+深度比 (Depth Ratio): ${snap.depthRatio != null ? fmt(snap.depthRatio, 3) : '-'}
+价差 (Spread): ${snap.spread != null ? fmt(snap.spread, 4) : '-'}
+CVD: ${snap.cvd != null ? fmt(snap.cvd, 3) : '-'}
+CVD-Price ρ: ${snap.cvdPriceCorr != null ? fmt(snap.cvdPriceCorr, 3) : '-'}
+ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : '-'} (μ: ${snap.illiqMean != null ? Number(snap.illiqMean).toExponential(2) : '-'})
+多头评分: ${snap.longScore ?? '-'} / 空头评分: ${snap.shortScore ?? '-'}
 `;
 
       navigator.clipboard.writeText(text).then(() => {
