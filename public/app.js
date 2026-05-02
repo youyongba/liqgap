@@ -1059,7 +1059,9 @@
     chart.update('none');
   }
 
+  let currentSignalData = null;
   function renderSignal(sig) {
+    currentSignalData = sig;
     const banner = els.signalBanner;
     banner.classList.remove('long', 'short', 'none');
     if (sig.signal === 'LONG') {
@@ -1631,6 +1633,7 @@
     push: document.getElementById('fs-push'),
     pushForce: document.getElementById('fs-push-force'),
     test: document.getElementById('fs-test'),
+    copy: document.getElementById('btn-copy-signal'),
     status: document.getElementById('fs-status')
   };
 
@@ -1714,6 +1717,48 @@
   if (fsEls.push) fsEls.push.addEventListener('click', () => pushFeishuSignal(false));
   if (fsEls.pushForce) fsEls.pushForce.addEventListener('click', () => pushFeishuSignal(true));
   if (fsEls.test) fsEls.test.addEventListener('click', testFeishuWebhook);
+
+  if (fsEls.copy) {
+    fsEls.copy.addEventListener('click', () => {
+      if (!currentSignalData || currentSignalData.signal === 'NONE') {
+        alert('当前无有效信号可复制 / No active signal to copy');
+        return;
+      }
+      
+      const sig = currentSignalData;
+      const symbolInfo = sig.indicatorsSnapshot ? `${sig.indicatorsSnapshot.symbol} · ${sig.indicatorsSnapshot.market}` : '';
+      const sideStr = sig.signal === 'LONG' ? '🟢 做多 LONG' : '🔴 做空 SHORT';
+      
+      const tps = Array.isArray(sig.takeProfits) 
+        ? sig.takeProfits.map((tp, i) => `TP${i+1}: ${fmt(tp.price, 4)} (平仓 ${(tp.closeFraction * 100).toFixed(0)}%)`).join('\n')
+        : '无';
+      
+      const text = `【交易信号 / Trade Signal】
+交易对: ${symbolInfo}
+方向: ${sideStr}
+
+入场价 (Entry): ${sig.entryPrice == null ? '-' : fmt(sig.entryPrice, 4)}
+止损价 (SL): ${sig.stopLoss == null ? '-' : fmt(sig.stopLoss, 4)}
+风险金额 (Risk): ${sig.riskAmount == null ? '-' : fmt(sig.riskAmount, 2)}
+仓位大小 (Size): ${sig.positionSize == null ? '-' : fmt(sig.positionSize, 6)}
+名义本金 (Notional): ${sig.positionSizeQuote == null ? '-' : fmt(sig.positionSizeQuote, 2)}
+
+【止盈目标 / Take-Profits】
+${tps}
+
+【行情快照 / Snapshot】
+最新价 (Last Price): ${sig.indicatorsSnapshot ? fmt(sig.indicatorsSnapshot.latestPrice, 4) : '-'}
+`;
+
+      navigator.clipboard.writeText(text).then(() => {
+        const origText = fsEls.copy.textContent;
+        fsEls.copy.textContent = '已复制 / Copied!';
+        setTimeout(() => { fsEls.copy.textContent = origText; }, 2000);
+      }).catch(err => {
+        alert('复制失败 / Copy failed: ' + err.message);
+      });
+    });
+  }
   // 启动时拉一下飞书状态；symbol/market 改变时也刷新
   refreshFeishuStatus();
   els.symbol.addEventListener('change', refreshFeishuStatus);
