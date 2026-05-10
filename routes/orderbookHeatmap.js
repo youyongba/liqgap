@@ -108,21 +108,66 @@ router.get('/orderbook/heatmap', async (req, res) => {
       });
     }
 
-    // 价格窗与价格桶
-    let priceRange = Number(req.query.priceRange);
-    if (!Number.isFinite(priceRange) || priceRange <= 0) priceRange = 0.01;
-    if (priceRange > 0.5) priceRange = 0.5;
+    // ---- 价格窗 (Price window) ------------------------------------------
+    // 默认走 'auto'：扫所有快照取盘口实际覆盖的价差，再加一点边距。
+    // BTC futures 100 档常规只覆盖 mid ± 0.05% ~ 0.1%；过去用 ±1% 让大部
+    // 分画布被空白吞掉，所有数据被挤成一条窄带。auto 模式下数据自然铺满。
+    const priceRangeRaw = req.query.priceRange;
+    let priceRange = NaN;
+    let autoRange = false;
+    if (priceRangeRaw === undefined || priceRangeRaw === '' || priceRangeRaw === 'auto') {
+      autoRange = true;
+    } else {
+      priceRange = Number(priceRangeRaw);
+      if (!Number.isFinite(priceRange) || priceRange <= 0) {
+        autoRange = true;
+      } else if (priceRange > 0.5) {
+        priceRange = 0.5;
+      }
+    }
 
-    const halfWindow = midPrice * priceRange;
-    const priceMin = midPrice - halfWindow;
-    const priceMax = midPrice + halfWindow;
+    let priceMin;
+    let priceMax;
+    if (autoRange) {
+      // 扫所有快照拿到价差极值；再加 5% 边距让最远档位仍然可见。
+      let lo = Infinity;
+      let hi = -Infinity;
+      for (const snap of snapshots) {
+        for (const [pStr] of (snap.bids || [])) {
+          const p = Number(pStr);
+          if (Number.isFinite(p) && p < lo) lo = p;
+        }
+        for (const [pStr] of (snap.asks || [])) {
+          const p = Number(pStr);
+          if (Number.isFinite(p) && p > hi) hi = p;
+        }
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) {
+        // 没拿到有效价差，退回 0.3%
+        priceRange = 0.003;
+        const halfWindow = midPrice * priceRange;
+        priceMin = midPrice - halfWindow;
+        priceMax = midPrice + halfWindow;
+      } else {
+        const span = hi - lo;
+        const pad = span * 0.05;
+        // 围绕 mid 对称：保证 mid 居中，且能看到两侧最远档位。
+        const half = Math.max(midPrice - lo, hi - midPrice) + pad;
+        priceMin = midPrice - half;
+        priceMax = midPrice + half;
+        priceRange = half / midPrice;
+      }
+    } else {
+      const halfWindow = midPrice * priceRange;
+      priceMin = midPrice - halfWindow;
+      priceMax = midPrice + halfWindow;
+    }
 
     let priceBucket = Number(req.query.priceBucket);
     if (!Number.isFinite(priceBucket) || priceBucket <= 0) {
-      // 自适应：约 200 桶
-      const targetBuckets = 200;
+      // 自适应：约 240 桶（更细粒度让墙的层次出来）
+      const targetBuckets = 240;
       const raw = (priceMax - priceMin) / targetBuckets;
-      // 圆整到 1/2/5/10/... 系列
       const exp = Math.pow(10, Math.floor(Math.log10(raw)));
       const norm = raw / exp;
       let factor;
@@ -138,17 +183,40 @@ router.get('/orderbook/heatmap', async (req, res) => {
       priceMin, priceMax, priceBucket
     });
 
+    // ---- 计算 P95 / P50 用于前端归一化 -----------------------------------
+    // 极少数巨墙会把 maxValue 拉得很大，导致中等墙都被 log 压成同色。
+    // 把 P95 一并返回，前端可用作"高亮上限"。
+    let p50 = 0, p95 = 0;
+    {
+      const flat = [];
+      for (let i = 0; i < matrix.bidMatrix.length; i += 1) {
+        const r = matrix.bidMatrix[i];
+        for (let j = 0; j < r.length; j += 1) if (r[j] > 0) flat.push(r[j]);
+      }
+      for (let i = 0; i < matrix.askMatrix.length; i += 1) {
+        const r = matrix.askMatrix[i];
+        for (let j = 0; j < r.length; j += 1) if (r[j] > 0) flat.push(r[j]);
+      }
+      if (flat.length) {
+        flat.sort((a, b) => a - b);
+        p50 = flat[Math.floor(flat.length * 0.5)];
+        p95 = flat[Math.floor(flat.length * 0.95)];
+      }
+    }
+
     res.json({
       success: true,
       data: {
         symbol, market,
         fromMs, toMs, bucketMs,
-        midPrice, priceMin, priceMax, priceBucket,
+        midPrice, priceMin, priceMax, priceBucket, priceRange,
+        autoRange,
         times: matrix.times,
         prices: matrix.prices,
         bidMatrix: matrix.bidMatrix,
         askMatrix: matrix.askMatrix,
         maxValue: matrix.maxValue,
+        p50, p95,
         snapshotCount: matrix.snapshotCount,
         generatedAt: now,
         empty: matrix.snapshotCount === 0

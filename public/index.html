@@ -244,9 +244,61 @@
         font-weight: 500;
         letter-spacing: 0.4px;
       }
+      .sub-pane-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+      .sub-pane-header h3 {
+        margin: 0;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pane-fullscreen-btn {
+        flex: 0 0 auto;
+        padding: 2px 6px;
+        font-size: 12px;
+        line-height: 1;
+        background: transparent;
+        color: var(--fg-2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .pane-fullscreen-btn:hover {
+        color: var(--fg-0);
+        background: var(--bg-1);
+      }
+      .pane-fullscreen-btn.active {
+        color: var(--accent-yellow);
+        border-color: var(--accent-yellow);
+      }
       .sub-pane .pane-body {
         flex: 1;
         position: relative;
+        min-height: 0;
+      }
+      /* 单个 sub-pane 全屏模式 ----------------------------
+       * 任意 .sub-pane 加上 .is-pane-fullscreen 即占满视口顶层。
+       * 比 sub-card 整体全屏更细：可以单独看 OB / CVD / OI 等。
+       */
+      .sub-pane.is-pane-fullscreen {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 10000;
+        margin: 0;
+        border-radius: 0;
+        padding: 16px;
+        background: var(--bg-0);
+        min-height: 0;
+      }
+      .sub-pane.is-pane-fullscreen .pane-body {
+        flex: 1 1 0;
         min-height: 0;
       }
       #signal-card { overflow-y: auto; }
@@ -719,9 +771,13 @@
               <option value="86400000">24 小时 / 24h</option>
             </select>
             <label for="heatmap-range">价格范围 / Range:</label>
-            <select id="heatmap-range" title="围绕中价的对称价格窗（百分比）">
+            <select id="heatmap-range" title="围绕中价的对称价格窗。Auto 会按盘口实际覆盖的价差自动取窗，最贴合数据。">
+              <option value="auto" selected>自动 / Auto</option>
+              <option value="0.001">±0.1%</option>
+              <option value="0.002">±0.2%</option>
+              <option value="0.003">±0.3%</option>
               <option value="0.005">±0.5%</option>
-              <option value="0.01" selected>±1%</option>
+              <option value="0.01">±1%</option>
               <option value="0.02">±2%</option>
               <option value="0.05">±5%</option>
             </select>
@@ -749,20 +805,32 @@
           </div>
         </div>
         <div id="sub-charts">
-          <div class="sub-pane">
-            <h3 id="vol-title">成交量 / Volume</h3>
+          <div class="sub-pane" data-pane="volume">
+            <div class="sub-pane-header">
+              <h3 id="vol-title">成交量 / Volume</h3>
+              <button class="pane-fullscreen-btn" type="button" data-pane-target="volume" title="此图全屏 / Fullscreen">⛶</button>
+            </div>
             <div class="pane-body" id="volume-pane"></div>
           </div>
-          <div class="sub-pane">
-            <h3 id="cvd-title">累积主动差 / CVD</h3>
+          <div class="sub-pane" data-pane="cvd">
+            <div class="sub-pane-header">
+              <h3 id="cvd-title">累积主动差 / CVD</h3>
+              <button class="pane-fullscreen-btn" type="button" data-pane-target="cvd" title="此图全屏 / Fullscreen">⛶</button>
+            </div>
             <div class="pane-body" id="cvd-pane"></div>
           </div>
-          <div class="sub-pane">
-            <h3 id="oi-title">持仓量 / Open Interest（仅合约）</h3>
+          <div class="sub-pane" data-pane="oi">
+            <div class="sub-pane-header">
+              <h3 id="oi-title">持仓量 / Open Interest（仅合约）</h3>
+              <button class="pane-fullscreen-btn" type="button" data-pane-target="oi" title="此图全屏 / Fullscreen">⛶</button>
+            </div>
             <div class="pane-body" id="oi-pane"></div>
           </div>
-          <div class="sub-pane">
-            <h3 id="ob-title">订单簿深度图 / Order Book Depth</h3>
+          <div class="sub-pane" data-pane="ob">
+            <div class="sub-pane-header">
+              <h3 id="ob-title">订单簿深度图 / Order Book Depth</h3>
+              <button class="pane-fullscreen-btn" type="button" data-pane-target="ob" title="此图全屏 / Fullscreen">⛶</button>
+            </div>
             <div class="ob-baseline-bar" style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
               <label for="ob-baseline" style="font-size:11px; color:var(--fg-2);">基线对比 / Baseline:</label>
               <select id="ob-baseline" title="选择历史基线，对比当前盘口与 N 时间前的盘口" style="font-size:11px; padding:2px 6px; background:var(--bg-2); color:var(--fg-1); border:1px solid var(--border); border-radius:4px;">

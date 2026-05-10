@@ -343,9 +343,16 @@
     if (!canvas || !card) return null;
     const ctx = canvas.getContext('2d');
 
+    function _readPriceRange() {
+      const v = els.heatmapRange ? els.heatmapRange.value : 'auto';
+      if (v === 'auto' || v === '') return 'auto';
+      const n = Number(v);
+      return (Number.isFinite(n) && n > 0) ? n : 'auto';
+    }
+
     const state = {
       windowMs: Number((els.heatmapWindow && els.heatmapWindow.value) || 3_600_000),
-      priceRange: Number((els.heatmapRange && els.heatmapRange.value) || 0.01),
+      priceRange: _readPriceRange(),
       // anchorMs：热图 to 时刻（默认 null = 跟实时 now，主图 hover 时锁定到 hover 时间）
       anchorMs: null,
       data: null,
@@ -406,21 +413,31 @@
       if (!d) { meta.textContent = extra || '等待数据… / Loading…'; return; }
       const tFmt = (ms) => fmtBJShortDateTime(ms);
       const cells = (d.times ? d.times.length : 0) * (d.prices ? d.prices.length : 0);
-      meta.textContent = `${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 时间桶 ${(d.bucketMs/60_000).toFixed(0)}m · 价格桶 ${d.priceBucket || '-'} · 网格 ${cells} · 快照 ${d.snapshotCount || 0}` + (extra ? ` · ${extra}` : '');
+      const rangeTxt = d.autoRange && Number.isFinite(d.priceRange)
+        ? `±${(d.priceRange * 100).toFixed(2)}% (auto)`
+        : (Number.isFinite(d.priceRange) ? `±${(d.priceRange * 100).toFixed(2)}%` : '-');
+      meta.textContent = `${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt} · 快照 ${d.snapshotCount || 0}` + (extra ? ` · ${extra}` : '');
     }
 
     /*
-     * 颜色映射：
-     *   - 用"分位数 + log"两段映射：极弱单子保留可见（>0 都至少给 0.18 alpha），
-     *     避免大墙吃掉对比度让其他单子全黑。
-     *   - bid 绿 / ask 红，alpha 走 log 归一化让色差线性可读。
+     * 颜色映射 (Color mapping)：
+     *   - 用 P95（>0 数据的 95 分位）作"满格"上限，少数极端墙不会把其他墙
+     *     压成同色；超过 P95 的部分继续提亮（log 残余 0.85→1.0）。
+     *   - 弱单子也保留 0.20 起的 alpha，> 0 永远是可见色块。
+     *   - bid 绿 / ask 红。
      */
-    function _colorFor(value, maxValue, isBid) {
-      if (!(value > 0) || !(maxValue > 0)) return null;
-      const n = Math.log(1 + value) / Math.log(1 + maxValue);
-      // 0.18 → 1.0 区间，> 0 永远显示为可见色块
-      const a = Math.min(1.0, 0.18 + 0.82 * n);
-      // bid 绿 / ask 红；高强度时拉饱和
+    function _colorFor(value, normMax, isBid) {
+      if (!(value > 0) || !(normMax > 0)) return null;
+      let a;
+      if (value <= normMax) {
+        // log 归一化到 [0.20, 0.85]
+        const n = Math.log(1 + value) / Math.log(1 + normMax);
+        a = 0.20 + 0.65 * n;
+      } else {
+        // P95 以上提亮到 1.0
+        const extra = Math.min(1, Math.log(1 + value) / Math.log(1 + normMax) - 1);
+        a = Math.min(1, 0.85 + 0.15 * extra);
+      }
       if (isBid) return `rgba(46, 204, 113, ${a.toFixed(3)})`;
       return `rgba(231, 76, 60, ${a.toFixed(3)})`;
     }
@@ -461,6 +478,8 @@
 
       // ---- (1) 绘制色块矩阵 ----------------------------------
       // Y 反向：价格高在上
+      // 用 P95 归一化（不被极端墙吃掉对比度）；后端没返 P95 时退回 max
+      const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
       for (let ti = 0; ti < T; ti += 1) {
         const x = ox + ti * cellW;
         for (let pi = 0; pi < P; pi += 1) {
@@ -469,7 +488,7 @@
           const askV = d.askMatrix[ti] ? d.askMatrix[ti][pi] : 0;
           const v = Math.max(bidV, askV);
           if (v <= 0) continue;
-          const color = _colorFor(v, d.maxValue, bidV >= askV);
+          const color = _colorFor(v, normMax, bidV >= askV);
           if (!color) continue;
           ctx.fillStyle = color;
           ctx.fillRect(x, yTop, cellW + 1, cellH + 1);
@@ -674,14 +693,25 @@
       const { fromMs, toMs, bucketMs } = _resolveRange();
       const symbol = els.symbol.value.toUpperCase();
       const market = els.market.value;
-      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange}`;
+      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
       // 同一参数 5s 内不重拉
       const now = Date.now();
       if (key === state.lastFetchKey && now - state.lastFetchAt < 5_000) return;
       state.lastFetchKey = key;
       state.lastFetchAt = now;
       try {
-        const url = `/api/orderbook/heatmap?symbol=${symbol}&market=${market}&from=${fromMs}&to=${toMs}&bucketMs=${bucketMs}&priceRange=${state.priceRange}`;
+        const params = new URLSearchParams({
+          symbol, market,
+          from: String(fromMs),
+          to: String(toMs),
+          bucketMs: String(bucketMs)
+        });
+        if (state.priceRange === 'auto') {
+          params.set('priceRange', 'auto');
+        } else {
+          params.set('priceRange', String(state.priceRange));
+        }
+        const url = `/api/orderbook/heatmap?${params.toString()}`;
         const data = await fetchJsonSoft(url);
         if (!data) {
           _updateMeta('拉取失败 / Fetch failed');
@@ -715,7 +745,7 @@
     }
     if (els.heatmapRange) {
       els.heatmapRange.addEventListener('change', () => {
-        state.priceRange = Number(els.heatmapRange.value) || 0.01;
+        state.priceRange = _readPriceRange();
         state.lastFetchKey = '';
         scheduleFetch(0);
       });
@@ -2495,8 +2525,58 @@
   if (els.subFullscreenBtn) {
     els.subFullscreenBtn.addEventListener('click', () => toggleSubFullscreen());
   }
+
+  // ---- 单个 sub-pane 独立全屏 -----------------------------------------
+  // 副图卡里 4 个 pane (Volume / CVD / OI / Order Book) 各自的 ⛶ 按钮：
+  // 点击该按钮 → 仅这个 pane 占满视口，再点或 Esc 退出。
+  // 用事件委托避免 4 个独立监听器。
+  function _resizeAllSubCharts() {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { fitCharts(); } catch (_) { /* noop */ }
+        try { syncSubChartsToMain(); } catch (_) { /* noop */ }
+        try { if (typeof orderbookChart !== 'undefined' && orderbookChart) orderbookChart.resize(); } catch (_) { /* noop */ }
+      });
+    });
+  }
+  function togglePaneFullscreen(pane, force) {
+    if (!pane) return;
+    const next = typeof force === 'boolean' ? force : !pane.classList.contains('is-pane-fullscreen');
+    // 同时只允许一个 pane 全屏
+    if (next) {
+      document.querySelectorAll('.sub-pane.is-pane-fullscreen').forEach((p) => {
+        if (p !== pane) {
+          p.classList.remove('is-pane-fullscreen');
+          const b = p.querySelector('.pane-fullscreen-btn');
+          if (b) { b.textContent = '⛶'; b.classList.remove('active'); b.title = '此图全屏 / Fullscreen'; }
+        }
+      });
+    }
+    pane.classList.toggle('is-pane-fullscreen', next);
+    const btn = pane.querySelector('.pane-fullscreen-btn');
+    if (btn) {
+      btn.textContent = next ? '⤢' : '⛶';
+      btn.classList.toggle('active', next);
+      btn.title = next ? '退出全屏 / Exit fullscreen (Esc)' : '此图全屏 / Fullscreen';
+    }
+    _resizeAllSubCharts();
+  }
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('.pane-fullscreen-btn');
+    if (!btn) return;
+    const pane = btn.closest('.sub-pane');
+    togglePaneFullscreen(pane);
+  });
+
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && els.subCard && els.subCard.classList.contains('is-fullscreen')) {
+    if (e.key !== 'Escape') return;
+    // 优先退出 sub-pane 全屏，其次退出 sub-card 全屏
+    const fsPane = document.querySelector('.sub-pane.is-pane-fullscreen');
+    if (fsPane) {
+      togglePaneFullscreen(fsPane, false);
+      return;
+    }
+    if (els.subCard && els.subCard.classList.contains('is-fullscreen')) {
       toggleSubFullscreen(false);
     }
   });
