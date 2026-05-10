@@ -1342,6 +1342,12 @@
     }
   }
 
+  // 数据更新后恢复 hover crosshair：先用 setCrosshairPosition 立即画上十字线
+  // 和价格 label；再用 rAF 推到下一帧 dispatch mousemove —— 因为如果在本帧
+  // setData 期间立刻 dispatch，lightweight-charts 下一次内部 redraw 会把
+  // hover state 又清掉（这是上一轮"一闪就消失"的真因）。
+  // 不用持续心跳是为了避免每次心跳触发 redraw 引起的视觉闪烁。
+  let _restorePending = false;
   function _restoreHoverCrosshairs() {
     for (const t of _crossPairs) {
       if (!_hoveredCharts.has(t.chart)) continue;
@@ -1350,35 +1356,16 @@
         try { t.chart.setCrosshairPosition(last.price, last.time, last.series); }
         catch (_) { /* time/price 不在数据范围 */ }
       }
-      _dispatchMouseMoveTo(t.container, _lastMousePos.get(t.container));
     }
-  }
-
-  // ---- Hover 心跳 (Heartbeat) ----------------------------------------------
-  // 鼠标 hover 在 chart 上时每 200ms 派发一次 untrusted mousemove，确保
-  // lightweight-charts 的 hover state 不会被任何内部 reset (setData / update /
-  // setMarkers / createPriceLine / chart.resize ...) 清掉 → 时间轴 hover label
-  // 一直保持。鼠标离开所有 chart 时停心跳节省 CPU。
-  let _hoverHeartbeatId = null;
-  function _hoverHeartbeatTick() {
-    for (const t of _crossPairs) {
-      if (!_hoveredCharts.has(t.chart)) continue;
-      _dispatchMouseMoveTo(t.container, _lastMousePos.get(t.container));
-    }
-  }
-  function _startHoverHeartbeat() {
-    if (_hoverHeartbeatId != null) return;
-    _hoverHeartbeatId = setInterval(_hoverHeartbeatTick, 200);
-  }
-  function _stopHoverHeartbeatIfIdle() {
-    let any = false;
-    for (const t of _crossPairs) {
-      if (_hoveredCharts.has(t.chart)) { any = true; break; }
-    }
-    if (!any && _hoverHeartbeatId != null) {
-      clearInterval(_hoverHeartbeatId);
-      _hoverHeartbeatId = null;
-    }
+    if (_restorePending) return;
+    _restorePending = true;
+    requestAnimationFrame(() => {
+      _restorePending = false;
+      for (const t of _crossPairs) {
+        if (!_hoveredCharts.has(t.chart)) continue;
+        _dispatchMouseMoveTo(t.container, _lastMousePos.get(t.container));
+      }
+    });
   }
 
   function _seriesPriceAt(pair, param) {
@@ -1416,18 +1403,14 @@
 
   for (const src of _crossPairs) {
     if (src.container) {
-      src.container.addEventListener('mouseenter', () => {
-        _hoveredCharts.add(src.chart);
-        _startHoverHeartbeat();
-      });
+      src.container.addEventListener('mouseenter', () => _hoveredCharts.add(src.chart));
       src.container.addEventListener('mouseleave', () => {
         _hoveredCharts.delete(src.chart);
         _lastMousePos.delete(src.container);
         _onChartMouseLeave(src.chart);
-        _stopHoverHeartbeatIfIdle();
       });
       // 缓存最后真实鼠标位置（仅 trusted 事件，避免我们派发的 untrusted
-      // mousemove 反过来更新缓存）。用于心跳重放 / 渲染后恢复。
+      // mousemove 反过来更新缓存）。用于渲染后恢复 hover state。
       src.container.addEventListener('mousemove', (ev) => {
         if (!ev.isTrusted) return;
         _lastMousePos.set(src.container, { clientX: ev.clientX, clientY: ev.clientY });
