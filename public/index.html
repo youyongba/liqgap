@@ -579,7 +579,9 @@
       /* 主图右键菜单 / Main chart context menu */
       .ctx-menu {
         position: fixed;
-        z-index: 1000;
+        /* 必须高于 .is-fullscreen 的 9999，否则主图全屏后右键菜单被压在
+         * 主图卡之下完全看不见 → 表现为"右键复制功能失效"。 */
+        z-index: 10010;
         min-width: 220px;
         padding: 4px;
         background: var(--bg-1);
@@ -630,7 +632,8 @@
       /* 复制成功提示 / Copy toast */
       .copy-toast {
         position: fixed;
-        z-index: 1001;
+        /* 同样需要高于 .is-fullscreen (9999)，确保全屏下"已复制"提示可见 */
+        z-index: 10011;
         bottom: 24px;
         left: 50%;
         transform: translateX(-50%);

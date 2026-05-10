@@ -1293,12 +1293,18 @@
   //     没数据时退化用 0，不会报错（4.1.x 接受任意数）。
   //   - 用 _syncingCrosshair 防回环
   const _crossPairs = [
-    { chart: mainChart,   series: candleSeries },
-    { chart: volumeChart, series: volumeSeries },
-    { chart: cvdChart,    series: cvdSeries },
-    { chart: oiChart,     series: oiSeries }
+    { chart: mainChart,   series: candleSeries,  container: els.mainChart  },
+    { chart: volumeChart, series: volumeSeries,  container: els.volumePane },
+    { chart: cvdChart,    series: cvdSeries,     container: els.cvdPane    },
+    { chart: oiChart,     series: oiSeries,      container: els.oiPane     }
   ];
   let _syncingCrosshair = false;
+  // 跟踪鼠标"真实"是否 hover 在 chart 上。Lightweight Charts 在数据 update
+  // (SSE 推送新 K 线)时会触发 subscribeCrosshairMove(param) with
+  // param.time === undefined —— 即使鼠标仍在 chart 上没动。把这种"伪 leave"
+  // 当真 leave 处理就会让 hover 中的 crosshair 莫名消失。
+  // 解法：清理逻辑改由 mouseleave 触发，cross-move 只处理 time != null 的真移动。
+  const _hoveredCharts = new WeakSet();
 
   function _seriesPriceAt(pair, param) {
     const sd = param.seriesData;
@@ -1313,25 +1319,41 @@
     return 0;
   }
 
+  function _onChartMouseLeave(srcChart) {
+    if (_syncingCrosshair) return;
+    _syncingCrosshair = true;
+    try {
+      for (const t of _crossPairs) {
+        if (t.chart === srcChart) continue;
+        try { t.chart.clearCrosshairPosition(); } catch (_) { /* noop */ }
+      }
+      // 主图离开 → 复位 baseline / heatmap 锚点
+      if (srcChart === mainChart) {
+        if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(null);
+        if (heatmap && heatmap.setAnchor) heatmap.setAnchor(null);
+        if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(null);
+      }
+    } finally {
+      _syncingCrosshair = false;
+    }
+  }
+
   for (const src of _crossPairs) {
+    if (src.container) {
+      src.container.addEventListener('mouseenter', () => _hoveredCharts.add(src.chart));
+      src.container.addEventListener('mouseleave', () => {
+        _hoveredCharts.delete(src.chart);
+        _onChartMouseLeave(src.chart);
+      });
+    }
     src.chart.subscribeCrosshairMove((param) => {
       if (_syncingCrosshair) return;
+      // 关键：只在"有时间"时同步。time == null 通常是数据 update 引发的
+      // 伪 callback，鼠标可能仍 hover 在 chart 上 —— 此时不能 clear，否则
+      // 主图静止 hover 时会因 SSE 推送 K 线而 crosshair 消失。
+      if (!param || param.time == null) return;
       _syncingCrosshair = true;
       try {
-        // 鼠标离开 → 清掉所有图的准星，并恢复订单簿基线到 now 锚定
-        if (!param || param.time == null) {
-          for (const t of _crossPairs) {
-            if (t === src) continue;
-            try { t.chart.clearCrosshairPosition(); } catch (_) { /* noop */ }
-          }
-          // 仅在主图离开时复位 baseline / heatmap 锚点
-          if (src.chart === mainChart) {
-            if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(null);
-            if (heatmap && heatmap.setAnchor) heatmap.setAnchor(null);
-            if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(null);
-          }
-          return;
-        }
         const time = param.time;
         for (const t of _crossPairs) {
           if (t === src) continue;
