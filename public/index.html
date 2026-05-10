@@ -273,8 +273,27 @@
         border-radius: 8px;
         padding: 10px;
         min-height: 220px;
+        /* 关键：grid item 的 min-width 默认 auto(=min-content)。lightweight-charts
+         * 在全屏时给内部 canvas 写了大 width attribute（如 1900px），退出后若
+         * chart.resize 滞后，canvas 仍是 1900px → 把所属 grid 列撑成 1900px，
+         * 把其余 3 个 sub-pane 挤成 0 宽。强制 min-width: 0 让 grid 严格按 1fr
+         * 分配，overflow: hidden 双保险防内部 canvas 视觉溢出。 */
+        min-width: 0;
+        overflow: hidden;
         display: flex;
         flex-direction: column;
+      }
+      /* chart 容器也强制不能撑开父 grid item */
+      .sub-pane .pane-body,
+      #main-chart {
+        min-width: 0;
+      }
+      .sub-pane .pane-body > canvas,
+      .sub-pane .pane-body > div > canvas,
+      .sub-pane .pane-body table,
+      #main-chart > div > canvas,
+      #main-chart table {
+        max-width: 100%;
       }
       .sub-pane h3 {
         font-size: 12px;

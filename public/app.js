@@ -294,10 +294,16 @@
     ro.observe(el);
     return ro;
   }
-  _attachChartResizeObserver(els.mainChart,  () => mainChart.resize(els.mainChart.clientWidth,   els.mainChart.clientHeight));
-  _attachChartResizeObserver(els.volumePane, () => volumeChart.resize(els.volumePane.clientWidth, els.volumePane.clientHeight));
-  _attachChartResizeObserver(els.cvdPane,    () => cvdChart.resize(els.cvdPane.clientWidth,       els.cvdPane.clientHeight));
-  _attachChartResizeObserver(els.oiPane,     () => oiChart.resize(els.oiPane.clientWidth,         els.oiPane.clientHeight));
+  // 防御：grid 重排 race 中可能瞬时拿到 0 宽/高，给 chart resize(0,0) 会让
+  // 内部 state 记录为 0 → 下次再 resize 到正常值前会渲染异常 / canvas
+  // attribute 残留旧值进而把 grid 列撑大。低于 8px 直接跳过本次。
+  function _safeResize(chart, w, h) {
+    if (w >= 8 && h >= 8) chart.resize(w, h);
+  }
+  _attachChartResizeObserver(els.mainChart,  () => _safeResize(mainChart,  els.mainChart.clientWidth,   els.mainChart.clientHeight));
+  _attachChartResizeObserver(els.volumePane, () => _safeResize(volumeChart, els.volumePane.clientWidth, els.volumePane.clientHeight));
+  _attachChartResizeObserver(els.cvdPane,    () => _safeResize(cvdChart,    els.cvdPane.clientWidth,    els.cvdPane.clientHeight));
+  _attachChartResizeObserver(els.oiPane,     () => _safeResize(oiChart,     els.oiPane.clientWidth,     els.oiPane.clientHeight));
   // Chart.js orderbook：监控 canvas 父元素 (.pane-body)，显式带 w/h resize
   // 否则 Chart.js 内部 ResizeObserver 偶尔漏更新会导致 canvas 像素缓冲区
   // 与 CSS 显示尺寸不一致 → 全屏退出后 chart 内容只画在右上角 / 缩在一角。
@@ -307,7 +313,7 @@
       if (!orderbookChart) return;
       const w = obParent.clientWidth;
       const h = obParent.clientHeight;
-      if (w > 0 && h > 0) orderbookChart.resize(w, h);
+      if (w >= 8 && h >= 8) orderbookChart.resize(w, h);
     });
   }
 
