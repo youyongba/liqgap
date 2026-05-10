@@ -234,6 +234,27 @@ const BinanceService = {
     const url = resolveBaseUrl(marketType) + resolveTickerPath(marketType);
     const data = await get(url, { symbol: String(symbol).toUpperCase() });
     return Number(data.price);
+  },
+
+  /**
+   * 获取 USDⓈ-M 合约持仓量历史 (Fetch USDⓈ-M Futures Open Interest history)
+   *
+   * Binance docs: GET /futures/data/openInterestHist
+   *   period 仅支持 5m/15m/30m/1h/2h/4h/6h/12h/1d
+   *   limit 最大 500
+   *   仅 USDⓈ-M Futures 提供，spot 没有持仓量概念
+   *
+   * 返回原始数组 (Returns raw array):
+   *   [{ symbol, sumOpenInterest, sumOpenInterestValue, timestamp }, ...]
+   */
+  async getOpenInterestHist(symbol, period = '1h', limit = 200) {
+    const url = `${FUTURES_BASE_URL}/futures/data/openInterestHist`;
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+    return get(url, {
+      symbol: String(symbol).toUpperCase(),
+      period,
+      limit: safeLimit
+    });
   }
 };
 

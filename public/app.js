@@ -26,6 +26,7 @@
     mainChart: document.getElementById('main-chart'),
     volumePane: document.getElementById('volume-pane'),
     cvdPane: document.getElementById('cvd-pane'),
+    oiPane: document.getElementById('oi-pane'),
     orderbookCanvas: document.getElementById('orderbook-chart'),
     mainMeta: document.getElementById('main-meta'),
     signalBanner: document.getElementById('signal-banner'),
@@ -42,6 +43,7 @@
     snapshot: document.getElementById('snapshot'),
     volTitle: document.getElementById('vol-title'),
     cvdTitle: document.getElementById('cvd-title'),
+    oiTitle: document.getElementById('oi-title'),
     obTitle: document.getElementById('ob-title')
   };
 
@@ -57,14 +59,32 @@
     return INTERVAL_OB_DEPTH[interval] || 50;
   }
   function intervalLabel(interval) {
-    return ({ '15m': '15 分钟', '1h': '1 小时', '4h': '4 小时', '1d': '1 天' }[interval]) || interval;
+    return ({ '1s': '1 秒', '15m': '15 分钟', '1h': '1 小时', '4h': '4 小时', '1d': '1 天' }[interval]) || interval;
   }
+
+  // Binance OI hist 仅支持 5m/15m/30m/1h/2h/4h/6h/12h/1d，其余 fallback 5m
+  // (Mirror of backend mapping; used only for the title hint.)
+  const OI_SUPPORTED = new Set(['5m', '15m', '30m', '1h', '2h', '4h', '6h', '12h', '1d']);
+  function effectiveOiPeriod(interval) {
+    return OI_SUPPORTED.has(interval) ? interval : '5m';
+  }
+
   function refreshSubTitles() {
     const itv = els.interval.value;
     const itvLab = intervalLabel(itv);
+    const market = els.market ? els.market.value : 'futures';
     if (els.volTitle) els.volTitle.textContent = `成交量 / Volume · ${itvLab}`;
     if (els.cvdTitle) els.cvdTitle.textContent = `累积主动差 / CVD · ${itvLab}`;
     if (els.obTitle)  els.obTitle.textContent  = `订单簿深度图 / Order Book Depth · 前 ${obDepthForInterval(itv)} 档`;
+    if (els.oiTitle) {
+      if (market !== 'futures') {
+        els.oiTitle.textContent = '持仓量 / Open Interest（仅合约 · 现货无此数据）';
+      } else {
+        const oiP = effectiveOiPeriod(itv);
+        const note = oiP === itv ? '' : `（接口最小 5m，已聚合）`;
+        els.oiTitle.textContent = `持仓量 / Open Interest · ${intervalLabel(oiP)}${note}`;
+      }
+    }
   }
 
   const POLL_INTERVAL_MS = 10000;
@@ -199,13 +219,74 @@
     lineWidth: 2
   });
 
+  // ---- 副图：持仓量曲线 (Open Interest chart, futures only) ----
+  // OI 与 CVD 配合判断市场资金方向：
+  //   OI ↑ + CVD ↓ → 新空单进场 (short build-up)
+  //   OI ↑ + CVD ↑ → 新多单进场 (long build-up)
+  //   OI ↓ + CVD ↑ → 空头平仓 (short covering)
+  //   OI ↓ + CVD ↓ → 多头平仓 (long unwind)
+  const oiChart = LightweightCharts.createChart(els.oiPane, {
+    layout: { background: { color: 'transparent' }, textColor: '#9aa7b8' },
+    grid: {
+      vertLines: { color: '#1f2837' },
+      horzLines: { color: '#1f2837' }
+    },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      borderColor: '#1f2837',
+      tickMarkFormatter: lwTickFormatter
+    },
+    rightPriceScale: { borderColor: '#1f2837' },
+    localization: lwLocalization
+  });
+  // 半透明面积线，颜色与 CVD 区分（橙色），强调"持仓量"金额维度
+  const oiSeries = oiChart.addAreaSeries({
+    lineColor: '#fbbf24',
+    topColor: 'rgba(251, 191, 36, 0.35)',
+    bottomColor: 'rgba(251, 191, 36, 0.02)',
+    lineWidth: 2,
+    priceFormat: { type: 'volume' }
+  });
+
   // 窗口尺寸变化重排 (Resize handlers) -------------------------------------
   function fitCharts() {
     mainChart.resize(els.mainChart.clientWidth, els.mainChart.clientHeight);
     volumeChart.resize(els.volumePane.clientWidth, els.volumePane.clientHeight);
     cvdChart.resize(els.cvdPane.clientWidth, els.cvdPane.clientHeight);
+    oiChart.resize(els.oiPane.clientWidth, els.oiPane.clientHeight);
   }
   window.addEventListener('resize', fitCharts);
+
+  // ---- 时间轴联动 (Time-scale sync across main + sub charts) ----
+  // 主图拖动 / 缩放 → 三个副图跟随；副图也能反向触发，实现"群联动"。
+  // 用 syncing 标志位防止循环触发。
+  // (Keep volume / CVD / OI panes locked to the same visible range as the
+  //  main chart so reading three indicators side-by-side is intuitive.)
+  const _subTimeScales = [
+    volumeChart.timeScale(),
+    cvdChart.timeScale(),
+    oiChart.timeScale()
+  ];
+  let _syncingTime = false;
+  function _broadcastRange(srcScale, range) {
+    if (_syncingTime || !range) return;
+    _syncingTime = true;
+    try {
+      if (srcScale !== mainChart.timeScale()) {
+        mainChart.timeScale().setVisibleLogicalRange(range);
+      }
+      for (const ts of _subTimeScales) {
+        if (ts !== srcScale) ts.setVisibleLogicalRange(range);
+      }
+    } finally {
+      _syncingTime = false;
+    }
+  }
+  mainChart.timeScale().subscribeVisibleLogicalRangeChange((r) => _broadcastRange(mainChart.timeScale(), r));
+  for (const ts of _subTimeScales) {
+    ts.subscribeVisibleLogicalRangeChange((r) => _broadcastRange(ts, r));
+  }
 
   // ---- 订单簿深度图 (Order book · 累积阶梯深度图 / cumulative depth chart) ----
   // 设计 (Design)：
@@ -974,11 +1055,67 @@
     // (Derive CVD from the same candles so it auto-aligns with the chosen interval.)
     renderCvdFromCandles(candles);
 
+    // OI 副图：主图 K 线变化后用最近一次 OI 响应重新按 openTime 对齐
+    // (Realign cached OI samples to the new candle grid.)
+    if (_lastOiResp) renderOpenInterest(_lastOiResp, candles);
+
     // 只在首次渲染或用户主动重置时 fitContent，避免实时刷新打断用户拖动
     if (!chartsFitted) {
       mainChart.timeScale().fitContent();
       volumeChart.timeScale().fitContent();
+      oiChart.timeScale().fitContent();
       chartsFitted = true;
+    }
+  }
+
+  // ---- OI 副图：把 OI 数据按 K 线 openTime 对齐后渲染 ----
+  // (Align OI samples to candle openTimes so OI bar count matches the main
+  //  chart and the synced logical range stays accurate.)
+  //
+  // 当 OI 接口 period 与 K 线 interval 不一致（例如选了 1m K 线，OI 最小 5m）
+  // 时，每根 K 线取「该 K 线区间内最后一条 OI 样本」，缺失则向前继承上一个值。
+  // value 优先用 sumOpenInterestValue（USDT 名义额，可跨币种比较），缺失退化为
+  // sumOpenInterest * close。
+  let _lastOiResp = null;
+  function renderOpenInterest(resp, candles) {
+    _lastOiResp = resp || _lastOiResp;
+    if (!resp) return;
+    if (!resp.supported) {
+      oiSeries.setData([]);
+      return;
+    }
+    const oi = (resp.data || []).slice().sort((a, b) => a.openTime - b.openTime);
+    const cands = Array.isArray(candles) && candles.length ? candles : lastCandles;
+    if (!oi.length || !cands.length) {
+      oiSeries.setData([]);
+      return;
+    }
+    const points = [];
+    let oiIdx = 0;
+    let lastSample = null;
+    for (let i = 0; i < cands.length; i += 1) {
+      const c = cands[i];
+      // 该 K 线右边界：closeTime；缺失则用下一根 openTime - 1
+      const right = c.closeTime
+        ? Number(c.closeTime)
+        : (cands[i + 1] ? Number(cands[i + 1].openTime) - 1 : Number(c.openTime));
+      // 推进 oiIdx 收集所有 ts <= right 的 OI 样本，记最后一个
+      while (oiIdx < oi.length && oi[oiIdx].openTime <= right) {
+        lastSample = oi[oiIdx];
+        oiIdx += 1;
+      }
+      if (lastSample) {
+        const v = Number.isFinite(lastSample.openInterestValue) && lastSample.openInterestValue > 0
+          ? lastSample.openInterestValue
+          : Number(lastSample.openInterest) * Number(c.close);
+        if (Number.isFinite(v) && v > 0) {
+          points.push({ time: toLwSeconds(c.openTime), value: v });
+        }
+      }
+    }
+    oiSeries.setData(points);
+    if (!chartsFitted) {
+      oiChart.timeScale().fitContent();
     }
   }
 
@@ -1526,9 +1663,14 @@
       const obFetch = sseOwns
         ? Promise.resolve(null)
         : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
-      const [kData, obData, signal, alerts] = await Promise.all([
+      // OI 仅合约支持；现货时直接传 spot，后端会回 supported:false，前端清空
+      const oiFetch = fetchJsonSoft(
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200`
+      );
+      const [kData, obData, oiData, signal, alerts] = await Promise.all([
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=200&market=${market}&detectPatterns=true`),
         obFetch,
+        oiFetch,
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
         fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`)
       ]);
@@ -1554,6 +1696,9 @@
         if (obData) renderOrderBook(obData);
         else failed.push('orderbook');
       }
+      // OI：拿到响应就用最新 lastCandles 对齐渲染；失败不阻塞，标 partial
+      if (oiData) renderOpenInterest(oiData, lastCandles);
+      else failed.push('openInterest');
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       fitCharts();
@@ -1612,9 +1757,20 @@
   }
 
   els.refresh.addEventListener('click', () => { markChartsNeedFit(); poll(); restartSSE(); });
-  els.symbol.addEventListener('change', () => { markChartsNeedFit(); poll(); restartSSE(); });
+  els.symbol.addEventListener('change', () => {
+    // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
+    _lastOiResp = null;
+    oiSeries.setData([]);
+    markChartsNeedFit();
+    poll();
+    restartSSE();
+  });
   els.market.addEventListener('change', () => {
     enforceIntervalMarketCompat('market');
+    refreshSubTitles();
+    // 切到现货时立刻清空 OI 旧数据，避免显示"上一个 symbol/market"的曲线
+    _lastOiResp = null;
+    oiSeries.setData([]);
     markChartsNeedFit();
     poll();
     restartSSE();

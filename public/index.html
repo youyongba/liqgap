@@ -131,8 +131,14 @@
       }
       #sub-charts {
         display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: repeat(4, 1fr);
         gap: 12px;
+      }
+      @media (max-width: 1500px) {
+        #sub-charts { grid-template-columns: repeat(2, 1fr); }
+      }
+      @media (max-width: 900px) {
+        #sub-charts { grid-template-columns: 1fr; }
       }
       .sub-pane {
         background: var(--bg-2);
@@ -581,7 +587,7 @@
       <section id="sub-card" class="card">
         <div class="card-header">
           <h2>副图 (Sub Charts)</h2>
-          <span class="meta">成交量 · CVD · 订单簿 (Volume · CVD · Order Book)</span>
+          <span class="meta">成交量 · CVD · 持仓量 · 订单簿 (Volume · CVD · OI · Order Book)</span>
         </div>
         <div id="sub-charts">
           <div class="sub-pane">
@@ -591,6 +597,10 @@
           <div class="sub-pane">
             <h3 id="cvd-title">累积主动差 / CVD</h3>
             <div class="pane-body" id="cvd-pane"></div>
+          </div>
+          <div class="sub-pane">
+            <h3 id="oi-title">持仓量 / Open Interest（仅合约）</h3>
+            <div class="pane-body" id="oi-pane"></div>
           </div>
           <div class="sub-pane">
             <h3 id="ob-title">订单簿深度图 / Order Book Depth</h3>
