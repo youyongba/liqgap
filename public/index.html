@@ -282,46 +282,9 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .pane-fullscreen-btn {
-        flex: 0 0 auto;
-        padding: 2px 6px;
-        font-size: 12px;
-        line-height: 1;
-        background: transparent;
-        color: var(--fg-2);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        cursor: pointer;
-      }
-      .pane-fullscreen-btn:hover {
-        color: var(--fg-0);
-        background: var(--bg-1);
-      }
-      .pane-fullscreen-btn.active {
-        color: var(--accent-yellow);
-        border-color: var(--accent-yellow);
-      }
       .sub-pane .pane-body {
         flex: 1;
         position: relative;
-        min-height: 0;
-      }
-      /* 单个 sub-pane 全屏模式 ----------------------------
-       * 任意 .sub-pane 加上 .is-pane-fullscreen 即占满视口顶层。
-       * 比 sub-card 整体全屏更细：可以单独看 OB / CVD / OI 等。
-       */
-      .sub-pane.is-pane-fullscreen {
-        position: fixed !important;
-        inset: 0 !important;
-        z-index: 10000;
-        margin: 0;
-        border-radius: 0;
-        padding: 16px;
-        background: var(--bg-0);
-        min-height: 0;
-      }
-      .sub-pane.is-pane-fullscreen .pane-body {
-        flex: 1 1 0;
         min-height: 0;
       }
       #signal-card { overflow-y: auto; }
@@ -674,39 +637,78 @@
         border-color: var(--accent-yellow);
       }
 
-      /* 卡片全屏 / Card fullscreen mode -----------------------------
-       * 任何 .card 加上 .is-fullscreen 即占满视口顶层，再加 ESC 退出。
-       * 全屏时把内部 grid 高度也拉满，并让副图的 grid 转成 2x2 自适应。
+      /* 全屏 / Fullscreen mode -----------------------------
+       * 任何元素加上 .is-fullscreen 即占满视口；统一 z-index、统一退出方式。
+       * 适用于 .card 和 .sub-pane 等。
        */
-      .card.is-fullscreen {
+      .is-fullscreen {
         position: fixed !important;
         inset: 0 !important;
-        z-index: 9999;
-        margin: 0;
-        border-radius: 0;
-        padding: 16px;
-        background: var(--bg-0);
-        max-width: none;
-        max-height: none;
+        z-index: 9999 !important;
+        margin: 0 !important;
+        border-radius: 0 !important;
+        padding: 16px !important;
+        background: var(--bg-0) !important;
+        max-width: none !important;
+        max-height: none !important;
+        min-width: 0 !important;
+        min-height: 0 !important;
+        display: flex;
+        flex-direction: column;
       }
-      .card.is-fullscreen #sub-charts {
+      /* 副图卡全屏：让内部 grid 撑满 + 自适应列数 */
+      #sub-card.is-fullscreen #sub-charts {
         flex: 1 1 0;
         min-height: 0;
         grid-template-columns: repeat(2, 1fr) !important;
         grid-auto-rows: 1fr;
       }
       @media (min-width: 1500px) {
-        .card.is-fullscreen #sub-charts {
+        #sub-card.is-fullscreen #sub-charts {
           grid-template-columns: repeat(4, 1fr) !important;
           grid-auto-rows: 1fr;
         }
       }
-      .card.is-fullscreen .sub-pane {
+      #sub-card.is-fullscreen .sub-pane,
+      .sub-pane.is-fullscreen {
         min-height: 0;
       }
-      .card.is-fullscreen .sub-pane .pane-body {
+      #sub-card.is-fullscreen .sub-pane .pane-body,
+      .sub-pane.is-fullscreen .pane-body {
         flex: 1 1 0;
         min-height: 0;
+      }
+      /* 主图卡全屏：让 #main-chart 占满 */
+      #main-card.is-fullscreen #main-chart {
+        flex: 1 1 0;
+        min-height: 0;
+      }
+      /* 热图卡全屏：让 .pane-body 占满 */
+      #heatmap-card.is-fullscreen .pane-body,
+      #liq-heatmap-card.is-fullscreen .pane-body {
+        flex: 1 1 0;
+        min-height: 0;
+      }
+      /* 统一全屏按钮 / Fullscreen toggle button --------------------- */
+      .fs-btn {
+        flex: 0 0 auto;
+        padding: 3px 8px;
+        font-size: 12px;
+        line-height: 1;
+        background: transparent;
+        color: var(--fg-2);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 500;
+      }
+      .fs-btn:hover {
+        color: var(--fg-0);
+        background: var(--bg-1);
+      }
+      .fs-btn.active {
+        color: var(--accent-yellow);
+        border-color: var(--accent-yellow);
       }
 
       /* 测量工具浮动信息卡 / Measure tool info card */
@@ -777,6 +779,8 @@
             <button id="measure-toggle" class="ghost tool-btn" type="button"
                     title="开启后在主图按住左键拖动以测量价格变化与时间跨度 (Esc 清除)">📏 测量 / Measure</button>
             <span class="meta" id="main-meta"></span>
+            <button class="fs-btn" type="button" data-fs-target="main-card"
+                    title="主图全屏 / Fullscreen (Esc 退出)">⛶</button>
           </div>
         </div>
         <div id="main-chart"></div>
@@ -807,6 +811,8 @@
               </select>
               <span class="meta" id="heatmap-meta">等待数据… / Loading…</span>
               <span class="heatmap-legend viridis-legend" title="低 → 高：紫 → 蓝 → 青 → 绿 → 黄"><span>低</span><span class="grad"></span><span>高</span></span>
+              <button class="fs-btn" type="button" data-fs-target="heatmap-card"
+                      title="流动性热图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
           </div>
           <div class="pane-body">
@@ -842,6 +848,8 @@
               </select>
               <span class="meta" id="liq-heatmap-meta">等待数据… / Loading…</span>
               <span class="heatmap-legend viridis-legend" title="低 → 高：紫 → 蓝 → 青 → 绿 → 黄"><span>低</span><span class="grad"></span><span>高</span></span>
+              <button class="fs-btn" type="button" data-fs-target="liq-heatmap-card"
+                      title="清算热图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
           </div>
           <div class="pane-body">
@@ -857,36 +865,36 @@
           <h2>副图 (Sub Charts)</h2>
           <div class="card-tools">
             <span class="meta">成交量 · CVD · 持仓量 · 订单簿 (Volume · CVD · OI · Order Book)</span>
-            <button id="sub-fullscreen" class="ghost tool-btn" type="button"
-                    title="一键满屏 / Toggle fullscreen (Esc 退出)">⛶ 满屏 / Fullscreen</button>
+            <button class="fs-btn" type="button" data-fs-target="sub-card"
+                    title="副图整体全屏 / Fullscreen (Esc 退出)">⛶</button>
           </div>
         </div>
         <div id="sub-charts">
-          <div class="sub-pane" data-pane="volume">
+          <div class="sub-pane" data-pane="volume" id="sub-pane-volume">
             <div class="sub-pane-header">
               <h3 id="vol-title">成交量 / Volume</h3>
-              <button class="pane-fullscreen-btn" type="button" data-pane-target="volume" title="此图全屏 / Fullscreen">⛶</button>
+              <button class="fs-btn" type="button" data-fs-target="sub-pane-volume" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
             <div class="pane-body" id="volume-pane"></div>
           </div>
-          <div class="sub-pane" data-pane="cvd">
+          <div class="sub-pane" data-pane="cvd" id="sub-pane-cvd">
             <div class="sub-pane-header">
               <h3 id="cvd-title">累积主动差 / CVD</h3>
-              <button class="pane-fullscreen-btn" type="button" data-pane-target="cvd" title="此图全屏 / Fullscreen">⛶</button>
+              <button class="fs-btn" type="button" data-fs-target="sub-pane-cvd" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
             <div class="pane-body" id="cvd-pane"></div>
           </div>
-          <div class="sub-pane" data-pane="oi">
+          <div class="sub-pane" data-pane="oi" id="sub-pane-oi">
             <div class="sub-pane-header">
               <h3 id="oi-title">持仓量 / Open Interest（仅合约）</h3>
-              <button class="pane-fullscreen-btn" type="button" data-pane-target="oi" title="此图全屏 / Fullscreen">⛶</button>
+              <button class="fs-btn" type="button" data-fs-target="sub-pane-oi" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
             <div class="pane-body" id="oi-pane"></div>
           </div>
-          <div class="sub-pane" data-pane="ob">
+          <div class="sub-pane" data-pane="ob" id="sub-pane-ob">
             <div class="sub-pane-header">
               <h3 id="ob-title">订单簿深度图 / Order Book Depth</h3>
-              <button class="pane-fullscreen-btn" type="button" data-pane-target="ob" title="此图全屏 / Fullscreen">⛶</button>
+              <button class="fs-btn" type="button" data-fs-target="sub-pane-ob" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
             <div class="ob-baseline-bar" style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
               <label for="ob-baseline" style="font-size:11px; color:var(--fg-2);">基线对比 / Baseline:</label>

@@ -60,7 +60,6 @@
     liqHeatmapWindow: document.getElementById('liq-heatmap-window'),
     liqHeatmapRange: document.getElementById('liq-heatmap-range'),
     liqHeatmapMode: document.getElementById('liq-heatmap-mode'),
-    subFullscreenBtn: document.getElementById('sub-fullscreen'),
     subCard: document.getElementById('sub-card')
   };
 
@@ -2983,82 +2982,75 @@
 
   els.refresh.addEventListener('click', () => { markChartsNeedFit(); poll(); restartSSE(); });
 
-  // ---- 副图一键满屏 (Sub-chart fullscreen toggle) -----------------------
-  // 切换 .is-fullscreen class 让副图卡占满视口；切换后通过 rAF 让 lightweight
-  // -charts 重新 resize，并触发 Chart.js 订单簿重绘。Esc 退出。
-  function toggleSubFullscreen(force) {
-    if (!els.subCard) return;
-    const next = typeof force === 'boolean' ? force : !els.subCard.classList.contains('is-fullscreen');
-    els.subCard.classList.toggle('is-fullscreen', next);
-    if (els.subFullscreenBtn) {
-      els.subFullscreenBtn.textContent = next ? '⤢ 退出 / Exit' : '⛶ 满屏 / Fullscreen';
-      els.subFullscreenBtn.classList.toggle('active', next);
-    }
-    // 等 layout 完成后再 resize，避免拿到 0 尺寸
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        try { fitCharts(); } catch (_) { /* noop */ }
-        try { syncSubChartsToMain(); } catch (_) { /* noop */ }
-        try { if (typeof orderbookChart !== 'undefined' && orderbookChart) orderbookChart.resize(); } catch (_) { /* noop */ }
-      });
-    });
-  }
-  if (els.subFullscreenBtn) {
-    els.subFullscreenBtn.addEventListener('click', () => toggleSubFullscreen());
+  // ---- 统一全屏机制 (Unified fullscreen toggle) -------------------------
+  // 任何元素加上 .is-fullscreen → 占满视口；同时只允许一个元素处于全屏。
+  // 触发方式：
+  //   1) 点击 .fs-btn[data-fs-target="<id>"]
+  //   2) ESC 退出当前全屏
+  // 退出 bug 关键：lightweight-charts / Chart.js / Canvas 都缓存了上次容器尺寸，
+  // 浏览器 grid 重排可能在双 rAF 后仍未完成 → 必须用 rAF×2 + setTimeout 多重
+  // 兜底，强制按真实 clientWidth/Height 重新 resize，否则会"看起来没回到原位置"。
+  function _resizeAllAfterFullscreen() {
+    const doResize = () => {
+      try { fitCharts(); } catch (_) { /* noop */ }
+      try { syncSubChartsToMain(); } catch (_) { /* noop */ }
+      try { if (typeof orderbookChart !== 'undefined' && orderbookChart) orderbookChart.resize(); } catch (_) { /* noop */ }
+      try { if (heatmap && typeof heatmap.resize === 'function') heatmap.resize(); } catch (_) { /* noop */ }
+      try { if (typeof liqHeatmap !== 'undefined' && liqHeatmap && typeof liqHeatmap.resize === 'function') liqHeatmap.resize(); } catch (_) { /* noop */ }
+    };
+    // 双 rAF：等 layout 提交
+    requestAnimationFrame(() => requestAnimationFrame(doResize));
+    // 兜底 1：grid 重排有时比双 rAF 还慢（特别是 fixed → grid 回流）
+    setTimeout(doResize, 120);
+    // 兜底 2：极端情况（屏幕重绘 + 字体变化等）
+    setTimeout(doResize, 350);
   }
 
-  // ---- 单个 sub-pane 独立全屏 -----------------------------------------
-  // 副图卡里 4 个 pane (Volume / CVD / OI / Order Book) 各自的 ⛶ 按钮：
-  // 点击该按钮 → 仅这个 pane 占满视口，再点或 Esc 退出。
-  // 用事件委托避免 4 个独立监听器。
-  function _resizeAllSubCharts() {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        try { fitCharts(); } catch (_) { /* noop */ }
-        try { syncSubChartsToMain(); } catch (_) { /* noop */ }
-        try { if (typeof orderbookChart !== 'undefined' && orderbookChart) orderbookChart.resize(); } catch (_) { /* noop */ }
-      });
-    });
-  }
-  function togglePaneFullscreen(pane, force) {
-    if (!pane) return;
-    const next = typeof force === 'boolean' ? force : !pane.classList.contains('is-pane-fullscreen');
-    // 同时只允许一个 pane 全屏
+  function toggleFullscreen(target, btn, force) {
+    if (!target) return;
+    const next = typeof force === 'boolean' ? force : !target.classList.contains('is-fullscreen');
+    // 互斥：进入新全屏前，先把所有 .is-fullscreen 退出（包括 .card 与 .sub-pane）
     if (next) {
-      document.querySelectorAll('.sub-pane.is-pane-fullscreen').forEach((p) => {
-        if (p !== pane) {
-          p.classList.remove('is-pane-fullscreen');
-          const b = p.querySelector('.pane-fullscreen-btn');
-          if (b) { b.textContent = '⛶'; b.classList.remove('active'); b.title = '此图全屏 / Fullscreen'; }
+      document.querySelectorAll('.is-fullscreen').forEach((el) => {
+        if (el !== target) {
+          el.classList.remove('is-fullscreen');
+          const b = el.querySelector(':scope > .card-header .fs-btn, :scope > .sub-pane-header .fs-btn');
+          if (b) { b.textContent = '⛶'; b.classList.remove('active'); b.title = b.dataset.fsTitleNormal || '全屏 / Fullscreen'; }
         }
       });
     }
-    pane.classList.toggle('is-pane-fullscreen', next);
-    const btn = pane.querySelector('.pane-fullscreen-btn');
+    target.classList.toggle('is-fullscreen', next);
     if (btn) {
+      if (!btn.dataset.fsTitleNormal) btn.dataset.fsTitleNormal = btn.title || '全屏 / Fullscreen';
       btn.textContent = next ? '⤢' : '⛶';
       btn.classList.toggle('active', next);
-      btn.title = next ? '退出全屏 / Exit fullscreen (Esc)' : '此图全屏 / Fullscreen';
+      btn.title = next ? '退出全屏 / Exit fullscreen (Esc)' : btn.dataset.fsTitleNormal;
     }
-    _resizeAllSubCharts();
+    _resizeAllAfterFullscreen();
   }
+
   document.addEventListener('click', (e) => {
-    const btn = e.target && e.target.closest && e.target.closest('.pane-fullscreen-btn');
+    const btn = e.target && e.target.closest && e.target.closest('.fs-btn[data-fs-target]');
     if (!btn) return;
-    const pane = btn.closest('.sub-pane');
-    togglePaneFullscreen(pane);
+    const target = document.getElementById(btn.dataset.fsTarget);
+    if (!target) return;
+    e.preventDefault();
+    toggleFullscreen(target, btn);
   });
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    // 优先退出 sub-pane 全屏，其次退出 sub-card 全屏
-    const fsPane = document.querySelector('.sub-pane.is-pane-fullscreen');
+    // 退出最近一次进入全屏的元素：sub-pane 优先于 card（pane 通常嵌在 card 里）
+    const fsPane = document.querySelector('.sub-pane.is-fullscreen');
     if (fsPane) {
-      togglePaneFullscreen(fsPane, false);
+      const btn = fsPane.querySelector(':scope > .sub-pane-header .fs-btn');
+      toggleFullscreen(fsPane, btn, false);
       return;
     }
-    if (els.subCard && els.subCard.classList.contains('is-fullscreen')) {
-      toggleSubFullscreen(false);
+    const fsCard = document.querySelector('.card.is-fullscreen');
+    if (fsCard) {
+      const btn = fsCard.querySelector(':scope > .card-header .fs-btn');
+      toggleFullscreen(fsCard, btn, false);
     }
   });
   els.symbol.addEventListener('change', () => {
