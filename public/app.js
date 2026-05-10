@@ -274,6 +274,43 @@
   }
   window.addEventListener('resize', fitCharts);
 
+  // ---- 主动 ResizeObserver：根本性解决 sub-pane 全屏/退出 chart 不重排 ----
+  // 关键修复：lightweight-charts 不自带容器监听；Chart.js 自带的 ResizeObserver
+  // 是 throttled，sub-pane 全屏 ↔ 退出过程中可能漏一次。我们显式监控每个 chart
+  // 父容器尺寸变化 → 立刻 resize 对应 chart，且 Chart.js 显式带 width/height
+  // 强制更新 canvas 像素缓冲区。配合 rAF 防 reentry 循环。
+  // 同时也覆盖窗口缩放、grid 响应式断点切换等其他场景。
+  function _attachChartResizeObserver(el, onResize) {
+    if (!el || typeof ResizeObserver !== 'function') return null;
+    let pending = false;
+    const ro = new ResizeObserver(() => {
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(() => {
+        pending = false;
+        try { onResize(); } catch (_) { /* noop */ }
+      });
+    });
+    ro.observe(el);
+    return ro;
+  }
+  _attachChartResizeObserver(els.mainChart,  () => mainChart.resize(els.mainChart.clientWidth,   els.mainChart.clientHeight));
+  _attachChartResizeObserver(els.volumePane, () => volumeChart.resize(els.volumePane.clientWidth, els.volumePane.clientHeight));
+  _attachChartResizeObserver(els.cvdPane,    () => cvdChart.resize(els.cvdPane.clientWidth,       els.cvdPane.clientHeight));
+  _attachChartResizeObserver(els.oiPane,     () => oiChart.resize(els.oiPane.clientWidth,         els.oiPane.clientHeight));
+  // Chart.js orderbook：监控 canvas 父元素 (.pane-body)，显式带 w/h resize
+  // 否则 Chart.js 内部 ResizeObserver 偶尔漏更新会导致 canvas 像素缓冲区
+  // 与 CSS 显示尺寸不一致 → 全屏退出后 chart 内容只画在右上角 / 缩在一角。
+  if (els.orderbookCanvas) {
+    const obParent = els.orderbookCanvas.parentElement;
+    _attachChartResizeObserver(obParent, () => {
+      if (!orderbookChart) return;
+      const w = obParent.clientWidth;
+      const h = obParent.clientHeight;
+      if (w > 0 && h > 0) orderbookChart.resize(w, h);
+    });
+  }
+
   // ---- 时间轴联动 (Time-scale sync across main + sub charts) ----
   // 主图拖动 / 缩放 → 三个副图跟随；副图也能反向触发，实现"群联动"。
   // (Keep volume / CVD / OI panes locked to the same visible range as the
@@ -2994,7 +3031,20 @@
     const doResize = () => {
       try { fitCharts(); } catch (_) { /* noop */ }
       try { syncSubChartsToMain(); } catch (_) { /* noop */ }
-      try { if (typeof orderbookChart !== 'undefined' && orderbookChart) orderbookChart.resize(); } catch (_) { /* noop */ }
+      try {
+        if (typeof orderbookChart !== 'undefined' && orderbookChart && els.orderbookCanvas) {
+          const p = els.orderbookCanvas.parentElement;
+          if (p) {
+            const w = p.clientWidth, h = p.clientHeight;
+            // 显式带 w/h 强制 Chart.js 同步重设 canvas 像素缓冲区，
+            // 否则其内部 throttled ResizeObserver 可能漏更新一次。
+            if (w > 0 && h > 0) orderbookChart.resize(w, h);
+            else orderbookChart.resize();
+          } else {
+            orderbookChart.resize();
+          }
+        }
+      } catch (_) { /* noop */ }
       try { if (heatmap && typeof heatmap.resize === 'function') heatmap.resize(); } catch (_) { /* noop */ }
       try { if (typeof liqHeatmap !== 'undefined' && liqHeatmap && typeof liqHeatmap.resize === 'function') liqHeatmap.resize(); } catch (_) { /* noop */ }
     };
@@ -3004,6 +3054,8 @@
     setTimeout(doResize, 120);
     // 兜底 2：极端情况（屏幕重绘 + 字体变化等）
     setTimeout(doResize, 350);
+    // 兜底 3：Chart.js 内部 throttled ResizeObserver 默认 250ms 节流
+    setTimeout(doResize, 700);
   }
 
   function toggleFullscreen(target, btn, force) {
