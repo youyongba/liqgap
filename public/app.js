@@ -357,20 +357,29 @@
       hoverCell: null
     };
 
+    /*
+     * canvas 尺寸同步：
+     * - 用 parentElement 的 clientWidth/Height（不含 border / scrollbar）量纲，
+     *   不读 getBoundingClientRect().height（受 transform / sub-pixel 影响）。
+     * - 仅在与上次记录的 cssWidth/cssHeight 真的不同时，才触发 canvas 重设
+     *   + 重绘，避免 ResizeObserver 与 canvas style 写入 互相触发的死循环
+     *   （之前页面会被持续拉长就是这条 loop 的副作用）。
+     */
     function _resizeCanvas() {
-      const rect = canvas.parentElement.getBoundingClientRect();
-      const w = Math.max(20, Math.floor(rect.width));
-      const h = Math.max(20, Math.floor(rect.height));
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const w = Math.max(20, Math.floor(parent.clientWidth));
+      const h = Math.max(20, Math.floor(parent.clientHeight));
+      if (w === state.cssWidth && h === state.cssHeight) return;
       state.cssWidth = w;
       state.cssHeight = h;
       const dpr = window.devicePixelRatio || 1;
       state.pixelRatio = dpr;
       canvas.width  = Math.floor(w * dpr);
       canvas.height = Math.floor(h * dpr);
-      canvas.style.width  = w + 'px';
-      canvas.style.height = h + 'px';
+      // 不再写 canvas.style.width/height —— canvas 已经是 absolute inset:0,
+      // 100% 跟随 .pane-body，让父容器单向决定尺寸，避免反向反馈。
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      // 绘图区：左留 56px 给价格刻度，下留 18px 给时间刻度
       state.plot.x = 56;
       state.plot.y = 6;
       state.plot.w = Math.max(20, w - state.plot.x - 8);
@@ -645,8 +654,27 @@
     }
 
     // 容器尺寸跟随：用 ResizeObserver 监控 .pane-body
-    const ro = new ResizeObserver(() => _resizeCanvas());
+    // rAF 包一层 + 防重入，避免触发 "ResizeObserver loop limit exceeded" 警告
+    // 与可能的页面缓慢拉长副作用。
+    let _roPending = false;
+    const ro = new ResizeObserver(() => {
+      if (_roPending) return;
+      _roPending = true;
+      requestAnimationFrame(() => {
+        _roPending = false;
+        _resizeCanvas();
+      });
+    });
     ro.observe(canvas.parentElement);
+    // 兜底：窗口尺寸变化时也校准一次（某些浏览器 RO 触发不稳）
+    window.addEventListener('resize', () => {
+      if (_roPending) return;
+      _roPending = true;
+      requestAnimationFrame(() => {
+        _roPending = false;
+        _resizeCanvas();
+      });
+    });
 
     // 周期性自动刷新（每 60s 一次，确保即使主图没动热图也跟最新录盘）
     setInterval(() => scheduleFetch(0), 60_000);
