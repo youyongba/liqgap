@@ -38,7 +38,9 @@ const aiRoute = require('./routes/ai');
 const openInterestRoute = require('./routes/openInterest');
 const orderbookSnapshotRoute = require('./routes/orderbookSnapshot');
 const orderbookHeatmapRoute = require('./routes/orderbookHeatmap');
+const liquidationHeatmapRoute = require('./routes/liquidationHeatmap');
 const orderbookRecorder = require('./services/orderbookRecorder');
+const liquidationRecorder = require('./services/liquidationRecorder');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -68,6 +70,7 @@ app.use('/api', streamRoute);
 app.use('/api', openInterestRoute);
 app.use('/api', orderbookSnapshotRoute);
 app.use('/api', orderbookHeatmapRoute);
+app.use('/api', liquidationHeatmapRoute);
 app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)
@@ -101,5 +104,12 @@ app.listen(PORT, () => {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[server] orderbook recorder start failed:', err.message);
+  }
+  // (Kick off the liquidation-event recorder so liquidation heatmap has data.)
+  try {
+    liquidationRecorder.start();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[server] liquidation recorder start failed:', err.message);
   }
 });

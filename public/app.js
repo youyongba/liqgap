@@ -53,6 +53,12 @@
     heatmapMeta: document.getElementById('heatmap-meta'),
     heatmapWindow: document.getElementById('heatmap-window'),
     heatmapRange: document.getElementById('heatmap-range'),
+    liqHeatmapCanvas: document.getElementById('liq-heatmap-canvas'),
+    liqHeatmapTooltip: document.getElementById('liq-heatmap-tooltip'),
+    liqHeatmapEmpty: document.getElementById('liq-heatmap-empty'),
+    liqHeatmapMeta: document.getElementById('liq-heatmap-meta'),
+    liqHeatmapWindow: document.getElementById('liq-heatmap-window'),
+    liqHeatmapRange: document.getElementById('liq-heatmap-range'),
     subFullscreenBtn: document.getElementById('sub-fullscreen'),
     subCard: document.getElementById('sub-card')
   };
@@ -797,6 +803,430 @@
     };
   })();
 
+  // ---- 清算热力图 (Liquidation Heatmap) ---------------------------------
+  // 数据源 (Data source):
+  //   后端 liquidationRecorder 订阅 Binance Futures <symbol>@forceOrder 流，
+  //   把每条强平实时录盘；GET /api/liquidations/heatmap 按 (time bucket,
+  //   price bucket) 聚合返回 longMatrix / shortMatrix（USDT 累计名义额）。
+  // 视觉 (Visual):
+  //   - long 被强平 → 红色（与流动性 ask 同色：被卖出止损推低）
+  //   - short 被强平 → 绿色（被买入止损推高）
+  //   - alpha 用 P95 归一化 + log 拉伸，避免极端事件吃对比度
+  // 联动 (Linkage):
+  //   主图 hover → 锁定 anchor 时刻；hover 离开 → 实时 now。
+  // 仅 BTCUSDT futures 显示。
+  // -------------------------------------------------------------------------
+  const liqHeatmap = (function initLiqHeatmap() {
+    const canvas  = els.liqHeatmapCanvas;
+    const tooltip = els.liqHeatmapTooltip;
+    const empty   = els.liqHeatmapEmpty;
+    const meta    = els.liqHeatmapMeta;
+    const card    = document.getElementById('liq-heatmap-card');
+    if (!canvas || !card) return null;
+    const ctx = canvas.getContext('2d');
+
+    function _readPriceRange() {
+      const v = els.liqHeatmapRange ? els.liqHeatmapRange.value : 'auto';
+      if (v === 'auto' || v === '') return 'auto';
+      const n = Number(v);
+      return (Number.isFinite(n) && n > 0) ? n : 'auto';
+    }
+
+    const state = {
+      windowMs: Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 3_600_000),
+      priceRange: _readPriceRange(),
+      anchorMs: null,
+      data: null,
+      cssWidth: 0,
+      cssHeight: 0,
+      lastFetchKey: '',
+      lastFetchAt: 0,
+      pendingTimer: null,
+      plot: { x: 64, y: 8, w: 0, h: 0 },
+      hoverCell: null
+    };
+
+    function _resizeCanvas() {
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const w = Math.max(20, Math.floor(parent.clientWidth));
+      const h = Math.max(20, Math.floor(parent.clientHeight));
+      if (w === state.cssWidth && h === state.cssHeight) return;
+      state.cssWidth = w;
+      state.cssHeight = h;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width  = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      state.plot.x = 64;
+      state.plot.y = 8;
+      state.plot.w = Math.max(20, w - state.plot.x - 12);
+      state.plot.h = Math.max(20, h - state.plot.y - 22);
+      _draw();
+    }
+
+    function _isApplicable() {
+      const sym = els.symbol ? els.symbol.value.toUpperCase() : '';
+      const mkt = els.market ? els.market.value : '';
+      return sym === 'BTCUSDT' && mkt === 'futures';
+    }
+    function _setVisibility() {
+      card.style.display = _isApplicable() ? '' : 'none';
+    }
+
+    const fmtMoney = (v) => v >= 1e6
+      ? (v / 1e6).toFixed(2) + 'M'
+      : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : v.toFixed(0);
+
+    function _updateMeta(extra) {
+      if (!meta) return;
+      const d = state.data;
+      if (!d) { meta.textContent = extra || '等待数据… / Loading…'; return; }
+      const tFmt = (ms) => fmtBJShortDateTime(ms);
+      const rangeTxt = d.autoRange && Number.isFinite(d.priceRange)
+        ? `±${(d.priceRange * 100).toFixed(2)}% (auto)`
+        : (Number.isFinite(d.priceRange) ? `±${(d.priceRange * 100).toFixed(2)}%` : '-');
+      const totalLong  = fmtMoney(d.totalLong  || 0);
+      const totalShort = fmtMoney(d.totalShort || 0);
+      meta.textContent =
+        `${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt} · 事件 ${d.eventCount || 0} (多 ${totalLong} · 空 ${totalShort} USDT)`
+        + (extra ? ` · ${extra}` : '');
+    }
+
+    function _colorFor(value, normMax, isLong) {
+      if (!(value > 0) || !(normMax > 0)) return null;
+      let a;
+      if (value <= normMax) {
+        const n = Math.log(1 + value) / Math.log(1 + normMax);
+        a = 0.20 + 0.65 * n;
+      } else {
+        const extra = Math.min(1, Math.log(1 + value) / Math.log(1 + normMax) - 1);
+        a = Math.min(1, 0.85 + 0.15 * extra);
+      }
+      // long 被强平 → 红；short 被强平 → 绿
+      if (isLong) return `rgba(231, 76, 60, ${a.toFixed(3)})`;
+      return `rgba(46, 204, 113, ${a.toFixed(3)})`;
+    }
+
+    function _niceStep(rawStep) {
+      if (!(rawStep > 0)) return 1;
+      const exp = Math.pow(10, Math.floor(Math.log10(rawStep)));
+      const norm = rawStep / exp;
+      let factor;
+      if (norm < 1.5) factor = 1;
+      else if (norm < 3.5) factor = 2;
+      else if (norm < 7.5) factor = 5;
+      else factor = 10;
+      return factor * exp;
+    }
+
+    function _draw() {
+      if (!ctx) return;
+      const W = state.cssWidth, H = state.cssHeight;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#0b0e16';
+      ctx.fillRect(0, 0, W, H);
+
+      const d = state.data;
+      const { x: ox, y: oy, w: pw, h: ph } = state.plot;
+      if (!d || !d.times || !d.times.length || !d.prices || !d.prices.length || !(d.maxValue > 0)) {
+        if (empty) empty.style.display = 'flex';
+        return;
+      }
+      if (empty) empty.style.display = 'none';
+
+      const T = d.times.length;
+      const P = d.prices.length;
+      const cellW = pw / T;
+      const cellH = ph / P;
+
+      const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
+      // 绘制色块：每格挑长/短中较大的一方为代表色（清算事件天然成簇，
+      // 一格中通常只有一种方向，少数双方都有的格用较大的一方表达）
+      for (let ti = 0; ti < T; ti += 1) {
+        const x = ox + ti * cellW;
+        for (let pi = 0; pi < P; pi += 1) {
+          const yTop = oy + (P - 1 - pi) * cellH;
+          const lv = d.longMatrix[ti]  ? d.longMatrix[ti][pi]  : 0;
+          const sv = d.shortMatrix[ti] ? d.shortMatrix[ti][pi] : 0;
+          const v = Math.max(lv, sv);
+          if (v <= 0) continue;
+          const color = _colorFor(v, normMax, lv >= sv);
+          if (!color) continue;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, yTop, cellW + 1, cellH + 1);
+        }
+      }
+
+      // 价格 grid
+      const priceSpan = d.priceMax - d.priceMin;
+      const targetTicks = Math.max(6, Math.min(12, Math.floor(ph / 36)));
+      const step = _niceStep(priceSpan / targetTicks);
+      const startTick = Math.ceil(d.priceMin / step) * step;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath();
+      for (let p = startTick; p <= d.priceMax; p += step) {
+        const y = oy + ph * (1 - (p - d.priceMin) / priceSpan);
+        ctx.moveTo(ox, y);
+        ctx.lineTo(ox + pw, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // 价格刻度
+      ctx.fillStyle = 'rgba(220,228,240,0.95)';
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      const priceFmt = (p) => p >= 1000 ? p.toFixed(0) : p.toFixed(2);
+      for (let p = startTick; p <= d.priceMax; p += step) {
+        const y = oy + ph * (1 - (p - d.priceMin) / priceSpan);
+        ctx.fillText(priceFmt(p), ox - 6, y);
+      }
+
+      // 中价线 + tag
+      if (Number.isFinite(d.midPrice)) {
+        const yMid = oy + ph * (1 - (d.midPrice - d.priceMin) / priceSpan);
+        if (yMid > oy && yMid < oy + ph) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(ox, yMid);
+          ctx.lineTo(ox + pw, yMid);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          const tagText = priceFmt(d.midPrice);
+          ctx.font = 'bold 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+          const tagW = ctx.measureText(tagText).width + 8;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+          ctx.fillRect(ox + pw - tagW - 2, yMid - 8, tagW, 16);
+          ctx.fillStyle = '#0b0e16';
+          ctx.textAlign = 'center';
+          ctx.fillText(tagText, ox + pw - tagW / 2 - 2, yMid);
+          ctx.restore();
+        }
+      }
+
+      // 时间刻度
+      ctx.fillStyle = 'rgba(220,228,240,0.95)';
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const timeTicks = Math.max(4, Math.min(10, Math.floor(pw / 90)));
+      for (let i = 0; i <= timeTicks; i += 1) {
+        const frac = i / timeTicks;
+        const t = d.fromMs + (d.toMs - d.fromMs) * frac;
+        const x = ox + pw * frac;
+        const text = fmtBJTimeHMS(t).slice(0, 5);
+        ctx.fillText(text, Math.max(ox + 14, Math.min(ox + pw - 14, x)), oy + ph + 4);
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, oy + ph);
+        ctx.lineTo(x + 0.5, oy + ph + 3);
+        ctx.stroke();
+      }
+
+      // anchor 锁定线
+      if (Number.isFinite(state.anchorMs) && state.anchorMs >= d.fromMs && state.anchorMs <= d.toMs) {
+        const xA = ox + pw * ((state.anchorMs - d.fromMs) / (d.toMs - d.fromMs));
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 215, 0, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(xA, oy);
+        ctx.lineTo(xA, oy + ph);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 边框
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ox + 0.5, oy + 0.5, pw, ph);
+
+      // hover 高亮
+      if (state.hoverCell) {
+        const { ti, pi } = state.hoverCell;
+        if (ti >= 0 && ti < T && pi >= 0 && pi < P) {
+          const x = ox + ti * cellW;
+          const y = oy + (P - 1 - pi) * cellH;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(x + 0.5, y + 0.5, cellW, cellH);
+          ctx.restore();
+        }
+      }
+    }
+
+    function _hitTest(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const cx = clientX - rect.left;
+      const cy = clientY - rect.top;
+      const { x: ox, y: oy, w: pw, h: ph } = state.plot;
+      const d = state.data;
+      if (!d || cx < ox || cx > ox + pw || cy < oy || cy > oy + ph) return null;
+      const T = d.times.length;
+      const P = d.prices.length;
+      if (!T || !P) return null;
+      const ti = Math.floor((cx - ox) / (pw / T));
+      const pi = P - 1 - Math.floor((cy - oy) / (ph / P));
+      if (ti < 0 || ti >= T || pi < 0 || pi >= P) return null;
+      return { ti, pi, cx, cy };
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      const hit = _hitTest(e.clientX, e.clientY);
+      state.hoverCell = hit;
+      if (!hit) {
+        tooltip.style.display = 'none';
+        _draw();
+        return;
+      }
+      const d = state.data;
+      const t  = d.times[hit.ti];
+      const p  = d.prices[hit.pi];
+      const lv = (d.longMatrix[hit.ti]  || [])[hit.pi] || 0;
+      const sv = (d.shortMatrix[hit.ti] || [])[hit.pi] || 0;
+      tooltip.innerHTML =
+        `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
+        `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
+        `<div>多被强平 / Long liq: <span style="color:#ef4444">${fmtMoney(lv)} USDT</span></div>` +
+        `<div>空被强平 / Short liq: <span style="color:#22c55e">${fmtMoney(sv)} USDT</span></div>`;
+      tooltip.style.display = 'block';
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const ttX = Math.min(rect.width - 230, hit.cx + 10);
+      const ttY = Math.max(0, hit.cy + 10);
+      tooltip.style.left = ttX + 'px';
+      tooltip.style.top  = ttY + 'px';
+      _draw();
+    });
+    canvas.addEventListener('mouseleave', () => {
+      state.hoverCell = null;
+      tooltip.style.display = 'none';
+      _draw();
+    });
+
+    function _resolveRange() {
+      const toMs = Number.isFinite(state.anchorMs) ? state.anchorMs : Date.now();
+      const fromMs = toMs - state.windowMs;
+      const span = toMs - fromMs;
+      let bucketMs;
+      if (span <= 15 * 60_000)        bucketMs = 60_000;
+      else if (span <= 60 * 60_000)   bucketMs = 60_000;
+      else if (span <= 4 * 3600_000)  bucketMs = 2 * 60_000;
+      else if (span <= 12 * 3600_000) bucketMs = 10 * 60_000;
+      else                            bucketMs = 15 * 60_000;
+      return { fromMs, toMs, bucketMs };
+    }
+
+    function setLiqHeatmapAnchor(hoverMs) {
+      const next = Number.isFinite(hoverMs) ? Math.floor(hoverMs) : null;
+      if (next === state.anchorMs) return;
+      state.anchorMs = next;
+      state.lastFetchKey = '';
+      scheduleFetch(next == null ? 0 : 200);
+    }
+
+    async function _fetch() {
+      if (!_isApplicable()) return;
+      const { fromMs, toMs, bucketMs } = _resolveRange();
+      const symbol = els.symbol.value.toUpperCase();
+      const market = els.market.value;
+      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
+      const now = Date.now();
+      if (key === state.lastFetchKey && now - state.lastFetchAt < 5_000) return;
+      state.lastFetchKey = key;
+      state.lastFetchAt = now;
+      try {
+        const params = new URLSearchParams({
+          symbol, market,
+          from: String(fromMs),
+          to: String(toMs),
+          bucketMs: String(bucketMs)
+        });
+        params.set('priceRange', state.priceRange === 'auto' ? 'auto' : String(state.priceRange));
+        const url = `/api/liquidations/heatmap?${params.toString()}`;
+        const data = await fetchJsonSoft(url);
+        if (!data) {
+          _updateMeta('拉取失败 / Fetch failed');
+          return;
+        }
+        state.data = data;
+        _updateMeta();
+        _draw();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[liqHeatmap] fetch err:', err.message);
+        _updateMeta('错误 / Error: ' + err.message);
+      }
+    }
+
+    function scheduleFetch(delay) {
+      if (state.pendingTimer) clearTimeout(state.pendingTimer);
+      state.pendingTimer = setTimeout(() => {
+        state.pendingTimer = null;
+        _fetch();
+      }, delay != null ? delay : 250);
+    }
+
+    if (els.liqHeatmapWindow) {
+      els.liqHeatmapWindow.addEventListener('change', () => {
+        state.windowMs = Number(els.liqHeatmapWindow.value) || 3_600_000;
+        state.lastFetchKey = '';
+        scheduleFetch(0);
+      });
+    }
+    if (els.liqHeatmapRange) {
+      els.liqHeatmapRange.addEventListener('change', () => {
+        state.priceRange = _readPriceRange();
+        state.lastFetchKey = '';
+        scheduleFetch(0);
+      });
+    }
+
+    let _roPending = false;
+    const ro = new ResizeObserver(() => {
+      if (_roPending) return;
+      _roPending = true;
+      requestAnimationFrame(() => { _roPending = false; _resizeCanvas(); });
+    });
+    ro.observe(canvas.parentElement);
+    window.addEventListener('resize', () => {
+      if (_roPending) return;
+      _roPending = true;
+      requestAnimationFrame(() => { _roPending = false; _resizeCanvas(); });
+    });
+
+    // 周期 30s 自动刷新（清算事件比快照高频，重要事件不容延迟）
+    setInterval(() => scheduleFetch(0), 30_000);
+
+    _setVisibility();
+    _resizeCanvas();
+    scheduleFetch(800);
+
+    return {
+      refresh: () => scheduleFetch(0),
+      setAnchor: setLiqHeatmapAnchor,
+      resize: () => _resizeCanvas(),
+      onSymbolMarketChange: () => {
+        _setVisibility();
+        state.data = null;
+        state.lastFetchKey = '';
+        state.anchorMs = null;
+        _draw();
+        if (_isApplicable()) scheduleFetch(300);
+      }
+    };
+  })();
+
   // ---- 十字准星 (Crosshair) 跨图联动 ----
   // 一个图上 hover → 其他图同位置画一根垂直线，方便对照同一时刻的指标。
   // (Sync crosshair across main / volume / CVD / OI charts so hovering one
@@ -847,6 +1277,7 @@
           if (src.chart === mainChart) {
             if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(null);
             if (heatmap && heatmap.setAnchor) heatmap.setAnchor(null);
+            if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(null);
           }
           return;
         }
@@ -864,6 +1295,7 @@
           const ms = Number(time) * 1000;
           if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(ms);
           if (heatmap && heatmap.setAnchor) heatmap.setAnchor(ms);
+          if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(ms);
         }
       } finally {
         _syncingCrosshair = false;
@@ -2587,6 +3019,7 @@
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
+    if (liqHeatmap) liqHeatmap.onSymbolMarketChange();
     markChartsNeedFit();
     poll();
     restartSSE();
@@ -2599,6 +3032,7 @@
     oiSeries.setData([]);
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
+    if (liqHeatmap) liqHeatmap.onSymbolMarketChange();
     markChartsNeedFit();
     poll();
     restartSSE();

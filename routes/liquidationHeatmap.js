@@ -1,0 +1,203 @@
+'use strict';
+
+/**
+ * GET /api/liquidations/heatmap
+ *
+ * 清算热力图 (Liquidation Heatmap) 数据接口。
+ * 把 [from, to] 时间窗内 Binance Futures 的强平推送，按 (时间桶, 价格桶)
+ * 聚合成 2D 矩阵，分 long / short 两个矩阵返回。每格存"该桶内累计 USDT
+ * 名义额"——累加而不是峰值，因为这里看的是"该价位被洗了多少筹码"。
+ *
+ * 查询参数 (Query):
+ *   symbol      默认 'BTCUSDT'
+ *   market      'futures'，目前只支持合约（spot 无杠杆故无强平）
+ *   from, to    毫秒时间戳。默认 to=now, from=now-1h。
+ *   bucketMs    时间桶宽（毫秒）。默认 60_000；范围 [60_000, 3_600_000]。
+ *   priceBucket 价格桶宽（USDT）。默认按 mid 自适应（约 mid * 0.0002 圆整）。
+ *   priceRange  价格上下窗（小数比例）。默认 'auto' = 用强平事件实际价差。
+ *
+ * 响应 (Response):
+ *   { success:true, data: {
+ *       symbol, market,
+ *       fromMs, toMs, bucketMs, priceBucket, priceRange, autoRange,
+ *       midPrice, priceMin, priceMax,
+ *       times:[T], prices:[P],
+ *       longMatrix:[T][P]  (USDT, long 被强平),
+ *       shortMatrix:[T][P] (USDT, short 被强平),
+ *       maxValue, p50, p95,
+ *       totalLong, totalShort, eventCount,
+ *       generatedAt, empty, reason?
+ *   }}
+ *
+ * 数据回放窗口受 liqRecorder 保留时长限制（默认 25h）。
+ */
+
+const express = require('express');
+const recorder = require('../services/liquidationRecorder');
+const BinanceService = require('../services/binance');
+
+const router = express.Router();
+const ONE_HOUR_MS = 3600_000;
+
+router.get('/liquidations/heatmap', async (req, res) => {
+  try {
+    const symbol = String(req.query.symbol || 'BTCUSDT').toUpperCase();
+    const market = req.query.market === 'spot' ? 'spot' : 'futures';
+
+    const now = Date.now();
+    let toMs = Number(req.query.to);
+    if (!Number.isFinite(toMs) || toMs <= 0) toMs = now;
+    let fromMs = Number(req.query.from);
+    if (!Number.isFinite(fromMs) || fromMs <= 0) fromMs = toMs - ONE_HOUR_MS;
+    if (toMs <= fromMs) {
+      return res.status(400).json({ success: false, error: 'to must be > from' });
+    }
+
+    let bucketMs = Number(req.query.bucketMs);
+    if (!Number.isFinite(bucketMs) || bucketMs < 60_000) bucketMs = 60_000;
+    if (bucketMs > ONE_HOUR_MS) bucketMs = ONE_HOUR_MS;
+
+    const MAX_T_BUCKETS = 600;
+    let tCount = Math.ceil((toMs - fromMs) / bucketMs);
+    if (tCount > MAX_T_BUCKETS) {
+      bucketMs = Math.ceil((toMs - fromMs) / MAX_T_BUCKETS / 60_000) * 60_000;
+      tCount = Math.ceil((toMs - fromMs) / bucketMs);
+    }
+
+    const events = recorder.findRange(symbol, market, fromMs, toMs);
+
+    // 中价：取当前价（强平价格分布通常围绕当前价）
+    let midPrice = NaN;
+    try { midPrice = await BinanceService.getCurrentPrice(symbol, market); }
+    catch (_) { midPrice = NaN; }
+    if (!Number.isFinite(midPrice) && events.length > 0) {
+      // 退化用最近一条强平价
+      midPrice = Number(events[events.length - 1].price);
+    }
+
+    if (!Number.isFinite(midPrice) || midPrice <= 0 || events.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          symbol, market,
+          fromMs, toMs, bucketMs,
+          midPrice: midPrice || null,
+          priceMin: null, priceMax: null, priceBucket: null,
+          priceRange: null, autoRange: true,
+          times: [], prices: [],
+          longMatrix: [], shortMatrix: [],
+          maxValue: 0, p50: 0, p95: 0,
+          totalLong: 0, totalShort: 0, eventCount: 0,
+          snapshotCount: 0,
+          generatedAt: now,
+          empty: true,
+          reason: events.length === 0
+            ? '该窗口内尚无强平事件 / No liquidations recorded yet（liqRecorder 启动需累积数据）'
+            : '价格无法确定 / mid price unknown'
+        }
+      });
+    }
+
+    // 价格窗
+    const priceRangeRaw = req.query.priceRange;
+    let priceRange = NaN;
+    let autoRange = false;
+    if (priceRangeRaw === undefined || priceRangeRaw === '' || priceRangeRaw === 'auto') {
+      autoRange = true;
+    } else {
+      priceRange = Number(priceRangeRaw);
+      if (!Number.isFinite(priceRange) || priceRange <= 0) autoRange = true;
+      else if (priceRange > 0.5) priceRange = 0.5;
+    }
+
+    let priceMin, priceMax;
+    if (autoRange) {
+      let lo = Infinity, hi = -Infinity;
+      for (const e of events) {
+        if (e.price < lo) lo = e.price;
+        if (e.price > hi) hi = e.price;
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) {
+        priceRange = 0.005;
+        const half = midPrice * priceRange;
+        priceMin = midPrice - half;
+        priceMax = midPrice + half;
+      } else {
+        const pad = (hi - lo) * 0.05 + midPrice * 0.0005; // 5% 边距 + 0.05% 兜底
+        const half = Math.max(midPrice - lo, hi - midPrice) + pad;
+        priceMin = midPrice - half;
+        priceMax = midPrice + half;
+        priceRange = half / midPrice;
+      }
+    } else {
+      const half = midPrice * priceRange;
+      priceMin = midPrice - half;
+      priceMax = midPrice + half;
+    }
+
+    let priceBucket = Number(req.query.priceBucket);
+    if (!Number.isFinite(priceBucket) || priceBucket <= 0) {
+      const targetBuckets = 200;
+      const raw = (priceMax - priceMin) / targetBuckets;
+      const exp = Math.pow(10, Math.floor(Math.log10(raw)));
+      const norm = raw / exp;
+      let factor;
+      if (norm < 1.5) factor = 1;
+      else if (norm < 3.5) factor = 2;
+      else if (norm < 7.5) factor = 5;
+      else factor = 10;
+      priceBucket = Math.max(0.01, factor * exp);
+    }
+
+    const matrix = recorder.buildLiquidationHeatmap(events, {
+      fromMs, toMs, bucketMs, priceMin, priceMax, priceBucket
+    });
+
+    // P50 / P95
+    let p50 = 0, p95 = 0;
+    {
+      const flat = [];
+      for (let i = 0; i < matrix.longMatrix.length; i += 1) {
+        const r = matrix.longMatrix[i];
+        for (let j = 0; j < r.length; j += 1) if (r[j] > 0) flat.push(r[j]);
+      }
+      for (let i = 0; i < matrix.shortMatrix.length; i += 1) {
+        const r = matrix.shortMatrix[i];
+        for (let j = 0; j < r.length; j += 1) if (r[j] > 0) flat.push(r[j]);
+      }
+      if (flat.length) {
+        flat.sort((a, b) => a - b);
+        p50 = flat[Math.floor(flat.length * 0.5)];
+        p95 = flat[Math.floor(flat.length * 0.95)];
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        symbol, market,
+        fromMs, toMs, bucketMs,
+        midPrice, priceMin, priceMax, priceBucket, priceRange, autoRange,
+        times: matrix.times,
+        prices: matrix.prices,
+        longMatrix: matrix.longMatrix,
+        shortMatrix: matrix.shortMatrix,
+        maxValue: matrix.maxValue,
+        p50, p95,
+        totalLong: matrix.totalLong,
+        totalShort: matrix.totalShort,
+        eventCount: matrix.eventCount,
+        generatedAt: now,
+        empty: matrix.eventCount === 0
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/liquidations/recorder/status', (_req, res) => {
+  res.json({ success: true, data: recorder.getStatus() });
+});
+
+module.exports = router;

@@ -123,15 +123,28 @@
         font-size: 11px;
       }
       #main-card { grid-area: main; }
-      #heatmap-card { grid-area: heatmap; }
+      #heatmap-row {
+        grid-area: heatmap;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        min-height: 0;
+        min-width: 0;
+      }
+      @media (max-width: 1500px) {
+        #heatmap-row { grid-template-columns: 1fr; grid-auto-rows: 1fr; }
+      }
       #sub-card { grid-area: sub; }
       #signal-card { grid-area: signal; }
 
-      #heatmap-card {
+      #heatmap-card,
+      #liq-heatmap-card {
         min-height: 0;
+        min-width: 0;
         overflow: hidden;
       }
-      #heatmap-card .pane-body {
+      #heatmap-card .pane-body,
+      #liq-heatmap-card .pane-body {
         position: relative;
         flex: 1 1 0;
         min-height: 0;
@@ -143,10 +156,9 @@
       /*
        * canvas 用绝对定位 inset:0：脱离正常流，永远不会反向撑大父容器，
        * 杜绝 ResizeObserver 反复扩张导致页面被慢慢拉长。
-       * (Absolute-positioned canvas keeps it from feeding back into parent
-       *  height and avoids the slow page-stretch loop.)
        */
-      #heatmap-canvas {
+      #heatmap-canvas,
+      #liq-heatmap-canvas {
         position: absolute;
         inset: 0;
         display: block;
@@ -154,7 +166,8 @@
         height: 100%;
         cursor: crosshair;
       }
-      #heatmap-tooltip {
+      #heatmap-tooltip,
+      #liq-heatmap-tooltip {
         position: absolute;
         pointer-events: none;
         background: rgba(15, 18, 28, 0.92);
@@ -169,7 +182,8 @@
         display: none;
         z-index: 50;
       }
-      #heatmap-empty {
+      #heatmap-empty,
+      #liq-heatmap-empty {
         position: absolute;
         inset: 0;
         display: none;
@@ -759,41 +773,76 @@
         <div id="main-chart"></div>
       </section>
 
-      <section id="heatmap-card" class="card">
-        <div class="card-header">
-          <h2>流动性热图 / Liquidity Heatmap</h2>
-          <div class="heatmap-toolbar">
-            <label for="heatmap-window">窗口 / Window:</label>
-            <select id="heatmap-window" title="热图回看时间窗">
-              <option value="900000">15 分钟 / 15m</option>
-              <option value="3600000" selected>1 小时 / 1h</option>
-              <option value="14400000">4 小时 / 4h</option>
-              <option value="86400000">24 小时 / 24h</option>
-            </select>
-            <label for="heatmap-range">价格范围 / Range:</label>
-            <select id="heatmap-range" title="围绕中价的对称价格窗。Auto 会按盘口实际覆盖的价差自动取窗，最贴合数据。">
-              <option value="auto" selected>自动 / Auto</option>
-              <option value="0.001">±0.1%</option>
-              <option value="0.002">±0.2%</option>
-              <option value="0.003">±0.3%</option>
-              <option value="0.005">±0.5%</option>
-              <option value="0.01">±1%</option>
-              <option value="0.02">±2%</option>
-              <option value="0.05">±5%</option>
-            </select>
-            <span class="meta" id="heatmap-meta">等待数据… / Loading…</span>
-            <span class="heatmap-legend">
-              <span class="swatch bid"></span><span>买墙 / Bid</span>
-              <span class="swatch ask"></span><span>卖墙 / Ask</span>
-            </span>
+      <div id="heatmap-row">
+        <section id="heatmap-card" class="card">
+          <div class="card-header">
+            <h2>流动性热图 / Liquidity Heatmap</h2>
+            <div class="heatmap-toolbar">
+              <label for="heatmap-window">窗口 / Window:</label>
+              <select id="heatmap-window" title="热图回看时间窗">
+                <option value="900000">15 分钟 / 15m</option>
+                <option value="3600000" selected>1 小时 / 1h</option>
+                <option value="14400000">4 小时 / 4h</option>
+                <option value="86400000">24 小时 / 24h</option>
+              </select>
+              <label for="heatmap-range">价格范围 / Range:</label>
+              <select id="heatmap-range" title="围绕中价的对称价格窗。Auto 会按盘口实际覆盖的价差自动取窗，最贴合数据。">
+                <option value="auto" selected>自动 / Auto</option>
+                <option value="0.001">±0.1%</option>
+                <option value="0.002">±0.2%</option>
+                <option value="0.003">±0.3%</option>
+                <option value="0.005">±0.5%</option>
+                <option value="0.01">±1%</option>
+                <option value="0.02">±2%</option>
+                <option value="0.05">±5%</option>
+              </select>
+              <span class="meta" id="heatmap-meta">等待数据… / Loading…</span>
+              <span class="heatmap-legend">
+                <span class="swatch bid"></span><span>买墙 / Bid</span>
+                <span class="swatch ask"></span><span>卖墙 / Ask</span>
+              </span>
+            </div>
           </div>
-        </div>
-        <div class="pane-body">
-          <canvas id="heatmap-canvas"></canvas>
-          <div id="heatmap-tooltip"></div>
-          <div id="heatmap-empty">尚无录盘数据 / No snapshots yet（首次启动需等待 obRecorder 录盘几分钟）</div>
-        </div>
-      </section>
+          <div class="pane-body">
+            <canvas id="heatmap-canvas"></canvas>
+            <div id="heatmap-tooltip"></div>
+            <div id="heatmap-empty">尚无录盘数据 / No snapshots yet（首次启动需等待 obRecorder 录盘几分钟）</div>
+          </div>
+        </section>
+
+        <section id="liq-heatmap-card" class="card">
+          <div class="card-header">
+            <h2>清算热力图 / Liquidation Heatmap</h2>
+            <div class="heatmap-toolbar">
+              <label for="liq-heatmap-window">窗口 / Window:</label>
+              <select id="liq-heatmap-window" title="清算热图回看时间窗">
+                <option value="900000">15 分钟 / 15m</option>
+                <option value="3600000" selected>1 小时 / 1h</option>
+                <option value="14400000">4 小时 / 4h</option>
+                <option value="86400000">24 小时 / 24h</option>
+              </select>
+              <label for="liq-heatmap-range">价格范围 / Range:</label>
+              <select id="liq-heatmap-range" title="围绕中价的对称价格窗。Auto 会按强平实际价差自动取窗。">
+                <option value="auto" selected>自动 / Auto</option>
+                <option value="0.005">±0.5%</option>
+                <option value="0.01">±1%</option>
+                <option value="0.02">±2%</option>
+                <option value="0.05">±5%</option>
+              </select>
+              <span class="meta" id="liq-heatmap-meta">等待数据… / Loading…</span>
+              <span class="heatmap-legend">
+                <span class="swatch ask"></span><span>多头被强平 / Long liq</span>
+                <span class="swatch bid"></span><span>空头被强平 / Short liq</span>
+              </span>
+            </div>
+          </div>
+          <div class="pane-body">
+            <canvas id="liq-heatmap-canvas"></canvas>
+            <div id="liq-heatmap-tooltip"></div>
+            <div id="liq-heatmap-empty">尚无强平事件 / No liquidations yet（liqRecorder 启动后会随强平实时累积）</div>
+          </div>
+        </section>
+      </div>
 
       <section id="sub-card" class="card">
         <div class="card-header">

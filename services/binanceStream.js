@@ -593,6 +593,7 @@ class StreamHub extends EventEmitter {
       case 'kline':         this._handleKline(data, stream); break;
       case 'depthUpdate':   this._handleDepthUpdate(data); break;
       case 'aggTrade':      this._handleAggTrade(data); break;
+      case 'forceOrder':    this._handleForceOrder(data); break;
       default: /* ignore */ break;
     }
   }
@@ -893,6 +894,52 @@ class StreamHub extends EventEmitter {
       this.aggTrades.splice(0, this.aggTrades.length - AGG_TRADES_BUFFER);
     }
     try { this.emit('trade', t); } catch (_) { /* noop */ }
+  }
+
+  // -------------- 强平流 (forceOrder / liquidation) --------------
+  /**
+   * 订阅 <symbol>@forceOrder 强平推送。仅 futures 有此流。
+   * (Spot 无杠杆所以无强平；调用时若是 spot 直接 no-op。)
+   *
+   * 用途：清算热力图 (Liquidation Heatmap) 服务订阅它来录盘并聚合
+   * (time bucket, price bucket) → 累计强平 USDT 名义额。
+   */
+  async ensureForceOrderSubscription() {
+    if (this.market !== 'futures') return;
+    const stream = `${this.lower}@forceOrder`;
+    if (!this.subscribedStreams.has(stream)) {
+      await this._subscribe([stream]);
+    } else {
+      await this._doConnectIfNeeded();
+    }
+  }
+
+  /**
+   * Binance Futures forceOrder 帧结构：
+   *   { e:'forceOrder', E:<eventMs>, o: {
+   *       s, S('SELL'|'BUY'), o, f,
+   *       q(数量), p(破产价), ap(实际成交均价),
+   *       X, l, z, T(成交时间ms)
+   *   }}
+   * 语义：
+   *   S='SELL' → 系统帮"做多者"市价卖出平仓 → long 被强平（价格通常下行）
+   *   S='BUY'  → 系统帮"做空者"市价买入平仓 → short 被强平（价格通常上行）
+   */
+  _handleForceOrder(data) {
+    const o = data && data.o;
+    if (!o) return;
+    const ap = Number(o.ap);
+    const q = Number(o.q);
+    if (!Number.isFinite(ap) || !Number.isFinite(q) || ap <= 0 || q <= 0) return;
+    const evt = {
+      ts: Number(o.T) || Number(data.E) || Date.now(),
+      symbol: String(o.s || this.symbol).toUpperCase(),
+      side: o.S === 'SELL' ? 'long' : 'short', // 被强平的方向
+      price: ap,
+      qty: q,
+      value: ap * q
+    };
+    try { this.emit('liquidation', evt); } catch (_) { /* noop */ }
   }
 
   // -------------- 销毁 --------------
