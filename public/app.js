@@ -1309,6 +1309,21 @@
   // 当真 leave 处理就会让 hover 中的 crosshair 莫名消失。
   // 解法：清理逻辑改由 mouseleave 触发，cross-move 只处理 time != null 的真移动。
   const _hoveredCharts = new WeakSet();
+  // 缓存每个 chart 当前鼠标位置（time + price）。任何 series API（setData /
+  // update / setMarkers / createPriceLine ...）都可能让 lightweight-charts
+  // 内部 crosshair 状态被重置 → hover 中虚线消失。
+  // 解法：每次 chart 渲染流程结束（renderMain / sub-render 末尾）调
+  // _restoreHoverCrosshairs() 强制把 crosshair 画回鼠标最后位置。
+  const _lastHover = new WeakMap(); // chart → { time, price, series }
+  function _restoreHoverCrosshairs() {
+    for (const t of _crossPairs) {
+      if (!_hoveredCharts.has(t.chart)) continue;
+      const last = _lastHover.get(t.chart);
+      if (!last) continue;
+      try { t.chart.setCrosshairPosition(last.price, last.time, last.series); }
+      catch (_) { /* time/price 不在数据范围 */ }
+    }
+  }
 
   function _seriesPriceAt(pair, param) {
     const sd = param.seriesData;
@@ -1324,6 +1339,7 @@
   }
 
   function _onChartMouseLeave(srcChart) {
+    _lastHover.delete(srcChart);
     if (_syncingCrosshair) return;
     _syncingCrosshair = true;
     try {
@@ -1356,15 +1372,18 @@
       // 伪 callback，鼠标可能仍 hover 在 chart 上 —— 此时不能 clear，否则
       // 主图静止 hover 时会因 SSE 推送 K 线而 crosshair 消失。
       if (!param || param.time == null) return;
+      const price = _seriesPriceAt(src, param);
+      // 缓存最后 hover 位置，供 _restoreHoverCrosshairs 恢复用
+      _lastHover.set(src.chart, { time: param.time, price, series: src.series });
       _syncingCrosshair = true;
       try {
         const time = param.time;
         for (const t of _crossPairs) {
           if (t === src) continue;
-          // 用源图自己 series 上当前 price 来定位水平线（不影响垂直时间线对齐）
-          const price = _seriesPriceAt(src, param);
           try { t.chart.setCrosshairPosition(price, time, t.series); }
           catch (_) { /* 目标图无该时间数据 */ }
+          // 同时缓存联动到的 chart 当前位置
+          _lastHover.set(t.chart, { time, price, series: t.series });
         }
         // 主图 hover → 把订单簿基线 + 热图锚点都锁到该时刻
         // time 单位是秒（lightweight-charts UTC seconds），转回毫秒
@@ -2277,6 +2296,10 @@
       chartsFitted = true;
     }
     syncSubChartsToMain();
+    // 数据更新可能让 lightweight-charts 内部 crosshair 状态被重置
+    // (setData / setMarkers / createPriceLine 都会触发 chart 重绘)，
+    // 用缓存的 hover 位置主动恢复，确保 hover 中的虚线和坐标标签不消失。
+    _restoreHoverCrosshairs();
   }
 
   // ---- OI 副图：把 OI 数据按 K 线 openTime 对齐后渲染 ----
@@ -3038,6 +3061,9 @@
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       fitCharts();
+      // 任何 series setData/update + chart.resize 都可能让 lightweight-charts
+      // 内部 crosshair 状态被擦掉 → hover 中虚线消失。统一在这里恢复。
+      try { _restoreHoverCrosshairs(); } catch (_) { /* noop */ }
 
       const elapsed = Date.now() - startedAt;
       if (failed.length) {
