@@ -51,15 +51,18 @@ router.get('/openInterest', async (req, res) => {
   const intervalRaw = String(req.query.interval || '1h');
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 200, 500));
 
-  // 现货市场没有持仓量概念，直接告诉前端
+  // 现货市场没有持仓量概念，直接告诉前端（仍用项目统一的 success 包结构）
   if (market !== 'futures') {
     return res.json({
-      supported: false,
-      reason: '现货市场无持仓量数据 (Spot has no Open Interest)',
-      market,
-      symbol,
-      interval: intervalRaw,
-      data: []
+      success: true,
+      data: {
+        supported: false,
+        reason: '现货市场无持仓量数据 (Spot has no Open Interest)',
+        market,
+        symbol,
+        interval: intervalRaw,
+        data: []
+      }
     });
   }
 
@@ -68,7 +71,7 @@ router.get('/openInterest', async (req, res) => {
 
   try {
     const raw = await BinanceService.getOpenInterestHist(symbol, period, limit);
-    const data = (Array.isArray(raw) ? raw : []).map((row) => ({
+    const series = (Array.isArray(raw) ? raw : []).map((row) => ({
       openTime: Number(row.timestamp),
       openInterest: Number(row.sumOpenInterest),
       openInterestValue: Number(row.sumOpenInterestValue)
@@ -77,29 +80,35 @@ router.get('/openInterest', async (req, res) => {
     ).sort((a, b) => a.openTime - b.openTime);
 
     res.json({
-      supported: true,
-      symbol,
-      market,
-      interval: intervalRaw,
-      period,
-      fellBack,
-      notes: fellBack
-        ? `OI 接口不支持 ${intervalRaw}，已回退到 ${period}`
-        : null,
-      data
+      success: true,
+      data: {
+        supported: true,
+        symbol,
+        market,
+        interval: intervalRaw,
+        period,
+        fellBack,
+        notes: fellBack
+          ? `OI 接口不支持 ${intervalRaw}，已回退到 ${period}`
+          : null,
+        data: series
+      }
     });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[openInterest] failed:', err.message);
     res.json({
-      supported: true,
-      symbol,
-      market,
-      interval: intervalRaw,
-      period,
-      fellBack,
+      success: false,
       error: err.message,
-      data: []
+      data: {
+        supported: true,
+        symbol,
+        market,
+        interval: intervalRaw,
+        period,
+        fellBack,
+        data: []
+      }
     });
   }
 });

@@ -260,32 +260,57 @@
 
   // ---- 时间轴联动 (Time-scale sync across main + sub charts) ----
   // 主图拖动 / 缩放 → 三个副图跟随；副图也能反向触发，实现"群联动"。
-  // 用 syncing 标志位防止循环触发。
   // (Keep volume / CVD / OI panes locked to the same visible range as the
   //  main chart so reading three indicators side-by-side is intuitive.)
-  const _subTimeScales = [
+  //
+  // 实现要点：
+  //   1) 用 *时间范围* (visible time range) 而非 logical range 同步。
+  //      logical range 是各图自己的 bar 索引；副图 bar 数和主图不一定一致
+  //      （OI 5m/1h fallback、空数据等场景），用 logical 会错位。
+  //      time range 用 UTC 秒，跨图通用。
+  //   2) 用 `_syncingTime` 防止 A → B → A 的回环触发。
+  //   3) 空数据图（如现货模式下 OI 没数据）setVisibleRange 会抛 / no-op，
+  //      用 try/catch 吞掉。
+  const allTimeScales = [
+    mainChart.timeScale(),
     volumeChart.timeScale(),
     cvdChart.timeScale(),
     oiChart.timeScale()
   ];
   let _syncingTime = false;
-  function _broadcastRange(srcScale, range) {
-    if (_syncingTime || !range) return;
+  function _broadcastTimeRange(srcScale, range) {
+    if (_syncingTime || !range || range.from == null || range.to == null) return;
     _syncingTime = true;
     try {
-      if (srcScale !== mainChart.timeScale()) {
-        mainChart.timeScale().setVisibleLogicalRange(range);
-      }
-      for (const ts of _subTimeScales) {
-        if (ts !== srcScale) ts.setVisibleLogicalRange(range);
+      for (const ts of allTimeScales) {
+        if (ts === srcScale) continue;
+        try { ts.setVisibleRange({ from: range.from, to: range.to }); }
+        catch (_) { /* 该图为空 / 范围不在数据内 */ }
       }
     } finally {
       _syncingTime = false;
     }
   }
-  mainChart.timeScale().subscribeVisibleLogicalRangeChange((r) => _broadcastRange(mainChart.timeScale(), r));
-  for (const ts of _subTimeScales) {
-    ts.subscribeVisibleLogicalRangeChange((r) => _broadcastRange(ts, r));
+  for (const ts of allTimeScales) {
+    ts.subscribeVisibleTimeRangeChange((r) => _broadcastTimeRange(ts, r));
+  }
+
+  /**
+   * 主动把所有副图拉到主图当前的可见范围。
+   * 用于副图 setData 之后（新数据可能让副图自身的"自然范围"改变），
+   * 以及渲染流程末尾兜底，避免副图任何隐式 fit 把主图 zoom 也带跑。
+   */
+  function syncSubChartsToMain() {
+    const range = mainChart.timeScale().getVisibleRange();
+    if (!range) return;
+    _syncingTime = true;
+    try {
+      for (const ts of [volumeChart.timeScale(), cvdChart.timeScale(), oiChart.timeScale()]) {
+        try { ts.setVisibleRange(range); } catch (_) { /* empty data */ }
+      }
+    } finally {
+      _syncingTime = false;
+    }
   }
 
   // ---- 订单簿深度图 (Order book · 累积阶梯深度图 / cumulative depth chart) ----
@@ -1060,12 +1085,12 @@
     if (_lastOiResp) renderOpenInterest(_lastOiResp, candles);
 
     // 只在首次渲染或用户主动重置时 fitContent，避免实时刷新打断用户拖动
+    // 主图 fit 后立即把所有副图拉到主图当前可见范围（联动同步）
     if (!chartsFitted) {
       mainChart.timeScale().fitContent();
-      volumeChart.timeScale().fitContent();
-      oiChart.timeScale().fitContent();
       chartsFitted = true;
     }
+    syncSubChartsToMain();
   }
 
   // ---- OI 副图：把 OI 数据按 K 线 openTime 对齐后渲染 ----
@@ -1114,9 +1139,8 @@
       }
     }
     oiSeries.setData(points);
-    if (!chartsFitted) {
-      oiChart.timeScale().fitContent();
-    }
+    // OI 副图永远跟随主图，不再 fitContent —— 否则 OI 数据后到时会把主图也拉跑
+    syncSubChartsToMain();
   }
 
   // ---- CVD 副图：从 K 线 takerBuyBase 派生 (Derive CVD from K-line takerBuyBase) ----
@@ -1145,10 +1169,8 @@
       }
     }
     cvdSeries.setData(points);
-    // 同样只在首次/手动重置时 fitContent，避免实时增量重置 CVD 时间轴
-    if (!chartsFitted) {
-      cvdChart.timeScale().fitContent();
-    }
+    // CVD 副图永远跟随主图，避免自己 fitContent 反过来影响主图视图
+    syncSubChartsToMain();
   }
 
   function renderOrderBook(book) {
