@@ -245,11 +245,27 @@
         grid-template-columns: repeat(4, 1fr);
         gap: 12px;
       }
+      /* 显式 grid placement —— 关键修复：避免任一 sub-pane 全屏(position:fixed)
+       * 时，剩余 3 个 pane 触发 grid auto-placement 而错位；退出后无法回到原列。
+       * CSS Grid 规范：absolute/fixed item 会从 grid 中移除，其他 item 重新自动排列。
+       * 给每个 sub-pane 显式锁定 grid-column / grid-row，全屏时其他 pane 完全不动。 */
+      #sub-charts > .sub-pane:nth-child(1) { grid-column: 1; grid-row: 1; }
+      #sub-charts > .sub-pane:nth-child(2) { grid-column: 2; grid-row: 1; }
+      #sub-charts > .sub-pane:nth-child(3) { grid-column: 3; grid-row: 1; }
+      #sub-charts > .sub-pane:nth-child(4) { grid-column: 4; grid-row: 1; }
       @media (max-width: 1500px) {
         #sub-charts { grid-template-columns: repeat(2, 1fr); }
+        #sub-charts > .sub-pane:nth-child(1) { grid-column: 1; grid-row: 1; }
+        #sub-charts > .sub-pane:nth-child(2) { grid-column: 2; grid-row: 1; }
+        #sub-charts > .sub-pane:nth-child(3) { grid-column: 1; grid-row: 2; }
+        #sub-charts > .sub-pane:nth-child(4) { grid-column: 2; grid-row: 2; }
       }
       @media (max-width: 900px) {
         #sub-charts { grid-template-columns: 1fr; }
+        #sub-charts > .sub-pane:nth-child(1) { grid-column: 1; grid-row: 1; }
+        #sub-charts > .sub-pane:nth-child(2) { grid-column: 1; grid-row: 2; }
+        #sub-charts > .sub-pane:nth-child(3) { grid-column: 1; grid-row: 3; }
+        #sub-charts > .sub-pane:nth-child(4) { grid-column: 1; grid-row: 4; }
       }
       .sub-pane {
         background: var(--bg-2);
