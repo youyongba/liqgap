@@ -2291,35 +2291,51 @@
         text: 'VOID'
       });
     }
-    candleSeries.setMarkers(markers);
+    // 关键：setMarkers 会触发主图重绘并清掉 lightweight-charts 内部 hover
+    // state（导致 X 轴 hover label 闪烁）。FVG / liquidity voids 在历史区间，
+    // 短时间内不变，每秒 SSE 推一次完全没必要重设 markers。
+    // 用 hash 缓存：相同则跳过。
+    const markersHash = JSON.stringify(markers);
+    if (renderMain._lastMarkersHash !== markersHash) {
+      candleSeries.setMarkers(markers);
+      renderMain._lastMarkersHash = markersHash;
+    }
 
     // 用横向价格线模拟 FVG 区间上下沿
     // (Price lines: outline FVG zones using horizontal price lines on the
     //  candlestick series. lightweight-charts standalone build has no
     //  native rectangle API, so we approximate with price lines.)
-    if (renderMain._priceLines) {
-      for (const pl of renderMain._priceLines) candleSeries.removePriceLine(pl);
+    // 同样缓存：FVG 没变就不 remove + 重 create（这两个 API 也清 hover state）。
+    const fvgTop3 = fvgs.slice(-3);
+    const priceLinesHash = JSON.stringify(fvgTop3.map((f) => ({
+      u: f.upper, l: f.lower, t: f.type
+    })));
+    if (renderMain._lastPriceLinesHash !== priceLinesHash) {
+      if (renderMain._priceLines) {
+        for (const pl of renderMain._priceLines) candleSeries.removePriceLine(pl);
+      }
+      const priceLines = [];
+      for (const f of fvgTop3) {
+        priceLines.push(candleSeries.createPriceLine({
+          price: f.upper,
+          color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)',
+          lineStyle: LightweightCharts.LineStyle.Dashed,
+          lineWidth: 1,
+          axisLabelVisible: false,
+          title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} top`
+        }));
+        priceLines.push(candleSeries.createPriceLine({
+          price: f.lower,
+          color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.4)' : 'rgba(248, 113, 113, 0.4)',
+          lineStyle: LightweightCharts.LineStyle.Dotted,
+          lineWidth: 1,
+          axisLabelVisible: false,
+          title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} bot`
+        }));
+      }
+      renderMain._priceLines = priceLines;
+      renderMain._lastPriceLinesHash = priceLinesHash;
     }
-    const priceLines = [];
-    for (const f of fvgs.slice(-3)) {
-      priceLines.push(candleSeries.createPriceLine({
-        price: f.upper,
-        color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)',
-        lineStyle: LightweightCharts.LineStyle.Dashed,
-        lineWidth: 1,
-        axisLabelVisible: false,
-        title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} top`
-      }));
-      priceLines.push(candleSeries.createPriceLine({
-        price: f.lower,
-        color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.4)' : 'rgba(248, 113, 113, 0.4)',
-        lineStyle: LightweightCharts.LineStyle.Dotted,
-        lineWidth: 1,
-        axisLabelVisible: false,
-        title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} bot`
-      }));
-    }
-    renderMain._priceLines = priceLines;
 
     els.mainMeta.textContent =
       `${summary.symbol} · ${summary.market} · ${summary.interval} · ${summary.count} bars`;
