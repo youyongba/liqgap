@@ -59,6 +59,7 @@
     liqHeatmapMeta: document.getElementById('liq-heatmap-meta'),
     liqHeatmapWindow: document.getElementById('liq-heatmap-window'),
     liqHeatmapRange: document.getElementById('liq-heatmap-range'),
+    liqHeatmapMode: document.getElementById('liq-heatmap-mode'),
     subFullscreenBtn: document.getElementById('sub-fullscreen'),
     subCard: document.getElementById('sub-card')
   };
@@ -426,26 +427,13 @@
     }
 
     /*
-     * 颜色映射 (Color mapping)：
-     *   - 用 P95（>0 数据的 95 分位）作"满格"上限，少数极端墙不会把其他墙
-     *     压成同色；超过 P95 的部分继续提亮（log 残余 0.85→1.0）。
-     *   - 弱单子也保留 0.20 起的 alpha，> 0 永远是可见色块。
-     *   - bid 绿 / ask 红。
+     * 颜色映射 — Viridis colormap (CoinGlass 风格):
+     *   - 同一格内 bid+ask 合并取强度，整图统一用 viridis (紫→蓝→青→绿→黄)
+     *   - bid/ask 通过 tooltip 区分，不靠颜色（CoinGlass 也是不分方向）
+     *   - P95 归一化避免极端墙吃对比度
      */
-    function _colorFor(value, normMax, isBid) {
-      if (!(value > 0) || !(normMax > 0)) return null;
-      let a;
-      if (value <= normMax) {
-        // log 归一化到 [0.20, 0.85]
-        const n = Math.log(1 + value) / Math.log(1 + normMax);
-        a = 0.20 + 0.65 * n;
-      } else {
-        // P95 以上提亮到 1.0
-        const extra = Math.min(1, Math.log(1 + value) / Math.log(1 + normMax) - 1);
-        a = Math.min(1, 0.85 + 0.15 * extra);
-      }
-      if (isBid) return `rgba(46, 204, 113, ${a.toFixed(3)})`;
-      return `rgba(231, 76, 60, ${a.toFixed(3)})`;
+    function _colorFor(value, normMax /*, _isBid */) {
+      return viridisFromValue(value, normMax);
     }
 
     /** 选好看的价格 tick 步长（1/2/5 ×10^k 系列） */
@@ -465,7 +453,8 @@
       if (!ctx) return;
       const W = state.cssWidth, H = state.cssHeight;
       ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = '#0b0e16';
+      // Viridis 起始色 (深紫 #1a0033) 作背景，与色阶最低端衔接自然
+      ctx.fillStyle = '#1a0033';
       ctx.fillRect(0, 0, W, H);
 
       const d = state.data;
@@ -482,9 +471,7 @@
       const cellW = pw / T;
       const cellH = ph / P;
 
-      // ---- (1) 绘制色块矩阵 ----------------------------------
-      // Y 反向：价格高在上
-      // 用 P95 归一化（不被极端墙吃掉对比度）；后端没返 P95 时退回 max
+      // 色块：合并 bid+ask 取较大值（同价位通常只会有一边有挂单）
       const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
       for (let ti = 0; ti < T; ti += 1) {
         const x = ox + ti * cellW;
@@ -494,7 +481,7 @@
           const askV = d.askMatrix[ti] ? d.askMatrix[ti][pi] : 0;
           const v = Math.max(bidV, askV);
           if (v <= 0) continue;
-          const color = _colorFor(v, normMax, bidV >= askV);
+          const color = _colorFor(v, normMax);
           if (!color) continue;
           ctx.fillStyle = color;
           ctx.fillRect(x, yTop, cellW + 1, cellH + 1);
@@ -645,8 +632,9 @@
       tooltip.innerHTML =
         `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
         `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
-        `<div>买墙 / Bid: <span style="color:#22c55e">${fmtMoney(bid)} USDT</span></div>` +
-        `<div>卖墙 / Ask: <span style="color:#ef4444">${fmtMoney(ask)} USDT</span></div>`;
+        `<div>买墙 / Bid: <span style="color:#5dc863">${fmtMoney(bid)} USDT</span></div>` +
+        `<div>卖墙 / Ask: <span style="color:#fde725">${fmtMoney(ask)} USDT</span></div>` +
+        `<div style="opacity:0.7;font-size:10px">合计: ${fmtMoney(bid + ask)} USDT</div>`;
       tooltip.style.display = 'block';
       const rect = canvas.parentElement.getBoundingClientRect();
       const ttX = Math.min(rect.width - 220, hit.cx + 10);
@@ -833,8 +821,9 @@
     }
 
     const state = {
-      windowMs: Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 3_600_000),
+      windowMs: Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000),
       priceRange: _readPriceRange(),
+      mode: (els.liqHeatmapMode && els.liqHeatmapMode.value) || 'predicted',
       anchorMs: null,
       data: null,
       cssWidth: 0,
@@ -888,24 +877,17 @@
         : (Number.isFinite(d.priceRange) ? `±${(d.priceRange * 100).toFixed(2)}%` : '-');
       const totalLong  = fmtMoney(d.totalLong  || 0);
       const totalShort = fmtMoney(d.totalShort || 0);
+      const modeTag = state.mode === 'predicted' ? '预测 / Predicted' : '已发生 / Realized';
+      const sourceTag = d.sourceInterval ? ` · 源 ${d.sourceInterval}` : '';
+      const cntLabel = state.mode === 'predicted' ? 'K线' : '事件';
+      const cntVal = state.mode === 'predicted' ? (d.candleCount || 0) : (d.eventCount || 0);
       meta.textContent =
-        `${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt} · 事件 ${d.eventCount || 0} (多 ${totalLong} · 空 ${totalShort} USDT)`
+        `${modeTag} · ${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt}${sourceTag} · ${cntLabel} ${cntVal} (多 ${totalLong} · 空 ${totalShort} USDT)`
         + (extra ? ` · ${extra}` : '');
     }
 
-    function _colorFor(value, normMax, isLong) {
-      if (!(value > 0) || !(normMax > 0)) return null;
-      let a;
-      if (value <= normMax) {
-        const n = Math.log(1 + value) / Math.log(1 + normMax);
-        a = 0.20 + 0.65 * n;
-      } else {
-        const extra = Math.min(1, Math.log(1 + value) / Math.log(1 + normMax) - 1);
-        a = Math.min(1, 0.85 + 0.15 * extra);
-      }
-      // long 被强平 → 红；short 被强平 → 绿
-      if (isLong) return `rgba(231, 76, 60, ${a.toFixed(3)})`;
-      return `rgba(46, 204, 113, ${a.toFixed(3)})`;
+    function _colorFor(value, normMax) {
+      return viridisFromValue(value, normMax);
     }
 
     function _niceStep(rawStep) {
@@ -924,7 +906,8 @@
       if (!ctx) return;
       const W = state.cssWidth, H = state.cssHeight;
       ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = '#0b0e16';
+      // CoinGlass 风格深紫背景，与 viridis 起始色衔接
+      ctx.fillStyle = '#1a0033';
       ctx.fillRect(0, 0, W, H);
 
       const d = state.data;
@@ -941,17 +924,17 @@
       const cellH = ph / P;
 
       const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
-      // 绘制色块：每格挑长/短中较大的一方为代表色（清算事件天然成簇，
-      // 一格中通常只有一种方向，少数双方都有的格用较大的一方表达）
+      // 色块：合并 long+short 总强度（与 CoinGlass 一致——颜色不分方向，
+      // 方向通过 tooltip 区分）
       for (let ti = 0; ti < T; ti += 1) {
         const x = ox + ti * cellW;
         for (let pi = 0; pi < P; pi += 1) {
           const yTop = oy + (P - 1 - pi) * cellH;
           const lv = d.longMatrix[ti]  ? d.longMatrix[ti][pi]  : 0;
           const sv = d.shortMatrix[ti] ? d.shortMatrix[ti][pi] : 0;
-          const v = Math.max(lv, sv);
+          const v = lv + sv;
           if (v <= 0) continue;
-          const color = _colorFor(v, normMax, lv >= sv);
+          const color = _colorFor(v, normMax);
           if (!color) continue;
           ctx.fillStyle = color;
           ctx.fillRect(x, yTop, cellW + 1, cellH + 1);
@@ -1095,11 +1078,15 @@
       const p  = d.prices[hit.pi];
       const lv = (d.longMatrix[hit.ti]  || [])[hit.pi] || 0;
       const sv = (d.shortMatrix[hit.ti] || [])[hit.pi] || 0;
+      const isPred = state.mode === 'predicted';
+      const longLab  = isPred ? '潜在多头清算 / Long liq pot.'  : '多被强平 / Long liq';
+      const shortLab = isPred ? '潜在空头清算 / Short liq pot.' : '空被强平 / Short liq';
       tooltip.innerHTML =
         `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
         `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
-        `<div>多被强平 / Long liq: <span style="color:#ef4444">${fmtMoney(lv)} USDT</span></div>` +
-        `<div>空被强平 / Short liq: <span style="color:#22c55e">${fmtMoney(sv)} USDT</span></div>`;
+        `<div>${longLab}: <span style="color:#fde725">${fmtMoney(lv)} USDT</span></div>` +
+        `<div>${shortLab}: <span style="color:#5dc863">${fmtMoney(sv)} USDT</span></div>` +
+        `<div style="opacity:0.7;font-size:10px">合计: ${fmtMoney(lv + sv)} USDT</div>`;
       tooltip.style.display = 'block';
       const rect = canvas.parentElement.getBoundingClientRect();
       const ttX = Math.min(rect.width - 230, hit.cx + 10);
@@ -1140,20 +1127,32 @@
       const { fromMs, toMs, bucketMs } = _resolveRange();
       const symbol = els.symbol.value.toUpperCase();
       const market = els.market.value;
-      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
+      const mode = state.mode;
+      const key = `${mode}|${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
       const now = Date.now();
       if (key === state.lastFetchKey && now - state.lastFetchAt < 5_000) return;
       state.lastFetchKey = key;
       state.lastFetchAt = now;
       try {
-        const params = new URLSearchParams({
-          symbol, market,
-          from: String(fromMs),
-          to: String(toMs),
-          bucketMs: String(bucketMs)
-        });
-        params.set('priceRange', state.priceRange === 'auto' ? 'auto' : String(state.priceRange));
-        const url = `/api/liquidations/heatmap?${params.toString()}`;
+        let url;
+        if (mode === 'predicted') {
+          // 预测性接口按 windowMs + 实时 now 自己定窗口（不接受 from/to）
+          const params = new URLSearchParams({
+            symbol, market,
+            windowMs: String(state.windowMs)
+          });
+          if (state.priceRange !== 'auto') params.set('priceRange', String(state.priceRange));
+          url = `/api/predictive/liquidations?${params.toString()}`;
+        } else {
+          const params = new URLSearchParams({
+            symbol, market,
+            from: String(fromMs),
+            to: String(toMs),
+            bucketMs: String(bucketMs)
+          });
+          params.set('priceRange', state.priceRange === 'auto' ? 'auto' : String(state.priceRange));
+          url = `/api/liquidations/heatmap?${params.toString()}`;
+        }
         const data = await fetchJsonSoft(url);
         if (!data) {
           _updateMeta('拉取失败 / Fetch failed');
@@ -1179,7 +1178,7 @@
 
     if (els.liqHeatmapWindow) {
       els.liqHeatmapWindow.addEventListener('change', () => {
-        state.windowMs = Number(els.liqHeatmapWindow.value) || 3_600_000;
+        state.windowMs = Number(els.liqHeatmapWindow.value) || 86_400_000;
         state.lastFetchKey = '';
         scheduleFetch(0);
       });
@@ -1188,6 +1187,15 @@
       els.liqHeatmapRange.addEventListener('change', () => {
         state.priceRange = _readPriceRange();
         state.lastFetchKey = '';
+        scheduleFetch(0);
+      });
+    }
+    if (els.liqHeatmapMode) {
+      els.liqHeatmapMode.addEventListener('change', () => {
+        state.mode = els.liqHeatmapMode.value || 'predicted';
+        state.data = null;
+        state.lastFetchKey = '';
+        _draw();
         scheduleFetch(0);
       });
     }
@@ -1496,6 +1504,47 @@
 
   function toLwSeconds(ms) {
     return Math.floor(Number(ms) / 1000);
+  }
+
+  /*
+   * Viridis colormap helper —— CoinGlass 风格的"紫→蓝→青→绿→黄"渐变。
+   * 输入 t ∈ [0,1]，返回 'rgb(r,g,b)' 字符串。
+   * 5 个锚点之间线性插值。Alpha 由调用方决定（背景已是深紫，色块用 1.0）。
+   */
+  const VIRIDIS_STOPS = [
+    [0.00,  68,  1, 84],
+    [0.25,  59, 82, 139],
+    [0.50,  33, 144, 140],
+    [0.75,  93, 200,  99],
+    [1.00, 253, 231,  37]
+  ];
+  function viridisColor(t, alpha) {
+    if (!Number.isFinite(t)) return 'rgba(68,1,84,0)';
+    const x = Math.max(0, Math.min(1, t));
+    let i = 0;
+    while (i < VIRIDIS_STOPS.length - 1 && x > VIRIDIS_STOPS[i + 1][0]) i += 1;
+    const [t0, r0, g0, b0] = VIRIDIS_STOPS[i];
+    const [t1, r1, g1, b1] = VIRIDIS_STOPS[Math.min(i + 1, VIRIDIS_STOPS.length - 1)];
+    const span = (t1 - t0) || 1;
+    const f = (x - t0) / span;
+    const r = Math.round(r0 + (r1 - r0) * f);
+    const g = Math.round(g0 + (g1 - g0) * f);
+    const b = Math.round(b0 + (b1 - b0) * f);
+    if (Number.isFinite(alpha)) return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+    return `rgb(${r},${g},${b})`;
+  }
+  /** 把 (value, normMax) 映射成 viridis 色 + log 拉伸 */
+  function viridisFromValue(value, normMax) {
+    if (!(value > 0) || !(normMax > 0)) return null;
+    let t;
+    if (value <= normMax) {
+      t = Math.log(1 + value) / Math.log(1 + normMax);
+      t = 0.05 + 0.85 * t; // 0.05~0.90
+    } else {
+      const extra = Math.min(1, Math.log(1 + value) / Math.log(1 + normMax) - 1);
+      t = Math.min(1, 0.90 + 0.10 * extra);
+    }
+    return viridisColor(t, 0.95);
   }
 
   // 普通获取 (Strict): 失败抛错

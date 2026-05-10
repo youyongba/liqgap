@@ -225,6 +225,15 @@
       }
       .heatmap-legend .bid { background: linear-gradient(90deg, rgba(34,197,94,0.15), rgba(34,197,94,0.95)); }
       .heatmap-legend .ask { background: linear-gradient(90deg, rgba(239,68,68,0.15), rgba(239,68,68,0.95)); }
+      /* Viridis legend：与 canvas 内的色阶一致 */
+      .viridis-legend .grad {
+        display: inline-block;
+        width: 80px;
+        height: 10px;
+        border-radius: 2px;
+        background: linear-gradient(90deg, #440154 0%, #3B528B 25%, #21908C 50%, #5DC863 75%, #FDE725 100%);
+        vertical-align: middle;
+      }
 
       #main-chart, #sub-charts {
         flex: 1;
@@ -797,10 +806,7 @@
                 <option value="0.05">±5%</option>
               </select>
               <span class="meta" id="heatmap-meta">等待数据… / Loading…</span>
-              <span class="heatmap-legend">
-                <span class="swatch bid"></span><span>买墙 / Bid</span>
-                <span class="swatch ask"></span><span>卖墙 / Ask</span>
-              </span>
+              <span class="heatmap-legend viridis-legend" title="低 → 高：紫 → 蓝 → 青 → 绿 → 黄"><span>低</span><span class="grad"></span><span>高</span></span>
             </div>
           </div>
           <div class="pane-body">
@@ -814,15 +820,20 @@
           <div class="card-header">
             <h2>清算热力图 / Liquidation Heatmap</h2>
             <div class="heatmap-toolbar">
+              <label for="liq-heatmap-mode">模式 / Mode:</label>
+              <select id="liq-heatmap-mode" title="预测性 = 基于K线杠杆估算的潜在清算线（CoinGlass 风格）；已发生 = 真实强平事件累积">
+                <option value="predicted" selected>预测性 / Predicted</option>
+                <option value="realized">已发生 / Realized</option>
+              </select>
               <label for="liq-heatmap-window">窗口 / Window:</label>
               <select id="liq-heatmap-window" title="清算热图回看时间窗">
                 <option value="900000">15 分钟 / 15m</option>
-                <option value="3600000" selected>1 小时 / 1h</option>
+                <option value="3600000">1 小时 / 1h</option>
                 <option value="14400000">4 小时 / 4h</option>
-                <option value="86400000">24 小时 / 24h</option>
+                <option value="86400000" selected>24 小时 / 24h</option>
               </select>
               <label for="liq-heatmap-range">价格范围 / Range:</label>
-              <select id="liq-heatmap-range" title="围绕中价的对称价格窗。Auto 会按强平实际价差自动取窗。">
+              <select id="liq-heatmap-range" title="围绕中价的对称价格窗。Auto 按数据自动取窗。">
                 <option value="auto" selected>自动 / Auto</option>
                 <option value="0.005">±0.5%</option>
                 <option value="0.01">±1%</option>
@@ -830,10 +841,7 @@
                 <option value="0.05">±5%</option>
               </select>
               <span class="meta" id="liq-heatmap-meta">等待数据… / Loading…</span>
-              <span class="heatmap-legend">
-                <span class="swatch ask"></span><span>多头被强平 / Long liq</span>
-                <span class="swatch bid"></span><span>空头被强平 / Short liq</span>
-              </span>
+              <span class="heatmap-legend viridis-legend" title="低 → 高：紫 → 蓝 → 青 → 绿 → 黄"><span>低</span><span class="grad"></span><span>高</span></span>
             </div>
           </div>
           <div class="pane-body">

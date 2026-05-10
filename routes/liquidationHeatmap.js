@@ -34,7 +34,7 @@
 
 const express = require('express');
 const recorder = require('../services/liquidationRecorder');
-const BinanceService = require('../services/binance');
+const { BinanceService } = require('../services/binance');
 
 const router = express.Router();
 const ONE_HOUR_MS = 3600_000;

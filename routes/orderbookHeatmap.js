@@ -39,7 +39,7 @@
 
 const express = require('express');
 const recorder = require('../services/orderbookRecorder');
-const BinanceService = require('../services/binance');
+const { BinanceService } = require('../services/binance');
 
 const router = express.Router();
 
