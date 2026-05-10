@@ -52,7 +52,9 @@
     heatmapEmpty: document.getElementById('heatmap-empty'),
     heatmapMeta: document.getElementById('heatmap-meta'),
     heatmapWindow: document.getElementById('heatmap-window'),
-    heatmapRange: document.getElementById('heatmap-range')
+    heatmapRange: document.getElementById('heatmap-range'),
+    subFullscreenBtn: document.getElementById('sub-fullscreen'),
+    subCard: document.getElementById('sub-card')
   };
 
   // 当前周期下两个副图的取数策略
@@ -344,15 +346,15 @@
     const state = {
       windowMs: Number((els.heatmapWindow && els.heatmapWindow.value) || 3_600_000),
       priceRange: Number((els.heatmapRange && els.heatmapRange.value) || 0.01),
-      data: null,           // 最近一次接口数据
+      // anchorMs：热图 to 时刻（默认 null = 跟实时 now，主图 hover 时锁定到 hover 时间）
+      anchorMs: null,
+      data: null,
       pixelRatio: window.devicePixelRatio || 1,
       cssWidth: 0,
       cssHeight: 0,
-      // 记录上次成功拉取参数，避免 hover/微小拖动导致刷屏
       lastFetchKey: '',
       lastFetchAt: 0,
       pendingTimer: null,
-      // 视图边界（绘图区，不含坐标轴留白）
       plot: { x: 56, y: 6, w: 0, h: 0 },
       hoverCell: null
     };
@@ -380,10 +382,10 @@
       // 不再写 canvas.style.width/height —— canvas 已经是 absolute inset:0,
       // 100% 跟随 .pane-body，让父容器单向决定尺寸，避免反向反馈。
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      state.plot.x = 56;
-      state.plot.y = 6;
-      state.plot.w = Math.max(20, w - state.plot.x - 8);
-      state.plot.h = Math.max(20, h - state.plot.y - 18);
+      state.plot.x = 64;
+      state.plot.y = 8;
+      state.plot.w = Math.max(20, w - state.plot.x - 12);
+      state.plot.h = Math.max(20, h - state.plot.y - 22);
       _draw();
     }
 
@@ -407,26 +409,44 @@
       meta.textContent = `${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 时间桶 ${(d.bucketMs/60_000).toFixed(0)}m · 价格桶 ${d.priceBucket || '-'} · 网格 ${cells} · 快照 ${d.snapshotCount || 0}` + (extra ? ` · ${extra}` : '');
     }
 
-    // 颜色映射：log scale，bid 偏绿、ask 偏红，越亮挂单越厚
+    /*
+     * 颜色映射：
+     *   - 用"分位数 + log"两段映射：极弱单子保留可见（>0 都至少给 0.18 alpha），
+     *     避免大墙吃掉对比度让其他单子全黑。
+     *   - bid 绿 / ask 红，alpha 走 log 归一化让色差线性可读。
+     */
     function _colorFor(value, maxValue, isBid) {
       if (!(value > 0) || !(maxValue > 0)) return null;
-      // log 归一化：log(1+v) / log(1+max)
       const n = Math.log(1 + value) / Math.log(1 + maxValue);
-      const a = Math.min(0.95, Math.max(0.06, n)); // alpha 0.06~0.95
-      // 颜色：bid → 绿 (34,197,94)，ask → 红 (239,68,68)
-      const c = isBid ? '34,197,94' : '239,68,68';
-      return `rgba(${c},${a.toFixed(3)})`;
+      // 0.18 → 1.0 区间，> 0 永远显示为可见色块
+      const a = Math.min(1.0, 0.18 + 0.82 * n);
+      // bid 绿 / ask 红；高强度时拉饱和
+      if (isBid) return `rgba(46, 204, 113, ${a.toFixed(3)})`;
+      return `rgba(231, 76, 60, ${a.toFixed(3)})`;
+    }
+
+    /** 选好看的价格 tick 步长（1/2/5 ×10^k 系列） */
+    function _niceStep(rawStep) {
+      if (!(rawStep > 0)) return 1;
+      const exp = Math.pow(10, Math.floor(Math.log10(rawStep)));
+      const norm = rawStep / exp;
+      let factor;
+      if (norm < 1.5) factor = 1;
+      else if (norm < 3.5) factor = 2;
+      else if (norm < 7.5) factor = 5;
+      else factor = 10;
+      return factor * exp;
     }
 
     function _draw() {
       if (!ctx) return;
-      ctx.clearRect(0, 0, state.cssWidth, state.cssHeight);
+      const W = state.cssWidth, H = state.cssHeight;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#0b0e16';
+      ctx.fillRect(0, 0, W, H);
+
       const d = state.data;
       const { x: ox, y: oy, w: pw, h: ph } = state.plot;
-
-      // 背景
-      ctx.fillStyle = '#0b0e16';
-      ctx.fillRect(0, 0, state.cssWidth, state.cssHeight);
 
       if (!d || !d.times || !d.times.length || !d.prices || !d.prices.length || !(d.maxValue > 0)) {
         if (empty) empty.style.display = 'flex';
@@ -439,7 +459,8 @@
       const cellW = pw / T;
       const cellH = ph / P;
 
-      // 绘制网格（注意：Y 反向 —— 价格高在上）
+      // ---- (1) 绘制色块矩阵 ----------------------------------
+      // Y 反向：价格高在上
       for (let ti = 0; ti < T; ti += 1) {
         const x = ox + ti * cellW;
         for (let pi = 0; pi < P; pi += 1) {
@@ -448,69 +469,116 @@
           const askV = d.askMatrix[ti] ? d.askMatrix[ti][pi] : 0;
           const v = Math.max(bidV, askV);
           if (v <= 0) continue;
-          const isBid = bidV >= askV;
-          const color = _colorFor(v, d.maxValue, isBid);
+          const color = _colorFor(v, d.maxValue, bidV >= askV);
           if (!color) continue;
           ctx.fillStyle = color;
-          ctx.fillRect(x, yTop, Math.ceil(cellW) + 0.5, Math.ceil(cellH) + 0.5);
+          ctx.fillRect(x, yTop, cellW + 1, cellH + 1);
         }
       }
 
-      // 中价虚线
-      if (Number.isFinite(d.midPrice) && d.priceMin != null && d.priceMax != null) {
-        const yMid = oy + ph * (1 - (d.midPrice - d.priceMin) / (d.priceMax - d.priceMin));
+      // ---- (2) 水平价格 grid（暗色虚线） ---------------------
+      const priceSpan = d.priceMax - d.priceMin;
+      const targetTicks = Math.max(6, Math.min(12, Math.floor(ph / 36)));
+      const step = _niceStep(priceSpan / targetTicks);
+      const startTick = Math.ceil(d.priceMin / step) * step;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.beginPath();
+      for (let p = startTick; p <= d.priceMax; p += step) {
+        const y = oy + ph * (1 - (p - d.priceMin) / priceSpan);
+        ctx.moveTo(ox, y);
+        ctx.lineTo(ox + pw, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // ---- (3) 价格刻度 (左侧) -------------------------------
+      ctx.fillStyle = 'rgba(220,228,240,0.95)';
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      const priceFmt = (p) => p >= 1000 ? p.toFixed(0) : p.toFixed(2);
+      for (let p = startTick; p <= d.priceMax; p += step) {
+        const y = oy + ph * (1 - (p - d.priceMin) / priceSpan);
+        ctx.fillText(priceFmt(p), ox - 6, y);
+      }
+
+      // ---- (4) 中价线 + 中价标签（白色实线 + 价签） --------------
+      if (Number.isFinite(d.midPrice)) {
+        const yMid = oy + ph * (1 - (d.midPrice - d.priceMin) / priceSpan);
         if (yMid > oy && yMid < oy + ph) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(255,255,255,0.45)';
-          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
           ctx.lineWidth = 1;
+          ctx.setLineDash([6, 4]);
           ctx.beginPath();
           ctx.moveTo(ox, yMid);
           ctx.lineTo(ox + pw, yMid);
           ctx.stroke();
+          ctx.setLineDash([]);
+          // 中价 tag：右侧
+          const tagText = priceFmt(d.midPrice);
+          ctx.font = 'bold 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+          const tagW = ctx.measureText(tagText).width + 8;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+          ctx.fillRect(ox + pw - tagW - 2, yMid - 8, tagW, 16);
+          ctx.fillStyle = '#0b0e16';
+          ctx.textAlign = 'center';
+          ctx.fillText(tagText, ox + pw - tagW / 2 - 2, yMid);
           ctx.restore();
         }
       }
 
-      // 价格刻度（左侧，5 档）
-      ctx.fillStyle = 'rgba(180,190,210,0.85)';
-      ctx.font = '10px system-ui, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.textBaseline = 'middle';
-      const priceTicks = 5;
-      for (let i = 0; i <= priceTicks; i += 1) {
-        const frac = i / priceTicks;
-        const price = d.priceMin + (d.priceMax - d.priceMin) * (1 - frac);
-        const y = oy + ph * frac;
-        ctx.fillText(price.toFixed(price >= 1000 ? 0 : 2), ox - 4, y);
-      }
-
-      // 时间刻度（底部，4 档）
+      // ---- (5) 时间刻度 (底部) -------------------------------
+      ctx.fillStyle = 'rgba(220,228,240,0.95)';
+      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'top';
-      const timeTicks = 4;
+      const timeTicks = Math.max(4, Math.min(10, Math.floor(pw / 90)));
       for (let i = 0; i <= timeTicks; i += 1) {
         const frac = i / timeTicks;
         const t = d.fromMs + (d.toMs - d.fromMs) * frac;
         const x = ox + pw * frac;
         const text = fmtBJTimeHMS(t).slice(0, 5); // HH:mm
-        ctx.fillText(text, Math.max(ox + 2, Math.min(ox + pw - 2, x)), oy + ph + 2);
+        ctx.fillText(text, Math.max(ox + 14, Math.min(ox + pw - 14, x)), oy + ph + 4);
+        // 底部小竖线
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, oy + ph);
+        ctx.lineTo(x + 0.5, oy + ph + 3);
+        ctx.stroke();
       }
 
-      // 边框
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      // ---- (6) anchor 锁定线（主图 hover 时）-----------------
+      if (Number.isFinite(state.anchorMs) && state.anchorMs >= d.fromMs && state.anchorMs <= d.toMs) {
+        const xA = ox + pw * ((state.anchorMs - d.fromMs) / (d.toMs - d.fromMs));
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 215, 0, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(xA, oy);
+        ctx.lineTo(xA, oy + ph);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // ---- (7) 边框 + hover 高亮 ------------------------------
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
       ctx.lineWidth = 1;
       ctx.strokeRect(ox + 0.5, oy + 0.5, pw, ph);
 
-      // hover 高亮
       if (state.hoverCell) {
         const { ti, pi } = state.hoverCell;
         if (ti >= 0 && ti < T && pi >= 0 && pi < P) {
           const x = ox + ti * cellW;
           const y = oy + (P - 1 - pi) * cellH;
           ctx.save();
-          ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+          ctx.lineWidth = 1.5;
           ctx.strokeRect(x + 0.5, y + 0.5, cellW, cellH);
           ctx.restore();
         }
@@ -568,32 +636,37 @@
       _draw();
     });
 
-    // 拉数据：以主图 visibleTimeRange 为准，没拿到就用 [now-windowMs, now]
+    /*
+     * 取数策略 (Range strategy):
+     *   - 用户在 toolbar 选的 windowMs 直接决定窗口长度（15m/1h/4h/24h），
+     *     不再被主图 visibleTimeRange 覆盖 —— 这是之前"切窗口没反应"的根因。
+     *   - to = anchorMs（主图 hover 锁定的时刻）|| Date.now()。
+     *   - bucket 自适应：力求每图约 60~90 个时间桶，可读性最佳。
+     */
     function _resolveRange() {
-      let toMs = Date.now();
-      let fromMs = toMs - state.windowMs;
-      try {
-        const r = mainChart.timeScale().getVisibleRange();
-        if (r && r.from != null && r.to != null) {
-          toMs = Math.floor(Number(r.to) * 1000);
-          fromMs = Math.floor(Number(r.from) * 1000);
-          // 主图可见范围若过窄（< 5 分钟）退化到 windowMs，保持热图可读
-          if (toMs - fromMs < 5 * 60_000) {
-            fromMs = toMs - state.windowMs;
-          }
-          // 主图可见范围超过录盘容量（默认 25h）会拉不到数据，给个上限
-          if (toMs - fromMs > 25 * 3600_000) {
-            fromMs = toMs - 25 * 3600_000;
-          }
-        }
-      } catch (_) { /* fall back */ }
-      // bucket 自适应：windowMs/60 → 60 桶左右
+      const toMs = Number.isFinite(state.anchorMs) ? state.anchorMs : Date.now();
+      const fromMs = toMs - state.windowMs;
       const span = toMs - fromMs;
-      let bucketMs = 60_000;
-      if (span > 4 * 3600_000)  bucketMs = 5 * 60_000;
-      if (span > 12 * 3600_000) bucketMs = 15 * 60_000;
-      if (span > 24 * 3600_000) bucketMs = 30 * 60_000;
+      let bucketMs;
+      if (span <= 15 * 60_000)        bucketMs = 60_000;          // 15m → 1m × 15
+      else if (span <= 60 * 60_000)   bucketMs = 60_000;          // 1h  → 1m × 60
+      else if (span <= 4 * 3600_000)  bucketMs = 2 * 60_000;      // 4h  → 2m × 120
+      else if (span <= 12 * 3600_000) bucketMs = 10 * 60_000;     // 12h → 10m × 72
+      else                            bucketMs = 15 * 60_000;     // 24h → 15m × 96
       return { fromMs, toMs, bucketMs };
+    }
+
+    /**
+     * 主图 hover 时的锚定回调。hoverMs 为 null 表示恢复到实时 now。
+     * 这是热图被主图驱动的"唯一通道"——不会响应主图的缩放/拖动，
+     * 因为缩放主图时大家通常想保持热图窗口稳定来对照具体时刻。
+     */
+    function setHeatmapAnchor(hoverMs) {
+      const next = Number.isFinite(hoverMs) ? Math.floor(hoverMs) : null;
+      if (next === state.anchorMs) return;
+      state.anchorMs = next;
+      state.lastFetchKey = '';
+      scheduleFetch(next == null ? 0 : 200);
     }
 
     async function _fetch() {
@@ -631,11 +704,6 @@
         _fetch();
       }, delay != null ? delay : 250);
     }
-
-    // 主图可见范围变化 → 节流刷新热图（debounce 300ms）
-    mainChart.timeScale().subscribeVisibleTimeRangeChange(() => {
-      scheduleFetch(300);
-    });
 
     // 控件变化 → 立即刷新
     if (els.heatmapWindow) {
@@ -686,10 +754,13 @@
 
     return {
       refresh: () => scheduleFetch(0),
+      setAnchor: setHeatmapAnchor,
+      resize: () => _resizeCanvas(),
       onSymbolMarketChange: () => {
         _setVisibility();
         state.data = null;
         state.lastFetchKey = '';
+        state.anchorMs = null;
         _draw();
         if (_isApplicable()) scheduleFetch(300);
       }
@@ -742,9 +813,10 @@
             if (t === src) continue;
             try { t.chart.clearCrosshairPosition(); } catch (_) { /* noop */ }
           }
-          // 仅在主图离开时复位 baseline 锚点（其它图 hover 离开不影响）
-          if (src.chart === mainChart && typeof setObBaselineHoverAnchor === 'function') {
-            setObBaselineHoverAnchor(null);
+          // 仅在主图离开时复位 baseline / heatmap 锚点
+          if (src.chart === mainChart) {
+            if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(null);
+            if (heatmap && heatmap.setAnchor) heatmap.setAnchor(null);
           }
           return;
         }
@@ -756,10 +828,12 @@
           try { t.chart.setCrosshairPosition(price, time, t.series); }
           catch (_) { /* 目标图无该时间数据 */ }
         }
-        // 主图 hover → 把订单簿基线锚定到该时刻（debounce 200ms）
+        // 主图 hover → 把订单簿基线 + 热图锚点都锁到该时刻
         // time 单位是秒（lightweight-charts UTC seconds），转回毫秒
-        if (src.chart === mainChart && typeof setObBaselineHoverAnchor === 'function') {
-          setObBaselineHoverAnchor(Number(time) * 1000);
+        if (src.chart === mainChart) {
+          const ms = Number(time) * 1000;
+          if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(ms);
+          if (heatmap && heatmap.setAnchor) heatmap.setAnchor(ms);
         }
       } finally {
         _syncingCrosshair = false;
@@ -2397,6 +2471,35 @@
   }
 
   els.refresh.addEventListener('click', () => { markChartsNeedFit(); poll(); restartSSE(); });
+
+  // ---- 副图一键满屏 (Sub-chart fullscreen toggle) -----------------------
+  // 切换 .is-fullscreen class 让副图卡占满视口；切换后通过 rAF 让 lightweight
+  // -charts 重新 resize，并触发 Chart.js 订单簿重绘。Esc 退出。
+  function toggleSubFullscreen(force) {
+    if (!els.subCard) return;
+    const next = typeof force === 'boolean' ? force : !els.subCard.classList.contains('is-fullscreen');
+    els.subCard.classList.toggle('is-fullscreen', next);
+    if (els.subFullscreenBtn) {
+      els.subFullscreenBtn.textContent = next ? '⤢ 退出 / Exit' : '⛶ 满屏 / Fullscreen';
+      els.subFullscreenBtn.classList.toggle('active', next);
+    }
+    // 等 layout 完成后再 resize，避免拿到 0 尺寸
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try { fitCharts(); } catch (_) { /* noop */ }
+        try { syncSubChartsToMain(); } catch (_) { /* noop */ }
+        try { if (typeof orderbookChart !== 'undefined' && orderbookChart) orderbookChart.resize(); } catch (_) { /* noop */ }
+      });
+    });
+  }
+  if (els.subFullscreenBtn) {
+    els.subFullscreenBtn.addEventListener('click', () => toggleSubFullscreen());
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && els.subCard && els.subCard.classList.contains('is-fullscreen')) {
+      toggleSubFullscreen(false);
+    }
+  });
   els.symbol.addEventListener('change', () => {
     // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
     _lastOiResp = null;
