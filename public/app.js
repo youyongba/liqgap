@@ -313,6 +313,68 @@
     }
   }
 
+  // ---- 十字准星 (Crosshair) 跨图联动 ----
+  // 一个图上 hover → 其他图同位置画一根垂直线，方便对照同一时刻的指标。
+  // (Sync crosshair across main / volume / CVD / OI charts so hovering one
+  //  shows where you are on the others.)
+  //
+  // 实现要点：
+  //   - subscribeCrosshairMove 在鼠标进入 / 移动时回调 param={time, point, seriesData}
+  //   - 鼠标离开图表时 param.time === undefined → 调 clearCrosshairPosition
+  //   - setCrosshairPosition(price, time, series) 中的 price 只决定水平线位置，
+  //     我们关心的是垂直线（时间线），所以传该图自己 series 上的 price 即可：
+  //       * 主图 candleSeries：取 close
+  //       * histogram/area/line series：取 value
+  //     没数据时退化用 0，不会报错（4.1.x 接受任意数）。
+  //   - 用 _syncingCrosshair 防回环
+  const _crossPairs = [
+    { chart: mainChart,   series: candleSeries },
+    { chart: volumeChart, series: volumeSeries },
+    { chart: cvdChart,    series: cvdSeries },
+    { chart: oiChart,     series: oiSeries }
+  ];
+  let _syncingCrosshair = false;
+
+  function _seriesPriceAt(pair, param) {
+    const sd = param.seriesData;
+    if (!sd) return 0;
+    // Map 或 plain object 都兼容
+    let v;
+    if (typeof sd.get === 'function') v = sd.get(pair.series);
+    else v = sd[pair.series];
+    if (!v) return 0;
+    if (Number.isFinite(v.close)) return v.close;
+    if (Number.isFinite(v.value)) return v.value;
+    return 0;
+  }
+
+  for (const src of _crossPairs) {
+    src.chart.subscribeCrosshairMove((param) => {
+      if (_syncingCrosshair) return;
+      _syncingCrosshair = true;
+      try {
+        // 鼠标离开 → 清掉所有图的准星
+        if (!param || param.time == null) {
+          for (const t of _crossPairs) {
+            if (t === src) continue;
+            try { t.chart.clearCrosshairPosition(); } catch (_) { /* noop */ }
+          }
+          return;
+        }
+        const time = param.time;
+        for (const t of _crossPairs) {
+          if (t === src) continue;
+          // 用源图自己 series 上当前 price 来定位水平线（不影响垂直时间线对齐）
+          const price = _seriesPriceAt(src, param);
+          try { t.chart.setCrosshairPosition(price, time, t.series); }
+          catch (_) { /* 目标图无该时间数据 */ }
+        }
+      } finally {
+        _syncingCrosshair = false;
+      }
+    });
+  }
+
   // ---- 订单簿深度图 (Order book · 累积阶梯深度图 / cumulative depth chart) ----
   // 设计 (Design)：
   //   X 轴 = 价格 (linear scale)，Y 轴 = 从最优档累积的名义额 (USDT)。
