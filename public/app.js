@@ -1320,6 +1320,28 @@
   // mousemove 事件。
   const _lastMousePos = new WeakMap(); // container → { clientX, clientY }
 
+  function _dispatchMouseMoveTo(container, pos) {
+    if (!container || !pos) return;
+    // 派发到 container 内**所有** canvas 元素，让事件冒泡到 lightweight-charts
+    // 内部 paneWidget 的 mouseEventHandler。dispatch 到 container 本身不行，
+    // 因为冒泡是从内向外 —— container 是最外层，不会触发其子孙的 listener。
+    const canvases = container.querySelectorAll('canvas');
+    const targets = canvases.length ? Array.from(canvases) : [container];
+    for (const target of targets) {
+      try {
+        target.dispatchEvent(new MouseEvent('mousemove', {
+          clientX: pos.clientX,
+          clientY: pos.clientY,
+          button: 0,
+          buttons: 0,
+          bubbles: true,
+          cancelable: true,
+          view: window
+        }));
+      } catch (_) { /* noop */ }
+    }
+  }
+
   function _restoreHoverCrosshairs() {
     for (const t of _crossPairs) {
       if (!_hoveredCharts.has(t.chart)) continue;
@@ -1328,24 +1350,34 @@
         try { t.chart.setCrosshairPosition(last.price, last.time, last.series); }
         catch (_) { /* time/price 不在数据范围 */ }
       }
-      // 关键补丁：派发 untrusted mousemove 到 chart container，让 lightweight-
-      // charts 内部 hover state 重新激活 → 时间轴 label 才会画出来。
-      // 我们的 mousemove 监听用 ev.isTrusted 过滤，避免缓存被 untrusted 事件污染。
-      const pos = _lastMousePos.get(t.container);
-      if (!pos || !t.container) continue;
-      // 派发到最深的 canvas（lightweight-charts 监听具体 canvas 元素）。
-      // 找不到 canvas 时退化派发到 container，事件冒泡也能被内部 handler 接到。
-      const canvases = t.container.querySelectorAll('canvas');
-      const target = canvases.length ? canvases[canvases.length - 1] : t.container;
-      try {
-        target.dispatchEvent(new MouseEvent('mousemove', {
-          clientX: pos.clientX,
-          clientY: pos.clientY,
-          bubbles: true,
-          cancelable: true,
-          view: window
-        }));
-      } catch (_) { /* noop */ }
+      _dispatchMouseMoveTo(t.container, _lastMousePos.get(t.container));
+    }
+  }
+
+  // ---- Hover 心跳 (Heartbeat) ----------------------------------------------
+  // 鼠标 hover 在 chart 上时每 200ms 派发一次 untrusted mousemove，确保
+  // lightweight-charts 的 hover state 不会被任何内部 reset (setData / update /
+  // setMarkers / createPriceLine / chart.resize ...) 清掉 → 时间轴 hover label
+  // 一直保持。鼠标离开所有 chart 时停心跳节省 CPU。
+  let _hoverHeartbeatId = null;
+  function _hoverHeartbeatTick() {
+    for (const t of _crossPairs) {
+      if (!_hoveredCharts.has(t.chart)) continue;
+      _dispatchMouseMoveTo(t.container, _lastMousePos.get(t.container));
+    }
+  }
+  function _startHoverHeartbeat() {
+    if (_hoverHeartbeatId != null) return;
+    _hoverHeartbeatId = setInterval(_hoverHeartbeatTick, 200);
+  }
+  function _stopHoverHeartbeatIfIdle() {
+    let any = false;
+    for (const t of _crossPairs) {
+      if (_hoveredCharts.has(t.chart)) { any = true; break; }
+    }
+    if (!any && _hoverHeartbeatId != null) {
+      clearInterval(_hoverHeartbeatId);
+      _hoverHeartbeatId = null;
     }
   }
 
@@ -1384,14 +1416,18 @@
 
   for (const src of _crossPairs) {
     if (src.container) {
-      src.container.addEventListener('mouseenter', () => _hoveredCharts.add(src.chart));
+      src.container.addEventListener('mouseenter', () => {
+        _hoveredCharts.add(src.chart);
+        _startHoverHeartbeat();
+      });
       src.container.addEventListener('mouseleave', () => {
         _hoveredCharts.delete(src.chart);
         _lastMousePos.delete(src.container);
         _onChartMouseLeave(src.chart);
+        _stopHoverHeartbeatIfIdle();
       });
       // 缓存最后真实鼠标位置（仅 trusted 事件，避免我们派发的 untrusted
-      // mousemove 反过来更新缓存）。用于 _restoreHoverCrosshairs 中重放。
+      // mousemove 反过来更新缓存）。用于心跳重放 / 渲染后恢复。
       src.container.addEventListener('mousemove', (ev) => {
         if (!ev.isTrusted) return;
         _lastMousePos.set(src.container, { clientX: ev.clientX, clientY: ev.clientY });
