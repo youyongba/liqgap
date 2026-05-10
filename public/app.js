@@ -60,7 +60,8 @@
     liqHeatmapWindow: document.getElementById('liq-heatmap-window'),
     liqHeatmapRange: document.getElementById('liq-heatmap-range'),
     liqHeatmapMode: document.getElementById('liq-heatmap-mode'),
-    subCard: document.getElementById('sub-card')
+    subCard: document.getElementById('sub-card'),
+    mainCard: document.getElementById('main-card')
   };
 
   // 当前周期下两个副图的取数策略
@@ -3110,6 +3111,54 @@
       const btn = fsCard.querySelector(':scope > .card-header .fs-btn');
       toggleFullscreen(fsCard, btn, false);
     }
+  });
+
+  // ---- 统一最小化机制 (Unified minimize toggle) -------------------------
+  // 任何元素加上 .is-minimized → 只显示 header；同时动态调整 main grid 的
+  // 行高，让被释放的空间自动给主图。互斥：最小化时强制退出全屏。
+  // 触发：点击 .min-btn[data-min-target="<id>"]。
+  function _updateMainGridLayout() {
+    const main = document.querySelector('main');
+    if (!main) return;
+    const mainCardMin = els.mainCard?.classList.contains('is-minimized');
+    const heatmapMin  = document.getElementById('heatmap-card')?.classList.contains('is-minimized');
+    const liqHmMin    = document.getElementById('liq-heatmap-card')?.classList.contains('is-minimized');
+    const subCardMin  = els.subCard?.classList.contains('is-minimized');
+    // 只有 row 内所有 card 都最小化，该 row 才收缩为 auto，主图自动膨胀
+    const heatmapRowCollapsed = !!(heatmapMin && liqHmMin);
+    const r1 = mainCardMin       ? 'auto' : 'minmax(320px, 1.6fr)';
+    const r2 = heatmapRowCollapsed ? 'auto' : 'minmax(0, 1fr)';
+    const r3 = subCardMin        ? 'auto' : 'minmax(220px, 1fr)';
+    main.style.gridTemplateRows = `${r1} ${r2} ${r3}`;
+  }
+
+  function toggleMinimize(target, btn, force) {
+    if (!target) return;
+    const next = typeof force === 'boolean' ? force : !target.classList.contains('is-minimized');
+    // 互斥：最小化和全屏不能同时存在
+    if (next && target.classList.contains('is-fullscreen')) {
+      const fsBtn = target.querySelector(':scope > .card-header .fs-btn, :scope > .sub-pane-header .fs-btn');
+      toggleFullscreen(target, fsBtn, false);
+    }
+    target.classList.toggle('is-minimized', next);
+    if (btn) {
+      if (!btn.dataset.minTitleNormal) btn.dataset.minTitleNormal = btn.title || '最小化 / Minimize';
+      btn.textContent = next ? '▢' : '⊟';
+      btn.classList.toggle('active', next);
+      btn.title = next ? '还原 / Restore' : btn.dataset.minTitleNormal;
+    }
+    _updateMainGridLayout();
+    // 还原 / 最小化都会改变可视容器尺寸，触发 chart 重排
+    _resizeAllAfterFullscreen();
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('.min-btn[data-min-target]');
+    if (!btn) return;
+    const target = document.getElementById(btn.dataset.minTarget);
+    if (!target) return;
+    e.preventDefault();
+    toggleMinimize(target, btn);
   });
   els.symbol.addEventListener('change', () => {
     // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
