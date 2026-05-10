@@ -348,7 +348,11 @@
         catch (_) { /* 该图为空 / 范围不在数据内 */ }
       }
     } finally {
-      _syncingTime = false;
+      // 关键：lightweight-charts 4.x 的 visibleTimeRangeChange 回调是
+      // 下一帧异步触发。如果立刻 reset _syncingTime=false，副图的反向回调
+      // 跑到时锁已开 → 反向 broadcast 回主图 → setVisibleRange 修改主图
+      // width → 视觉上"拖动时横向放大"。延迟到下一帧 reset 阻断该回环。
+      requestAnimationFrame(() => { _syncingTime = false; });
     }
   }
   for (const ts of allTimeScales) {
@@ -369,7 +373,7 @@
         try { ts.setVisibleRange(range); } catch (_) { /* empty data */ }
       }
     } finally {
-      _syncingTime = false;
+      requestAnimationFrame(() => { _syncingTime = false; });
     }
   }
 
@@ -2119,6 +2123,48 @@
   function markChartsNeedFit() { chartsFitted = false; }
 
   // ---- 各种渲染器 (Renderers) ----
+
+  // 增量 series 更新 helper：避免每次 SSE 推送都用 setData 全量重设
+  // —— setData 会清掉 lightweight-charts 的内部 crosshair，导致 hover
+  // 中坐标轴标签消失（用户报告"hover x坐标只要鼠标停下就消失"的根因）。
+  // 策略：
+  //   - 数据集换了（第一根 time 不同）or 长度跨度大 → setData
+  //   - 同长度 → update 最后一根
+  //   - 多 1 根 → update 倒数第 2 根（settle）+ update 最后一根（new）
+  //   - 多 2-5 根（间隔补帧）→ 逐根 update
+  // 用 WeakMap 给每个 series 独立缓存 prev，自动 GC。
+  const _seriesPrev = new WeakMap();
+  function _smartUpdateSeries(series, points) {
+    if (!series) return;
+    const prev = _seriesPrev.get(series);
+    const newLen = points.length;
+    if (newLen === 0) {
+      series.setData([]);
+      _seriesPrev.set(series, { firstTime: null, len: 0 });
+      return;
+    }
+    const newFirstTime = points[0].time;
+    if (!prev || prev.firstTime !== newFirstTime || prev.len === 0) {
+      series.setData(points);
+    } else {
+      const diff = newLen - prev.len;
+      if (diff === 0) {
+        series.update(points[newLen - 1]);
+      } else if (diff >= 1 && diff <= 5) {
+        // 倒数第 (diff+1) 根开始逐根 update：settled 的 + 新加的
+        const start = Math.max(0, prev.len - 1);
+        for (let i = start; i < newLen; i += 1) {
+          try { series.update(points[i]); } catch (_) { /* time 顺序异常时退化全量 */
+            series.setData(points); break;
+          }
+        }
+      } else {
+        series.setData(points);
+      }
+    }
+    _seriesPrev.set(series, { firstTime: newFirstTime, len: newLen });
+  }
+
   function renderMain(klinesData) {
     const { candles, fvgs = [], liquidityVoids = [], summary } = klinesData;
     if (!candles.length) return;
@@ -2131,7 +2177,7 @@
       low: c.low,
       close: c.close
     }));
-    candleSeries.setData(mapped);
+    _smartUpdateSeries(candleSeries, mapped);
 
     // VWAP 兜底：SSE 推送的 candle 没有 vwap 字段（hub 缓存的是 raw kline），
     // 这里若任何一根 candle 缺 vwap 就本地累积计算一次，并回写到 candle 上，
@@ -2152,7 +2198,7 @@
     const vwapPoints = candles
       .map((c) => ({ time: toLwSeconds(c.openTime), value: c.vwap }))
       .filter((p) => p.value !== null && Number.isFinite(p.value));
-    vwapSeries.setData(vwapPoints);
+    _smartUpdateSeries(vwapSeries, vwapPoints);
 
     // 在主 K 线上绘制 FVG / 流动性空白的标记
     // (Markers for FVGs and liquidity voids on the candle series.)
@@ -2214,7 +2260,7 @@
       value: c.volume,
       color: c.close >= c.open ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)'
     }));
-    volumeSeries.setData(volumeData);
+    _smartUpdateSeries(volumeSeries, volumeData);
 
     // CVD 副图与主图 K 线同源派生，随 interval 自动切换
     // (Derive CVD from the same candles so it auto-aligns with the chosen interval.)
@@ -2246,13 +2292,13 @@
     _lastOiResp = resp || _lastOiResp;
     if (!resp) return;
     if (!resp.supported) {
-      oiSeries.setData([]);
+      _smartUpdateSeries(oiSeries, []);
       return;
     }
     const oi = (resp.data || []).slice().sort((a, b) => a.openTime - b.openTime);
     const cands = Array.isArray(candles) && candles.length ? candles : lastCandles;
     if (!oi.length || !cands.length) {
-      oiSeries.setData([]);
+      _smartUpdateSeries(oiSeries, []);
       return;
     }
     const points = [];
@@ -2278,7 +2324,7 @@
         }
       }
     }
-    oiSeries.setData(points);
+    _smartUpdateSeries(oiSeries, points);
     // OI 副图永远跟随主图，不再 fitContent —— 否则 OI 数据后到时会把主图也拉跑
     syncSubChartsToMain();
   }
@@ -2308,7 +2354,7 @@
         points[points.length - 1].value = cum;
       }
     }
-    cvdSeries.setData(points);
+    _smartUpdateSeries(cvdSeries, points);
     // CVD 副图永远跟随主图，避免自己 fitContent 反过来影响主图视图
     syncSubChartsToMain();
   }
@@ -3185,7 +3231,7 @@
   els.symbol.addEventListener('change', () => {
     // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
     _lastOiResp = null;
-    oiSeries.setData([]);
+    _smartUpdateSeries(oiSeries, []);
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
@@ -3199,7 +3245,7 @@
     refreshSubTitles();
     // 切到现货时立刻清空 OI 旧数据，避免显示"上一个 symbol/market"的曲线
     _lastOiResp = null;
-    oiSeries.setData([]);
+    _smartUpdateSeries(oiSeries, []);
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
     if (liqHeatmap) liqHeatmap.onSymbolMarketChange();
