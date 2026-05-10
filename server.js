@@ -36,6 +36,8 @@ const notifyRoute = require('./routes/notify');
 const streamRoute = require('./routes/stream');
 const aiRoute = require('./routes/ai');
 const openInterestRoute = require('./routes/openInterest');
+const orderbookSnapshotRoute = require('./routes/orderbookSnapshot');
+const orderbookRecorder = require('./services/orderbookRecorder');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -63,6 +65,7 @@ app.use('/api', backtestRoute);
 app.use('/api', notifyRoute);
 app.use('/api', streamRoute);
 app.use('/api', openInterestRoute);
+app.use('/api', orderbookSnapshotRoute);
 app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)
@@ -88,4 +91,13 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   // eslint-disable-next-line no-console
   console.log(`[server] dashboard ready on http://localhost:${PORT}`);
+  // 启动订单簿录盘（每分钟一次，落磁盘，保留 25h）
+  // (Kick off the order-book snapshot recorder so the rolling-window compare
+  //  feature has data to draw against.)
+  try {
+    orderbookRecorder.start();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[server] orderbook recorder start failed:', err.message);
+  }
 });

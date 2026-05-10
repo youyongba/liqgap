@@ -604,6 +604,17 @@
           </div>
           <div class="sub-pane">
             <h3 id="ob-title">订单簿深度图 / Order Book Depth</h3>
+            <div class="ob-baseline-bar" style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+              <label for="ob-baseline" style="font-size:11px; color:var(--fg-2);">基线对比 / Baseline:</label>
+              <select id="ob-baseline" title="选择历史基线，对比当前盘口与 N 时间前的盘口" style="font-size:11px; padding:2px 6px; background:var(--bg-2); color:var(--fg-1); border:1px solid var(--border); border-radius:4px;">
+                <option value="0">关闭 / Off</option>
+                <option value="900000">15 分钟前 / -15m</option>
+                <option value="3600000" selected>1 小时前 / -1h</option>
+                <option value="14400000">4 小时前 / -4h</option>
+                <option value="86400000">24 小时前 / -24h</option>
+              </select>
+              <span id="ob-baseline-info" style="font-size:11px; color:var(--fg-2); flex:1; min-width:120px;"></span>
+            </div>
             <div class="pane-body"><canvas id="orderbook-chart"></canvas></div>
           </div>
         </div>

@@ -44,7 +44,9 @@
     volTitle: document.getElementById('vol-title'),
     cvdTitle: document.getElementById('cvd-title'),
     oiTitle: document.getElementById('oi-title'),
-    obTitle: document.getElementById('ob-title')
+    obTitle: document.getElementById('ob-title'),
+    obBaseline: document.getElementById('ob-baseline'),
+    obBaselineInfo: document.getElementById('ob-baseline-info')
   };
 
   // 当前周期下两个副图的取数策略
@@ -353,11 +355,15 @@
       if (_syncingCrosshair) return;
       _syncingCrosshair = true;
       try {
-        // 鼠标离开 → 清掉所有图的准星
+        // 鼠标离开 → 清掉所有图的准星，并恢复订单簿基线到 now 锚定
         if (!param || param.time == null) {
           for (const t of _crossPairs) {
             if (t === src) continue;
             try { t.chart.clearCrosshairPosition(); } catch (_) { /* noop */ }
+          }
+          // 仅在主图离开时复位 baseline 锚点（其它图 hover 离开不影响）
+          if (src.chart === mainChart && typeof setObBaselineHoverAnchor === 'function') {
+            setObBaselineHoverAnchor(null);
           }
           return;
         }
@@ -368,6 +374,11 @@
           const price = _seriesPriceAt(src, param);
           try { t.chart.setCrosshairPosition(price, time, t.series); }
           catch (_) { /* 目标图无该时间数据 */ }
+        }
+        // 主图 hover → 把订单簿基线锚定到该时刻（debounce 200ms）
+        // time 单位是秒（lightweight-charts UTC seconds），转回毫秒
+        if (src.chart === mainChart && typeof setObBaselineHoverAnchor === 'function') {
+          setObBaselineHoverAnchor(Number(time) * 1000);
         }
       } finally {
         _syncingCrosshair = false;
@@ -424,30 +435,66 @@
     orderbookChart = new Chart(ctx, {
       type: 'line',
       data: {
+        // 数据集索引（顺序对外保证）：
+        //   0: 当前买单累计  (Current bids · 实线 + 半透明绿)
+        //   1: 当前卖单累计  (Current asks · 实线 + 半透明红)
+        //   2: 基线买单累计  (Baseline bids · 虚线 + 无填充)
+        //   3: 基线卖单累计  (Baseline asks · 虚线 + 无填充)
+        // 渲染顺序：先画基线在底，再叠加当前 → 当前线高于基线 = 增厚（看墙堆出）
         datasets: [
           {
-            label: '买单累计 / Bids (cum. USDT)',
+            label: '当前买单累计 / Bids now (USDT)',
             data: [],
-            backgroundColor: 'rgba(74, 222, 128, 0.20)',
+            backgroundColor: 'rgba(74, 222, 128, 0.18)',
             borderColor: 'rgba(74, 222, 128, 0.95)',
             borderWidth: 1.5,
             stepped: 'before',
             fill: 'origin',
             pointRadius: 0,
             pointHoverRadius: 3,
-            tension: 0
+            tension: 0,
+            order: 1
           },
           {
-            label: '卖单累计 / Asks (cum. USDT)',
+            label: '当前卖单累计 / Asks now (USDT)',
             data: [],
-            backgroundColor: 'rgba(248, 113, 113, 0.20)',
+            backgroundColor: 'rgba(248, 113, 113, 0.18)',
             borderColor: 'rgba(248, 113, 113, 0.95)',
             borderWidth: 1.5,
             stepped: 'after',
             fill: 'origin',
             pointRadius: 0,
             pointHoverRadius: 3,
-            tension: 0
+            tension: 0,
+            order: 1
+          },
+          {
+            label: '基线买单 / Bids baseline',
+            data: [],
+            borderColor: 'rgba(74, 222, 128, 0.55)',
+            borderWidth: 1,
+            borderDash: [4, 3],
+            stepped: 'before',
+            fill: false,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            tension: 0,
+            order: 0,
+            hidden: true
+          },
+          {
+            label: '基线卖单 / Asks baseline',
+            data: [],
+            borderColor: 'rgba(248, 113, 113, 0.55)',
+            borderWidth: 1,
+            borderDash: [4, 3],
+            stepped: 'after',
+            fill: false,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            tension: 0,
+            order: 0,
+            hidden: true
           }
         ]
       },
@@ -1235,39 +1282,37 @@
     syncSubChartsToMain();
   }
 
+  /**
+   * 把 [price, qty] 数组转成 X 升序的累积曲线点数组。
+   * side='bid' → 从 best bid 往低价累，asks 类似。返回 X 升序便于 chart.js 渲染。
+   */
+  function _accumulateOrderBookSide(rows, side) {
+    const filtered = (rows || [])
+      .map((l) => [Number(l[0]), Number(l[1])])
+      .filter(([p, q]) => Number.isFinite(p) && Number.isFinite(q) && q > 0);
+    if (side === 'bid') filtered.sort((a, b) => b[0] - a[0]); // best 优先
+    else filtered.sort((a, b) => a[0] - b[0]);
+    let cum = 0;
+    const pts = [];
+    for (const [p, q] of filtered) {
+      cum += p * q;
+      pts.push({ x: p, y: cum });
+    }
+    return pts.sort((a, b) => a.x - b.x);
+  }
+
+  /**
+   * 渲染订单簿主图层（当前盘口的两条实线）。
+   * baseline 由 _renderOrderBookBaseline 单独维护，避免互相覆盖。
+   */
+  // 缓存"当前实时盘口"的最新一份，用于 baseline 切换 / hover 触发重绘时复用
+  let _lastObBook = null;
   function renderOrderBook(book) {
     const chart = ensureOrderbookChart();
+    _lastObBook = book;
 
-    // 把 [price, qty] 字符串数组转成数值二元组并排序
-    const bidsRaw = (book.bids || [])
-      .map((l) => [Number(l[0]), Number(l[1])])
-      .filter(([p, q]) => Number.isFinite(p) && Number.isFinite(q) && q > 0);
-    const asksRaw = (book.asks || [])
-      .map((l) => [Number(l[0]), Number(l[1])])
-      .filter(([p, q]) => Number.isFinite(p) && Number.isFinite(q) && q > 0);
-
-    // bids 累积：从 best bid（最高价）出发，往低价累加 → 远离 mid 处累积量大
-    bidsRaw.sort((a, b) => b[0] - a[0]);
-    let cb = 0;
-    const bidPts = [];
-    for (const [p, q] of bidsRaw) {
-      cb += p * q;
-      bidPts.push({ x: p, y: cb });
-    }
-    // 渲染要求 X 升序
-    bidPts.sort((a, b) => a.x - b.x);
-
-    // asks 累积：从 best ask（最低价）出发，往高价累加
-    asksRaw.sort((a, b) => a[0] - b[0]);
-    let ca = 0;
-    const askPts = [];
-    for (const [p, q] of asksRaw) {
-      ca += p * q;
-      askPts.push({ x: p, y: ca });
-    }
-
-    chart.data.datasets[0].data = bidPts;
-    chart.data.datasets[1].data = askPts;
+    chart.data.datasets[0].data = _accumulateOrderBookSide(book.bids, 'bid');
+    chart.data.datasets[1].data = _accumulateOrderBookSide(book.asks, 'ask');
 
     // mid 价：优先用后端给的 midPrice，缺失则用 bestBid/bestAsk 中点
     const mid = Number.isFinite(Number(book.midPrice))
@@ -1278,6 +1323,136 @@
     chart.options.plugins.obMidLine.mid = mid;
 
     chart.update('none');
+  }
+
+  // ============================================================
+  // 订单簿基线对比 (Order Book baseline rolling-window compare)
+  // ============================================================
+  // 设计：
+  //   - 用户选择 windowMs (15m / 1h / 4h / 24h) 作为对比窗口
+  //   - 默认锚点是 now，每 30 秒刷新一次基线（拉 now-windowMs 时刻的快照）
+  //   - 主图 hover 任一根 K 线时锚点切到 hoverTime（仍取 anchor-windowMs 的快照）
+  //     debounce 200ms 减少请求；离开 hover 后回到 now 锚点
+  //   - 对比方式：在订单簿图上叠加两条虚线（基线买/卖墙），与当前实线对比
+  //     当前线高于基线 = 该价位挂单"增厚"（新墙堆出）
+  //     当前线低于基线 = 该价位挂单"撤离"（被撤单 / 被吃掉）
+  //   - 状态文字显示"基线时刻 / 与请求时刻差值"，提醒用户基线的真实时间
+  const _obBaselineState = {
+    windowMs: 0,        // 0 = 关闭
+    anchorMs: null,     // null = 用 now；hover 时为 hover 的毫秒时间
+    snapshot: null,
+    snapshotAt: null,
+    requestedAt: null,
+    fetching: false,
+    autoTimer: null,
+    hoverDebounce: null
+  };
+
+  function _obBaselineInfoText() {
+    const s = _obBaselineState;
+    if (!s.windowMs) return '基线已关闭 / Baseline off';
+    if (!s.snapshot) {
+      return s.fetching ? '基线加载中… / Loading baseline…'
+                        : '尚无基线数据（录盘窗口未覆盖）/ No baseline yet';
+    }
+    const ageMin = Math.round(Math.max(0, (s.requestedAt || Date.now()) - s.snapshotAt) / 60000);
+    const tag = s.anchorMs ? `锚定 hover` : `锚定 now`;
+    return `基线: ${fmtBJShortDateTime(s.snapshotAt)} (${tag}, 距请求 ${ageMin} min)`;
+  }
+
+  function _renderObBaselineLines() {
+    const chart = ensureOrderbookChart();
+    const snap = _obBaselineState.snapshot;
+    if (!snap) {
+      chart.data.datasets[2].data = [];
+      chart.data.datasets[3].data = [];
+      chart.data.datasets[2].hidden = true;
+      chart.data.datasets[3].hidden = true;
+    } else {
+      chart.data.datasets[2].data = _accumulateOrderBookSide(snap.bids, 'bid');
+      chart.data.datasets[3].data = _accumulateOrderBookSide(snap.asks, 'ask');
+      chart.data.datasets[2].hidden = false;
+      chart.data.datasets[3].hidden = false;
+    }
+    if (els.obBaselineInfo) els.obBaselineInfo.textContent = _obBaselineInfoText();
+    chart.update('none');
+  }
+
+  /**
+   * 拉一次基线快照。anchorMs 为 null 表示用 now。
+   * 防抖：fetching=true 时直接 skip。
+   */
+  async function _fetchObBaseline() {
+    const s = _obBaselineState;
+    if (!s.windowMs) {
+      s.snapshot = null;
+      s.snapshotAt = null;
+      s.requestedAt = null;
+      _renderObBaselineLines();
+      return;
+    }
+    if (s.fetching) return;
+    s.fetching = true;
+    if (els.obBaselineInfo) els.obBaselineInfo.textContent = _obBaselineInfoText();
+    try {
+      const symbol = (els.symbol.value || 'BTCUSDT').toUpperCase();
+      const market = els.market ? els.market.value : 'futures';
+      // 录盘只对 BTCUSDT futures，所以非该 symbol/market 直接清空
+      if (symbol !== 'BTCUSDT' || market !== 'futures') {
+        s.snapshot = null; s.snapshotAt = null; s.requestedAt = null;
+        if (els.obBaselineInfo) {
+          els.obBaselineInfo.textContent = '基线仅支持 BTCUSDT 合约 / Baseline available only for BTCUSDT futures';
+        }
+        _renderObBaselineLines();
+        return;
+      }
+      const anchor = s.anchorMs || Date.now();
+      const at = anchor - s.windowMs;
+      s.requestedAt = at;
+      const url = `/api/orderbook/snapshot?symbol=${symbol}&market=${market}&at=${at}`;
+      const data = await fetchJsonSoft(url);
+      if (!data || !data.found) {
+        s.snapshot = null;
+        s.snapshotAt = null;
+      } else {
+        s.snapshot = { bids: data.bids, asks: data.asks };
+        s.snapshotAt = data.snapshotAt;
+      }
+      _renderObBaselineLines();
+    } finally {
+      s.fetching = false;
+    }
+  }
+
+  function _scheduleObBaselineAuto() {
+    const s = _obBaselineState;
+    if (s.autoTimer) { clearInterval(s.autoTimer); s.autoTimer = null; }
+    if (!s.windowMs) return;
+    // 30s 刷新一次"now 锚定"的基线（hover 锚定不会被 timer 触发）
+    s.autoTimer = setInterval(() => {
+      if (!s.anchorMs) _fetchObBaseline();
+    }, 30_000);
+  }
+
+  function setObBaselineWindow(windowMs) {
+    _obBaselineState.windowMs = Number(windowMs) || 0;
+    _obBaselineState.anchorMs = null; // 切窗口时回到 now 锚定
+    _scheduleObBaselineAuto();
+    _fetchObBaseline();
+  }
+
+  /**
+   * 主图 hover 时把锚点切到 hoverTime（debounce 200ms 减少请求）。
+   * hoverMs 为 null 表示离开 hover → 恢复 now 锚定。
+   */
+  function setObBaselineHoverAnchor(hoverMs) {
+    const s = _obBaselineState;
+    if (!s.windowMs) return; // 关闭状态不响应 hover
+    if (s.hoverDebounce) clearTimeout(s.hoverDebounce);
+    s.hoverDebounce = setTimeout(() => {
+      s.anchorMs = (hoverMs && Number.isFinite(hoverMs)) ? hoverMs : null;
+      _fetchObBaseline();
+    }, 200);
   }
 
   let currentSignalData = null;
@@ -1845,6 +2020,8 @@
     // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
     _lastOiResp = null;
     oiSeries.setData([]);
+    // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
+    setObBaselineWindow(_obBaselineState.windowMs);
     markChartsNeedFit();
     poll();
     restartSSE();
@@ -1855,6 +2032,7 @@
     // 切到现货时立刻清空 OI 旧数据，避免显示"上一个 symbol/market"的曲线
     _lastOiResp = null;
     oiSeries.setData([]);
+    setObBaselineWindow(_obBaselineState.windowMs);
     markChartsNeedFit();
     poll();
     restartSSE();
@@ -1866,8 +2044,17 @@
     poll();
     restartSSE();
   });
-  // 页面加载时先把副图标题渲染成当前 interval
+  // 订单簿基线选择 → 切窗口 / 关闭
+  if (els.obBaseline) {
+    els.obBaseline.addEventListener('change', () => {
+      setObBaselineWindow(Number(els.obBaseline.value) || 0);
+    });
+  }
+  // 页面加载时先把副图标题渲染成当前 interval，并按 dropdown 默认值初始化基线
   refreshSubTitles();
+  if (els.obBaseline) {
+    setObBaselineWindow(Number(els.obBaseline.value) || 0);
+  }
 
   // ============================================================
   // 飞书推送 (Feishu push controls)
