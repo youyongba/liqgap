@@ -37,6 +37,7 @@ const streamRoute = require('./routes/stream');
 const aiRoute = require('./routes/ai');
 const openInterestRoute = require('./routes/openInterest');
 const orderbookSnapshotRoute = require('./routes/orderbookSnapshot');
+const orderbookHeatmapRoute = require('./routes/orderbookHeatmap');
 const orderbookRecorder = require('./services/orderbookRecorder');
 
 const app = express();
@@ -66,6 +67,7 @@ app.use('/api', notifyRoute);
 app.use('/api', streamRoute);
 app.use('/api', openInterestRoute);
 app.use('/api', orderbookSnapshotRoute);
+app.use('/api', orderbookHeatmapRoute);
 app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)

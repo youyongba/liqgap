@@ -163,6 +163,131 @@ function findNearest(symbol, market, atMs) {
   return best;
 }
 
+/**
+ * 读取 [fromMs, toMs] 区间内所有快照（按时间升序）。
+ * 用于流动性热图的批量取数。
+ *
+ * @param {string} symbol
+ * @param {string} market
+ * @param {number} fromMs
+ * @param {number} toMs
+ * @returns {Array<{ts:number,symbol:string,market:string,lastUpdateId:number,
+ *                    bids:Array<[string,string]>,asks:Array<[string,string]>}>}
+ */
+function findRange(symbol, market, fromMs, toMs) {
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return [];
+  const upSymbol = String(symbol).toUpperCase();
+  const mkt = market === 'spot' ? 'spot' : 'futures';
+
+  // 枚举所需的所有 UTC 日期文件
+  const dates = new Set();
+  // 多扫一天兜底跨日边界（含 from-1h 与 to+1h）
+  const lo = fromMs - 3600_000;
+  const hi = toMs + 3600_000;
+  for (let t = Math.floor(lo / 86400000) * 86400000; t <= hi; t += 86400000) {
+    dates.add(_dateStr(t));
+  }
+
+  const out = [];
+  for (const dateStr of dates) {
+    const file = _dailyFile(upSymbol, mkt, dateStr);
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { continue; }
+    const lines = raw.split('\n');
+    for (const line of lines) {
+      if (!line) continue;
+      try {
+        const r = JSON.parse(line);
+        if (typeof r.ts !== 'number') continue;
+        if (r.ts < fromMs || r.ts > toMs) continue;
+        out.push(r);
+      } catch (_) { /* skip bad line */ }
+    }
+  }
+  out.sort((a, b) => a.ts - b.ts);
+  return out;
+}
+
+/**
+ * 把一组快照聚合成热图矩阵：
+ *   matrix[ti][pi] = 该 (时间桶, 价格桶) 内挂单量（base × price = USDT 名义额）的最大值。
+ *   取最大值（而非平均）能更突出"持续性挂单墙"——只要某一刻有大墙，该格就高亮。
+ *
+ * @param {Array} snapshots         findRange 的结果
+ * @param {object} opts
+ * @param {number} opts.fromMs      时间桶起点
+ * @param {number} opts.toMs        时间桶终点（含）
+ * @param {number} opts.bucketMs    时间桶宽（毫秒）
+ * @param {number} opts.priceMin    价格桶最小价
+ * @param {number} opts.priceMax    价格桶最大价
+ * @param {number} opts.priceBucket 价格桶宽度（USDT）
+ * @returns {{
+ *   times:number[], prices:number[],
+ *   bidMatrix:number[][], askMatrix:number[][],
+ *   maxValue:number, snapshotCount:number
+ * }}
+ *   bidMatrix / askMatrix 分开返回，前端按 mid 上下分别上不同色温。
+ */
+function buildHeatmapMatrix(snapshots, opts) {
+  const { fromMs, toMs, bucketMs, priceMin, priceMax, priceBucket } = opts;
+  const tCount = Math.max(1, Math.ceil((toMs - fromMs) / bucketMs));
+  const pCount = Math.max(1, Math.ceil((priceMax - priceMin) / priceBucket));
+  const times = new Array(tCount);
+  for (let i = 0; i < tCount; i += 1) times[i] = fromMs + i * bucketMs;
+  const prices = new Array(pCount);
+  for (let j = 0; j < pCount; j += 1) prices[j] = priceMin + j * priceBucket;
+
+  // 二维矩阵初始化为 0；buy/sell 分开
+  const bidMatrix = new Array(tCount);
+  const askMatrix = new Array(tCount);
+  for (let i = 0; i < tCount; i += 1) {
+    bidMatrix[i] = new Array(pCount).fill(0);
+    askMatrix[i] = new Array(pCount).fill(0);
+  }
+
+  // 暂存每个 (time bucket, price bucket) 当前快照的累加值，跟历史最大比
+  // 由于"取最大"算子需要先在单个快照内累加 sum，然后跨快照取 max，
+  // 所以每处理一个快照都用临时 sum 数组，处理完再 max-merge 到主矩阵。
+  let maxValue = 0;
+  for (const snap of snapshots) {
+    const ti = Math.floor((snap.ts - fromMs) / bucketMs);
+    if (ti < 0 || ti >= tCount) continue;
+    const sumBid = new Array(pCount).fill(0);
+    const sumAsk = new Array(pCount).fill(0);
+    for (const [pStr, qStr] of (snap.bids || [])) {
+      const p = Number(pStr);
+      const q = Number(qStr);
+      if (!Number.isFinite(p) || !Number.isFinite(q) || q <= 0) continue;
+      const pi = Math.floor((p - priceMin) / priceBucket);
+      if (pi < 0 || pi >= pCount) continue;
+      sumBid[pi] += p * q;
+    }
+    for (const [pStr, qStr] of (snap.asks || [])) {
+      const p = Number(pStr);
+      const q = Number(qStr);
+      if (!Number.isFinite(p) || !Number.isFinite(q) || q <= 0) continue;
+      const pi = Math.floor((p - priceMin) / priceBucket);
+      if (pi < 0 || pi >= pCount) continue;
+      sumAsk[pi] += p * q;
+    }
+    for (let pi = 0; pi < pCount; pi += 1) {
+      if (sumBid[pi] > bidMatrix[ti][pi]) bidMatrix[ti][pi] = sumBid[pi];
+      if (sumAsk[pi] > askMatrix[ti][pi]) askMatrix[ti][pi] = sumAsk[pi];
+      if (sumBid[pi] > maxValue) maxValue = sumBid[pi];
+      if (sumAsk[pi] > maxValue) maxValue = sumAsk[pi];
+    }
+  }
+
+  return {
+    times,
+    prices,
+    bidMatrix,
+    askMatrix,
+    maxValue,
+    snapshotCount: snapshots.length
+  };
+}
+
 /** 调试 / 状态查询 */
 function getStatus() {
   let files = [];
@@ -179,4 +304,12 @@ function getStatus() {
   };
 }
 
-module.exports = { start, findNearest, getStatus, RECORD_DIR };
+module.exports = {
+  start,
+  findNearest,
+  findRange,
+  buildHeatmapMatrix,
+  getStatus,
+  RECORD_DIR,
+  RECORD_INTERVAL_MS
+};

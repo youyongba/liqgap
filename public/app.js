@@ -46,7 +46,13 @@
     oiTitle: document.getElementById('oi-title'),
     obTitle: document.getElementById('ob-title'),
     obBaseline: document.getElementById('ob-baseline'),
-    obBaselineInfo: document.getElementById('ob-baseline-info')
+    obBaselineInfo: document.getElementById('ob-baseline-info'),
+    heatmapCanvas: document.getElementById('heatmap-canvas'),
+    heatmapTooltip: document.getElementById('heatmap-tooltip'),
+    heatmapEmpty: document.getElementById('heatmap-empty'),
+    heatmapMeta: document.getElementById('heatmap-meta'),
+    heatmapWindow: document.getElementById('heatmap-window'),
+    heatmapRange: document.getElementById('heatmap-range')
   };
 
   // 当前周期下两个副图的取数策略
@@ -314,6 +320,353 @@
       _syncingTime = false;
     }
   }
+
+  // ---- 流动性热图 (Liquidity Heatmap) ------------------------------------
+  // 设计 (Design):
+  //   - X 轴 = 时间桶（与录盘 1min 对齐，可放大到 5/15min）
+  //   - Y 轴 = 价格桶（围绕中价的对称窗，自适应 ~200 桶）
+  //   - 颜色 = 该 (time,price) 桶内 USDT 名义额峰值，log scale
+  //     bid 区域偏绿，ask 区域偏红，更亮 = 更厚的"墙"
+  //   - 时间轴跟随主图 visibleTimeRange，主图缩放 / 拖动会触发热图重拉。
+  //   - 数据回放窗口由 obRecorder 决定（默认 25h）；超出 / 现货 / 非 BTC
+  //     场景下显示"无数据"提示，不影响其它面板。
+  // 仅 BTCUSDT futures 录盘 → 其他 symbol/market 隐藏整个 section。
+  // -------------------------------------------------------------------------
+  const heatmap = (function initHeatmap() {
+    const canvas  = els.heatmapCanvas;
+    const tooltip = els.heatmapTooltip;
+    const empty   = els.heatmapEmpty;
+    const meta    = els.heatmapMeta;
+    const card    = document.getElementById('heatmap-card');
+    if (!canvas || !card) return null;
+    const ctx = canvas.getContext('2d');
+
+    const state = {
+      windowMs: Number((els.heatmapWindow && els.heatmapWindow.value) || 3_600_000),
+      priceRange: Number((els.heatmapRange && els.heatmapRange.value) || 0.01),
+      data: null,           // 最近一次接口数据
+      pixelRatio: window.devicePixelRatio || 1,
+      cssWidth: 0,
+      cssHeight: 0,
+      // 记录上次成功拉取参数，避免 hover/微小拖动导致刷屏
+      lastFetchKey: '',
+      lastFetchAt: 0,
+      pendingTimer: null,
+      // 视图边界（绘图区，不含坐标轴留白）
+      plot: { x: 56, y: 6, w: 0, h: 0 },
+      hoverCell: null
+    };
+
+    function _resizeCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const w = Math.max(20, Math.floor(rect.width));
+      const h = Math.max(20, Math.floor(rect.height));
+      state.cssWidth = w;
+      state.cssHeight = h;
+      const dpr = window.devicePixelRatio || 1;
+      state.pixelRatio = dpr;
+      canvas.width  = Math.floor(w * dpr);
+      canvas.height = Math.floor(h * dpr);
+      canvas.style.width  = w + 'px';
+      canvas.style.height = h + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      // 绘图区：左留 56px 给价格刻度，下留 18px 给时间刻度
+      state.plot.x = 56;
+      state.plot.y = 6;
+      state.plot.w = Math.max(20, w - state.plot.x - 8);
+      state.plot.h = Math.max(20, h - state.plot.y - 18);
+      _draw();
+    }
+
+    function _isApplicable() {
+      // 仅 BTCUSDT futures 有录盘，其它情况直接折叠区块
+      const sym = els.symbol ? els.symbol.value.toUpperCase() : '';
+      const mkt = els.market ? els.market.value : '';
+      return sym === 'BTCUSDT' && mkt === 'futures';
+    }
+
+    function _setVisibility() {
+      card.style.display = _isApplicable() ? '' : 'none';
+    }
+
+    function _updateMeta(extra) {
+      if (!meta) return;
+      const d = state.data;
+      if (!d) { meta.textContent = extra || '等待数据… / Loading…'; return; }
+      const tFmt = (ms) => fmtBJShortDateTime(ms);
+      const cells = (d.times ? d.times.length : 0) * (d.prices ? d.prices.length : 0);
+      meta.textContent = `${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 时间桶 ${(d.bucketMs/60_000).toFixed(0)}m · 价格桶 ${d.priceBucket || '-'} · 网格 ${cells} · 快照 ${d.snapshotCount || 0}` + (extra ? ` · ${extra}` : '');
+    }
+
+    // 颜色映射：log scale，bid 偏绿、ask 偏红，越亮挂单越厚
+    function _colorFor(value, maxValue, isBid) {
+      if (!(value > 0) || !(maxValue > 0)) return null;
+      // log 归一化：log(1+v) / log(1+max)
+      const n = Math.log(1 + value) / Math.log(1 + maxValue);
+      const a = Math.min(0.95, Math.max(0.06, n)); // alpha 0.06~0.95
+      // 颜色：bid → 绿 (34,197,94)，ask → 红 (239,68,68)
+      const c = isBid ? '34,197,94' : '239,68,68';
+      return `rgba(${c},${a.toFixed(3)})`;
+    }
+
+    function _draw() {
+      if (!ctx) return;
+      ctx.clearRect(0, 0, state.cssWidth, state.cssHeight);
+      const d = state.data;
+      const { x: ox, y: oy, w: pw, h: ph } = state.plot;
+
+      // 背景
+      ctx.fillStyle = '#0b0e16';
+      ctx.fillRect(0, 0, state.cssWidth, state.cssHeight);
+
+      if (!d || !d.times || !d.times.length || !d.prices || !d.prices.length || !(d.maxValue > 0)) {
+        if (empty) empty.style.display = 'flex';
+        return;
+      }
+      if (empty) empty.style.display = 'none';
+
+      const T = d.times.length;
+      const P = d.prices.length;
+      const cellW = pw / T;
+      const cellH = ph / P;
+
+      // 绘制网格（注意：Y 反向 —— 价格高在上）
+      for (let ti = 0; ti < T; ti += 1) {
+        const x = ox + ti * cellW;
+        for (let pi = 0; pi < P; pi += 1) {
+          const yTop = oy + (P - 1 - pi) * cellH;
+          const bidV = d.bidMatrix[ti] ? d.bidMatrix[ti][pi] : 0;
+          const askV = d.askMatrix[ti] ? d.askMatrix[ti][pi] : 0;
+          const v = Math.max(bidV, askV);
+          if (v <= 0) continue;
+          const isBid = bidV >= askV;
+          const color = _colorFor(v, d.maxValue, isBid);
+          if (!color) continue;
+          ctx.fillStyle = color;
+          ctx.fillRect(x, yTop, Math.ceil(cellW) + 0.5, Math.ceil(cellH) + 0.5);
+        }
+      }
+
+      // 中价虚线
+      if (Number.isFinite(d.midPrice) && d.priceMin != null && d.priceMax != null) {
+        const yMid = oy + ph * (1 - (d.midPrice - d.priceMin) / (d.priceMax - d.priceMin));
+        if (yMid > oy && yMid < oy + ph) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+          ctx.setLineDash([4, 4]);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(ox, yMid);
+          ctx.lineTo(ox + pw, yMid);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      // 价格刻度（左侧，5 档）
+      ctx.fillStyle = 'rgba(180,190,210,0.85)';
+      ctx.font = '10px system-ui, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      const priceTicks = 5;
+      for (let i = 0; i <= priceTicks; i += 1) {
+        const frac = i / priceTicks;
+        const price = d.priceMin + (d.priceMax - d.priceMin) * (1 - frac);
+        const y = oy + ph * frac;
+        ctx.fillText(price.toFixed(price >= 1000 ? 0 : 2), ox - 4, y);
+      }
+
+      // 时间刻度（底部，4 档）
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      const timeTicks = 4;
+      for (let i = 0; i <= timeTicks; i += 1) {
+        const frac = i / timeTicks;
+        const t = d.fromMs + (d.toMs - d.fromMs) * frac;
+        const x = ox + pw * frac;
+        const text = fmtBJTimeHMS(t).slice(0, 5); // HH:mm
+        ctx.fillText(text, Math.max(ox + 2, Math.min(ox + pw - 2, x)), oy + ph + 2);
+      }
+
+      // 边框
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(ox + 0.5, oy + 0.5, pw, ph);
+
+      // hover 高亮
+      if (state.hoverCell) {
+        const { ti, pi } = state.hoverCell;
+        if (ti >= 0 && ti < T && pi >= 0 && pi < P) {
+          const x = ox + ti * cellW;
+          const y = oy + (P - 1 - pi) * cellH;
+          ctx.save();
+          ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x + 0.5, y + 0.5, cellW, cellH);
+          ctx.restore();
+        }
+      }
+    }
+
+    function _hitTest(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      const cx = clientX - rect.left;
+      const cy = clientY - rect.top;
+      const { x: ox, y: oy, w: pw, h: ph } = state.plot;
+      const d = state.data;
+      if (!d || cx < ox || cx > ox + pw || cy < oy || cy > oy + ph) return null;
+      const T = d.times.length;
+      const P = d.prices.length;
+      if (!T || !P) return null;
+      const ti = Math.floor((cx - ox) / (pw / T));
+      const pi = P - 1 - Math.floor((cy - oy) / (ph / P));
+      if (ti < 0 || ti >= T || pi < 0 || pi >= P) return null;
+      return { ti, pi, cx, cy };
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      const hit = _hitTest(e.clientX, e.clientY);
+      state.hoverCell = hit;
+      if (!hit) {
+        tooltip.style.display = 'none';
+        _draw();
+        return;
+      }
+      const d = state.data;
+      const t  = d.times[hit.ti];
+      const p  = d.prices[hit.pi];
+      const bid = (d.bidMatrix[hit.ti] || [])[hit.pi] || 0;
+      const ask = (d.askMatrix[hit.ti] || [])[hit.pi] || 0;
+      const fmtMoney = (v) => v >= 1e6
+        ? (v / 1e6).toFixed(2) + 'M'
+        : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : v.toFixed(0);
+      tooltip.innerHTML =
+        `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
+        `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
+        `<div>买墙 / Bid: <span style="color:#22c55e">${fmtMoney(bid)} USDT</span></div>` +
+        `<div>卖墙 / Ask: <span style="color:#ef4444">${fmtMoney(ask)} USDT</span></div>`;
+      tooltip.style.display = 'block';
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const ttX = Math.min(rect.width - 220, hit.cx + 10);
+      const ttY = Math.max(0, hit.cy + 10);
+      tooltip.style.left = ttX + 'px';
+      tooltip.style.top  = ttY + 'px';
+      _draw();
+    });
+    canvas.addEventListener('mouseleave', () => {
+      state.hoverCell = null;
+      tooltip.style.display = 'none';
+      _draw();
+    });
+
+    // 拉数据：以主图 visibleTimeRange 为准，没拿到就用 [now-windowMs, now]
+    function _resolveRange() {
+      let toMs = Date.now();
+      let fromMs = toMs - state.windowMs;
+      try {
+        const r = mainChart.timeScale().getVisibleRange();
+        if (r && r.from != null && r.to != null) {
+          toMs = Math.floor(Number(r.to) * 1000);
+          fromMs = Math.floor(Number(r.from) * 1000);
+          // 主图可见范围若过窄（< 5 分钟）退化到 windowMs，保持热图可读
+          if (toMs - fromMs < 5 * 60_000) {
+            fromMs = toMs - state.windowMs;
+          }
+          // 主图可见范围超过录盘容量（默认 25h）会拉不到数据，给个上限
+          if (toMs - fromMs > 25 * 3600_000) {
+            fromMs = toMs - 25 * 3600_000;
+          }
+        }
+      } catch (_) { /* fall back */ }
+      // bucket 自适应：windowMs/60 → 60 桶左右
+      const span = toMs - fromMs;
+      let bucketMs = 60_000;
+      if (span > 4 * 3600_000)  bucketMs = 5 * 60_000;
+      if (span > 12 * 3600_000) bucketMs = 15 * 60_000;
+      if (span > 24 * 3600_000) bucketMs = 30 * 60_000;
+      return { fromMs, toMs, bucketMs };
+    }
+
+    async function _fetch() {
+      if (!_isApplicable()) return;
+      const { fromMs, toMs, bucketMs } = _resolveRange();
+      const symbol = els.symbol.value.toUpperCase();
+      const market = els.market.value;
+      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange}`;
+      // 同一参数 5s 内不重拉
+      const now = Date.now();
+      if (key === state.lastFetchKey && now - state.lastFetchAt < 5_000) return;
+      state.lastFetchKey = key;
+      state.lastFetchAt = now;
+      try {
+        const url = `/api/orderbook/heatmap?symbol=${symbol}&market=${market}&from=${fromMs}&to=${toMs}&bucketMs=${bucketMs}&priceRange=${state.priceRange}`;
+        const data = await fetchJsonSoft(url);
+        if (!data) {
+          _updateMeta('拉取失败 / Fetch failed');
+          return;
+        }
+        state.data = data;
+        _updateMeta();
+        _draw();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[heatmap] fetch err:', err.message);
+        _updateMeta('错误 / Error: ' + err.message);
+      }
+    }
+
+    function scheduleFetch(delay) {
+      if (state.pendingTimer) clearTimeout(state.pendingTimer);
+      state.pendingTimer = setTimeout(() => {
+        state.pendingTimer = null;
+        _fetch();
+      }, delay != null ? delay : 250);
+    }
+
+    // 主图可见范围变化 → 节流刷新热图（debounce 300ms）
+    mainChart.timeScale().subscribeVisibleTimeRangeChange(() => {
+      scheduleFetch(300);
+    });
+
+    // 控件变化 → 立即刷新
+    if (els.heatmapWindow) {
+      els.heatmapWindow.addEventListener('change', () => {
+        state.windowMs = Number(els.heatmapWindow.value) || 3_600_000;
+        state.lastFetchKey = ''; // 强制重拉
+        scheduleFetch(0);
+      });
+    }
+    if (els.heatmapRange) {
+      els.heatmapRange.addEventListener('change', () => {
+        state.priceRange = Number(els.heatmapRange.value) || 0.01;
+        state.lastFetchKey = '';
+        scheduleFetch(0);
+      });
+    }
+
+    // 容器尺寸跟随：用 ResizeObserver 监控 .pane-body
+    const ro = new ResizeObserver(() => _resizeCanvas());
+    ro.observe(canvas.parentElement);
+
+    // 周期性自动刷新（每 60s 一次，确保即使主图没动热图也跟最新录盘）
+    setInterval(() => scheduleFetch(0), 60_000);
+
+    _setVisibility();
+    _resizeCanvas();
+    // 首次延迟拉一次（等主图 setData 后 visibleRange 才靠谱）
+    scheduleFetch(800);
+
+    return {
+      refresh: () => scheduleFetch(0),
+      onSymbolMarketChange: () => {
+        _setVisibility();
+        state.data = null;
+        state.lastFetchKey = '';
+        _draw();
+        if (_isApplicable()) scheduleFetch(300);
+      }
+    };
+  })();
 
   // ---- 十字准星 (Crosshair) 跨图联动 ----
   // 一个图上 hover → 其他图同位置画一根垂直线，方便对照同一时刻的指标。
@@ -2022,6 +2375,7 @@
     oiSeries.setData([]);
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
     setObBaselineWindow(_obBaselineState.windowMs);
+    if (heatmap) heatmap.onSymbolMarketChange();
     markChartsNeedFit();
     poll();
     restartSSE();
@@ -2033,6 +2387,7 @@
     _lastOiResp = null;
     oiSeries.setData([]);
     setObBaselineWindow(_obBaselineState.windowMs);
+    if (heatmap) heatmap.onSymbolMarketChange();
     markChartsNeedFit();
     poll();
     restartSSE();
