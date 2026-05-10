@@ -1312,16 +1312,40 @@
   // 缓存每个 chart 当前鼠标位置（time + price）。任何 series API（setData /
   // update / setMarkers / createPriceLine ...）都可能让 lightweight-charts
   // 内部 crosshair 状态被重置 → hover 中虚线消失。
-  // 解法：每次 chart 渲染流程结束（renderMain / sub-render 末尾）调
-  // _restoreHoverCrosshairs() 强制把 crosshair 画回鼠标最后位置。
   const _lastHover = new WeakMap(); // chart → { time, price, series }
+  // 同时缓存原生鼠标坐标，用于派发 mousemove 让 lightweight-charts 走原生
+  // hover 路径 —— setCrosshairPosition 只画十字线和"价格 label"，**不画 X 轴
+  // 上的时间 label**（这是 lightweight-charts 4.x 已知行为：programmatic
+  // crosshair 不带 time-axis label）。要让时间 label 也显示，必须模拟原生
+  // mousemove 事件。
+  const _lastMousePos = new WeakMap(); // container → { clientX, clientY }
+
   function _restoreHoverCrosshairs() {
     for (const t of _crossPairs) {
       if (!_hoveredCharts.has(t.chart)) continue;
       const last = _lastHover.get(t.chart);
-      if (!last) continue;
-      try { t.chart.setCrosshairPosition(last.price, last.time, last.series); }
-      catch (_) { /* time/price 不在数据范围 */ }
+      if (last) {
+        try { t.chart.setCrosshairPosition(last.price, last.time, last.series); }
+        catch (_) { /* time/price 不在数据范围 */ }
+      }
+      // 关键补丁：派发 untrusted mousemove 到 chart container，让 lightweight-
+      // charts 内部 hover state 重新激活 → 时间轴 label 才会画出来。
+      // 我们的 mousemove 监听用 ev.isTrusted 过滤，避免缓存被 untrusted 事件污染。
+      const pos = _lastMousePos.get(t.container);
+      if (!pos || !t.container) continue;
+      // 派发到最深的 canvas（lightweight-charts 监听具体 canvas 元素）。
+      // 找不到 canvas 时退化派发到 container，事件冒泡也能被内部 handler 接到。
+      const canvases = t.container.querySelectorAll('canvas');
+      const target = canvases.length ? canvases[canvases.length - 1] : t.container;
+      try {
+        target.dispatchEvent(new MouseEvent('mousemove', {
+          clientX: pos.clientX,
+          clientY: pos.clientY,
+          bubbles: true,
+          cancelable: true,
+          view: window
+        }));
+      } catch (_) { /* noop */ }
     }
   }
 
@@ -1363,7 +1387,14 @@
       src.container.addEventListener('mouseenter', () => _hoveredCharts.add(src.chart));
       src.container.addEventListener('mouseleave', () => {
         _hoveredCharts.delete(src.chart);
+        _lastMousePos.delete(src.container);
         _onChartMouseLeave(src.chart);
+      });
+      // 缓存最后真实鼠标位置（仅 trusted 事件，避免我们派发的 untrusted
+      // mousemove 反过来更新缓存）。用于 _restoreHoverCrosshairs 中重放。
+      src.container.addEventListener('mousemove', (ev) => {
+        if (!ev.isTrusted) return;
+        _lastMousePos.set(src.container, { clientX: ev.clientX, clientY: ev.clientY });
       });
     }
     src.chart.subscribeCrosshairMove((param) => {
