@@ -53,12 +53,13 @@ function _readLeverageBuckets() {
 }
 
 const DEFAULT_MMR = 0.005;       // 0.5% 维持保证金（BTC 永续大致水平）
-// 仓位"半衰期"：之前 8h 太短，导致 24h 窗口下"墙"会断成段。
-// 改成 24h（CoinGlass 量级），让清算线在 1 天窗口内基本不衰减，画面更连续。
+// 仓位"半衰期"：8h 是短期（最近压力强）+ 长期（远古淡出）的平衡点。
+// 之前曾改 24h 让画面更连续，但同步把"最近清算"的对比度抹平，导致
+// threshold=0.85 下连主峰都看不到。回到 8h，让阈值过滤更有信号。
 // 可通过 LIQ_HALF_LIFE_HOURS env 覆盖。
 const DECAY_HALF_LIFE_MS = (() => {
   const v = Number(process.env.LIQ_HALF_LIFE_HOURS);
-  return Number.isFinite(v) && v > 0 ? v * 3600_000 : 24 * 3600_000;
+  return Number.isFinite(v) && v > 0 ? v * 3600_000 : 8 * 3600_000;
 })();
 // 价格扩散：单根 K 线的清算价不只贡献到 1 格，而是按高斯核扩散到 ±N 个
 // priceBucket，让相邻 K 线（close 抖动 1~2 格）的清算线能彼此重叠，
@@ -69,17 +70,23 @@ const DEFAULT_PRICE_SPREAD_BUCKETS = (() => {
   return Number.isFinite(v) && v >= 0 && v <= 10 ? Math.floor(v) : 2;
 })();
 
+// 关键：中心归一化（中心=1）而不是总和归一化。
+// - 总和归一化会把中心权重压到 ~0.2（spread=2），让"主峰"被稀释 80%，
+//   threshold=0.85 下整张图直接消失。
+// - 中心归一化让中心格的累加强度与"旧算法"完全一致（向后兼容），
+//   相邻格仅获得附赠（k=±1 ~0.75，k=±2 ~0.32），保证：
+//     * threshold=0.85 仍能筛出主峰横线（不丢信号）
+//     * threshold=0.6  能看到 ±2 桶的"粗连续亮带"（视觉连续性）
 function _gaussianWeights(spread) {
   if (!(spread > 0)) return [1];
   const sigma = Math.max(0.5, spread / 1.5);
   const out = [];
-  let sum = 0;
   for (let k = -spread; k <= spread; k += 1) {
-    const w = Math.exp(-(k * k) / (2 * sigma * sigma));
-    out.push(w);
-    sum += w;
+    out.push(Math.exp(-(k * k) / (2 * sigma * sigma)));
   }
-  for (let i = 0; i < out.length; i += 1) out[i] /= sum;
+  // 中心 = 1（不做总和归一化）
+  const center = out[spread] || 1;
+  if (center > 0) for (let i = 0; i < out.length; i += 1) out[i] /= center;
   return out;
 }
 
