@@ -874,10 +874,11 @@
       priceRange: _readPriceRange(),
       mode: (els.liqHeatmapMode && els.liqHeatmapMode.value) || 'predicted',
       // 流动性阈值 (CoinGlass 风格)：只显示 v / max ≥ threshold 的 cell。
-      // 用户拖滑块即时过滤，0 = 显示全部，0.85 默认 = 突出关键清算区。
+      // 用户拖滑块即时过滤，0 = 显示全部（默认，与 CoinGlass 一致），
+      // 0.85 = 突出关键清算墙。
       threshold: (() => {
-        const v = els.liqHeatmapThreshold ? Number(els.liqHeatmapThreshold.value) : 0.85;
-        return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0.85;
+        const v = els.liqHeatmapThreshold ? Number(els.liqHeatmapThreshold.value) : 0;
+        return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0;
       })(),
       anchorMs: null,
       data: null,
@@ -990,7 +991,12 @@
       const cellW = pw / T;
       const cellH = ph / P;
 
-      const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
+      // 用 "p95 × 1.6" 做色阶分母：让中等强度也能映射到青蓝/青绿，
+      // 同时保留极少数"超亮"格子做高光（CoinGlass 风格的层次感）。
+      // 单纯用 maxValue 会让 95% 数据被压到深色区，单纯用 p95 又让上 5% 全爆顶。
+      const normMax = (Number.isFinite(d.p95) && d.p95 > 0)
+        ? Math.min(d.maxValue, d.p95 * 1.6)
+        : d.maxValue;
       // 流动性阈值：用 maxValue 作分母（不是 normMax），threshold 直接对应
       // 用户感知的"占最强清算的百分比"。比如 0.85 = 只显示强度 ≥ 85% 最大值
       // 的格子，这才是 CoinGlass "突出最重要集群" 的语义。
@@ -1859,12 +1865,15 @@
   /** 把 (value, normMax) 映射成 viridis 色 + log 拉伸 */
   function viridisFromValue(value, normMax) {
     if (!(value > 0) || !(normMax > 0)) return null;
+    // sqrt 色阶（CoinGlass 风格）：让低/中等强度也能映射到青蓝/青绿，
+    // 使整张图有"晕染层次"而非只有少数亮点。
+    // log 太"陡"会把所有信号挤到顶端；线性又把弱信号压到 0；sqrt 是折中。
     let t;
     if (value <= normMax) {
-      t = Math.log(1 + value) / Math.log(1 + normMax);
-      t = 0.05 + 0.85 * t; // 0.05~0.90
+      t = Math.sqrt(value / normMax);
+      t = 0.08 + 0.82 * t; // 0.08~0.90，基线 0.08 让有信号格 ≠ 纯紫背景
     } else {
-      const extra = Math.min(1, Math.log(1 + value) / Math.log(1 + normMax) - 1);
+      const extra = Math.min(1, Math.sqrt(value / normMax) - 1);
       t = Math.min(1, 0.90 + 0.10 * extra);
     }
     return viridisColor(t, 0.95);

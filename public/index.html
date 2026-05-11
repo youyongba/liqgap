@@ -921,10 +921,10 @@
               <label for="liq-heatmap-threshold" title="提高阈值以仅显示最强的流动性集群（最大 / 最关键的清算区域）；降低则展示更多细节。">
                 流动性阈值 / Threshold:
               </label>
-              <input id="liq-heatmap-threshold" type="range" min="0" max="0.99" step="0.01" value="0.85"
+              <input id="liq-heatmap-threshold" type="range" min="0" max="0.99" step="0.01" value="0"
                      style="width:100px; accent-color: var(--accent-yellow);"
-                     title="只显示强度 ≥ 阈值 × max 的格子。0 = 全部 · 0.85 = CoinGlass 默认 · 0.99 = 仅极值。" />
-              <span id="liq-heatmap-threshold-val" class="meta" style="min-width:38px; text-align:right; font-variant-numeric: tabular-nums;">0.85</span>
+                     title="只显示强度 ≥ 阈值 × max 的格子。0 = 全部（CoinGlass 默认）· 0.85 = 仅强清算墙 · 0.99 = 仅极值。" />
+              <span id="liq-heatmap-threshold-val" class="meta" style="min-width:38px; text-align:right; font-variant-numeric: tabular-nums;">0.00</span>
               <span class="meta" id="liq-heatmap-meta">等待数据… / Loading…</span>
               <span class="heatmap-legend viridis-legend" title="低 → 高：紫 → 蓝 → 青 → 绿 → 黄"><span>低</span><span class="grad"></span><span>高</span></span>
               <button class="min-btn" type="button" data-min-target="liq-heatmap-card"
