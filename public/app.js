@@ -60,6 +60,8 @@
     liqHeatmapWindow: document.getElementById('liq-heatmap-window'),
     liqHeatmapRange: document.getElementById('liq-heatmap-range'),
     liqHeatmapMode: document.getElementById('liq-heatmap-mode'),
+    liqHeatmapThreshold: document.getElementById('liq-heatmap-threshold'),
+    liqHeatmapThresholdVal: document.getElementById('liq-heatmap-threshold-val'),
     subCard: document.getElementById('sub-card'),
     mainCard: document.getElementById('main-card')
   };
@@ -871,6 +873,12 @@
       windowMs: Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000),
       priceRange: _readPriceRange(),
       mode: (els.liqHeatmapMode && els.liqHeatmapMode.value) || 'predicted',
+      // 流动性阈值 (CoinGlass 风格)：只显示 v / max ≥ threshold 的 cell。
+      // 用户拖滑块即时过滤，0 = 显示全部，0.85 默认 = 突出关键清算区。
+      threshold: (() => {
+        const v = els.liqHeatmapThreshold ? Number(els.liqHeatmapThreshold.value) : 0.85;
+        return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0.85;
+      })(),
       anchorMs: null,
       data: null,
       cssWidth: 0,
@@ -928,8 +936,12 @@
       const sourceTag = d.sourceInterval ? ` · 源 ${d.sourceInterval}` : '';
       const cntLabel = state.mode === 'predicted' ? 'K线' : '事件';
       const cntVal = state.mode === 'predicted' ? (d.candleCount || 0) : (d.eventCount || 0);
+      const thrPct = (state.threshold * 100).toFixed(0);
+      const thrTxt = state.threshold > 0
+        ? ` · 阈值 ${thrPct}%（≥${thrPct}% max 才显示）`
+        : '';
       meta.textContent =
-        `${modeTag} · ${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt}${sourceTag} · ${cntLabel} ${cntVal} (多 ${totalLong} · 空 ${totalShort} USDT)`
+        `${modeTag} · ${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt}${sourceTag} · ${cntLabel} ${cntVal} (多 ${totalLong} · 空 ${totalShort} USDT)${thrTxt}`
         + (extra ? ` · ${extra}` : '');
     }
 
@@ -971,6 +983,13 @@
       const cellH = ph / P;
 
       const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
+      // 流动性阈值：用 maxValue 作分母（不是 normMax），threshold 直接对应
+      // 用户感知的"占最强清算的百分比"。比如 0.85 = 只显示强度 ≥ 85% 最大值
+      // 的格子，这才是 CoinGlass "突出最重要集群" 的语义。
+      const thrAbs = (Number.isFinite(d.maxValue) && d.maxValue > 0)
+        ? state.threshold * d.maxValue
+        : 0;
+      let _shownCells = 0;
       // 色块：合并 long+short 总强度（与 CoinGlass 一致——颜色不分方向，
       // 方向通过 tooltip 区分）
       for (let ti = 0; ti < T; ti += 1) {
@@ -981,12 +1000,16 @@
           const sv = d.shortMatrix[ti] ? d.shortMatrix[ti][pi] : 0;
           const v = lv + sv;
           if (v <= 0) continue;
+          // 阈值过滤：低于 threshold * maxValue 的弱集群直接跳过
+          if (v < thrAbs) continue;
           const color = _colorFor(v, normMax);
           if (!color) continue;
           ctx.fillStyle = color;
           ctx.fillRect(x, yTop, cellW + 1, cellH + 1);
+          _shownCells += 1;
         }
       }
+      state._lastShownCells = _shownCells;
 
       // 价格 grid
       const priceSpan = d.priceMax - d.priceMin;
@@ -1245,6 +1268,21 @@
         _draw();
         scheduleFetch(0);
       });
+    }
+    if (els.liqHeatmapThreshold) {
+      const sync = () => {
+        const v = Number(els.liqHeatmapThreshold.value);
+        if (!Number.isFinite(v)) return;
+        state.threshold = Math.max(0, Math.min(0.99, v));
+        if (els.liqHeatmapThresholdVal) {
+          els.liqHeatmapThresholdVal.textContent = state.threshold.toFixed(2);
+        }
+        // 纯本地过滤：不重新 fetch，仅重绘 + 同步 meta
+        _updateMeta();
+        _draw();
+      };
+      els.liqHeatmapThreshold.addEventListener('input', sync);
+      els.liqHeatmapThreshold.addEventListener('change', sync);
     }
 
     let _roPending = false;
