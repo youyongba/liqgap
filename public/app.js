@@ -2297,7 +2297,7 @@
     // 用 hash 缓存：相同则跳过。
     const markersHash = JSON.stringify(markers);
     if (renderMain._lastMarkersHash !== markersHash) {
-      candleSeries.setMarkers(markers);
+    candleSeries.setMarkers(markers);
       renderMain._lastMarkersHash = markersHash;
     }
 
@@ -2311,29 +2311,29 @@
       u: f.upper, l: f.lower, t: f.type
     })));
     if (renderMain._lastPriceLinesHash !== priceLinesHash) {
-      if (renderMain._priceLines) {
-        for (const pl of renderMain._priceLines) candleSeries.removePriceLine(pl);
-      }
-      const priceLines = [];
+    if (renderMain._priceLines) {
+      for (const pl of renderMain._priceLines) candleSeries.removePriceLine(pl);
+    }
+    const priceLines = [];
       for (const f of fvgTop3) {
-        priceLines.push(candleSeries.createPriceLine({
-          price: f.upper,
-          color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)',
-          lineStyle: LightweightCharts.LineStyle.Dashed,
-          lineWidth: 1,
-          axisLabelVisible: false,
-          title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} top`
-        }));
-        priceLines.push(candleSeries.createPriceLine({
-          price: f.lower,
-          color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.4)' : 'rgba(248, 113, 113, 0.4)',
-          lineStyle: LightweightCharts.LineStyle.Dotted,
-          lineWidth: 1,
-          axisLabelVisible: false,
-          title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} bot`
-        }));
-      }
-      renderMain._priceLines = priceLines;
+      priceLines.push(candleSeries.createPriceLine({
+        price: f.upper,
+        color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)',
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        lineWidth: 1,
+        axisLabelVisible: false,
+        title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} top`
+      }));
+      priceLines.push(candleSeries.createPriceLine({
+        price: f.lower,
+        color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.4)' : 'rgba(248, 113, 113, 0.4)',
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        lineWidth: 1,
+        axisLabelVisible: false,
+        title: `FVG ${f.type === 'bullish' ? '↑' : '↓'} bot`
+      }));
+    }
+    renderMain._priceLines = priceLines;
       renderMain._lastPriceLinesHash = priceLinesHash;
     }
 
@@ -2358,7 +2358,7 @@
     // 只在首次渲染或用户主动重置时 fitContent，避免实时刷新打断用户拖动
     // 主图 fit 后立即把所有副图拉到主图当前可见范围（联动同步）
     if (!chartsFitted) {
-      mainChart.timeScale().fitContent();
+    mainChart.timeScale().fitContent();
       chartsFitted = true;
     }
     syncSubChartsToMain();
@@ -3071,7 +3071,7 @@
     // 仅在 SSE 还没接管的"首屏 / 降级"模式下显示 fetching 提示，
     // 避免在实时模式下每 10s 把"实时 / Live"覆盖成"请求数据中"。
     if (!sseOwnsMainChart()) {
-      setStatus('请求数据中… / Fetching…');
+    setStatus('请求数据中… / Fetching…');
     }
     const startedAt = Date.now();
     try {
