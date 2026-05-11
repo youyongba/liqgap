@@ -35,9 +35,20 @@
 const express = require('express');
 const recorder = require('../services/liquidationRecorder');
 const { BinanceService } = require('../services/binance');
+const { normalizeKlines } = require('../indicators/klineIndicators');
 
 const router = express.Router();
 const ONE_HOUR_MS = 3600_000;
+const ONE_MIN_MS = 60_000;
+
+// 根据回放窗口宽度选 K 线粒度（与 predictiveLiquidations 保持一致的体感）
+function _chooseCandleInterval(spanMs) {
+  if (spanMs <= ONE_HOUR_MS)         return { interval: '1m',  ms: ONE_MIN_MS };
+  if (spanMs <= 4 * ONE_HOUR_MS)     return { interval: '1m',  ms: ONE_MIN_MS };
+  if (spanMs <= 12 * ONE_HOUR_MS)    return { interval: '5m',  ms: 5 * ONE_MIN_MS };
+  if (spanMs <= 24 * ONE_HOUR_MS)    return { interval: '5m',  ms: 5 * ONE_MIN_MS };
+  return                                    { interval: '15m', ms: 15 * ONE_MIN_MS };
+}
 
 router.get('/liquidations/heatmap', async (req, res) => {
   try {
@@ -172,6 +183,25 @@ router.get('/liquidations/heatmap', async (req, res) => {
       }
     }
 
+    // 叠加 K 线（与预测模式行为一致；CoinGlass 风格）。即便没事件也尝试拉，
+    // 让用户至少能看到价格走势，避免出现"空热图"。失败不影响主响应。
+    let slimCandles = [];
+    let candleInterval = null;
+    try {
+      const span = toMs - fromMs;
+      const pick = _chooseCandleInterval(span);
+      candleInterval = pick.interval;
+      const needed = Math.ceil(span / pick.ms) + 5;
+      const limit = Math.min(needed, 1500);
+      // realized 模式只对 futures 生效，但即便 spot 也能拉 K 线
+      const raw = await BinanceService.getKlines(symbol, candleInterval, limit, market);
+      slimCandles = normalizeKlines(raw)
+        .filter((c) => c.openTime >= fromMs - pick.ms && c.openTime <= toMs)
+        .map((c) => ({ t: c.openTime, o: c.open, h: c.high, l: c.low, c: c.close }));
+    } catch (_) {
+      slimCandles = [];
+    }
+
     res.json({
       success: true,
       data: {
@@ -187,6 +217,8 @@ router.get('/liquidations/heatmap', async (req, res) => {
         totalLong: matrix.totalLong,
         totalShort: matrix.totalShort,
         eventCount: matrix.eventCount,
+        candles: slimCandles,
+        candleInterval,
         generatedAt: now,
         empty: matrix.eventCount === 0
       }

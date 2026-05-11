@@ -940,8 +940,11 @@
       const thrTxt = state.threshold > 0
         ? ` · 阈值 ${thrPct}%（≥${thrPct}% max 才显示）`
         : '';
+      const candleTxt = (d.candles && d.candles.length && d.candleInterval)
+        ? ` · K线 ${d.candleInterval}×${d.candles.length}`
+        : '';
       meta.textContent =
-        `${modeTag} · ${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt}${sourceTag} · ${cntLabel} ${cntVal} (多 ${totalLong} · 空 ${totalShort} USDT)${thrTxt}`
+        `${modeTag} · ${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt}${sourceTag} · ${cntLabel} ${cntVal} (多 ${totalLong} · 空 ${totalShort} USDT)${candleTxt}${thrTxt}`
         + (extra ? ` · ${extra}` : '');
     }
 
@@ -1083,6 +1086,62 @@
         ctx.moveTo(x + 0.5, oy + ph);
         ctx.lineTo(x + 0.5, oy + ph + 3);
         ctx.stroke();
+      }
+
+      // K 线叠加 (CoinGlass 风格)：在热力图上画半透明蜡烛，让背景流动性可视化
+      if (d.candles && d.candles.length && priceSpan > 0) {
+        ctx.save();
+        const span = d.toMs - d.fromMs;
+        const xOf = (t) => ox + pw * ((t - d.fromMs) / span);
+        const yOf = (p) => oy + ph * (1 - (p - d.priceMin) / priceSpan);
+        const N = d.candles.length;
+        // 蜡烛体宽：取相邻 candle 间距的 70%，再 clamp
+        let stepPx;
+        if (N >= 2) {
+          stepPx = (xOf(d.candles[1].t) - xOf(d.candles[0].t));
+        } else {
+          stepPx = pw / Math.max(1, N);
+        }
+        const bodyW = Math.max(1, Math.min(12, stepPx * 0.7));
+        const halfBody = bodyW / 2;
+        const wickAlpha = 0.85;
+        const bodyAlpha = 0.78;
+        // CoinGlass 风格：青绿涨 / 品红跌；颜色比 K 线主图更暖更亮，
+        // 因为要从紫色背景里凸显出来。
+        const upStroke = `rgba(50, 230, 180, ${wickAlpha})`;
+        const upFill   = `rgba(50, 230, 180, ${bodyAlpha})`;
+        const dnStroke = `rgba(255, 90, 130, ${wickAlpha})`;
+        const dnFill   = `rgba(255, 90, 130, ${bodyAlpha})`;
+        for (let i = 0; i < N; i += 1) {
+          const c = d.candles[i];
+          if (!c || !Number.isFinite(c.o) || !Number.isFinite(c.c)) continue;
+          // 越界裁剪：超出价格窗的不画
+          if (c.h < d.priceMin || c.l > d.priceMax) continue;
+          const cx = xOf(c.t + (i + 1 < N ? (d.candles[i + 1].t - c.t) / 2 : (c.t - d.candles[i - 1 < 0 ? 0 : i - 1].t) / 2));
+          if (cx < ox - halfBody || cx > ox + pw + halfBody) continue;
+          const isUp = c.c >= c.o;
+          ctx.strokeStyle = isUp ? upStroke : dnStroke;
+          ctx.fillStyle   = isUp ? upFill   : dnFill;
+          // 影线
+          const yH = yOf(Math.min(d.priceMax, c.h));
+          const yL = yOf(Math.max(d.priceMin, c.l));
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(Math.round(cx) + 0.5, yH);
+          ctx.lineTo(Math.round(cx) + 0.5, yL);
+          ctx.stroke();
+          // 实体
+          const yO = yOf(c.o);
+          const yC = yOf(c.c);
+          const yTop = Math.min(yO, yC);
+          const bodyH = Math.max(1, Math.abs(yC - yO));
+          ctx.fillRect(Math.round(cx - halfBody), Math.round(yTop), Math.max(1, Math.round(bodyW)), Math.round(bodyH));
+          if (bodyW >= 2) {
+            ctx.strokeRect(Math.round(cx - halfBody) + 0.5, Math.round(yTop) + 0.5,
+              Math.max(1, Math.round(bodyW)) - 1, Math.max(1, Math.round(bodyH)) - 1);
+          }
+        }
+        ctx.restore();
       }
 
       // anchor 锁定线

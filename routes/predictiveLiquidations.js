@@ -165,6 +165,12 @@ router.get('/predictive/liquidations', async (req, res) => {
       }
     }
 
+    // 用于前端在热力图上叠加 K 线（CoinGlass 风格）。slim 字段缩短传输体积。
+    // 仅返回窗口内 candles，避免边界外多余样本带歪缩放。
+    const slimCandles = candles
+      .filter((c) => c.openTime >= fromMs - sourceMs && c.openTime <= toMs)
+      .map((c) => ({ t: c.openTime, o: c.open, h: c.high, l: c.low, c: c.close }));
+
     res.json({
       success: true,
       data: {
@@ -185,6 +191,8 @@ router.get('/predictive/liquidations', async (req, res) => {
         leverageBuckets: matrix.leverageBuckets,
         mmr: matrix.mmr,
         halfLifeMs: matrix.halfLifeMs,
+        candles: slimCandles,
+        candleInterval: sourceInterval,
         generatedAt: now,
         empty: matrix.maxValue === 0,
         mode: 'predicted'
