@@ -62,20 +62,19 @@ const DECAY_HALF_LIFE_MS = (() => {
   const v = Number(process.env.LIQ_HALF_LIFE_HOURS);
   return Number.isFinite(v) && v > 0 ? v * 3600_000 : 24 * 3600_000;
 })();
-// 价格扩散：单根 K 线的清算价不只贡献到 1 格，而是按高斯核扩散到 ±N 个
-// priceBucket。CoinGlass 的亮带视觉上很粗（约 0.3~0.5% 价格区间），
-// 默认 ±4 桶（共 9 格），sigma 让 ±1 处仍 ~93% 中心强度，±4 处 ~33%。
-// 中心 = 1 不归一化总和，主峰强度与"无扩散"一致，相邻格仅获得"光晕"附赠。
-// 可通过 LIQ_PRICE_SPREAD_BUCKETS env 调节。
+// 价格扩散：CoinGlass 的亮带是"线条感"而不是"色块感"——主峰只占 1~2 桶宽，
+// 相邻清算价位互相独立、清晰可分。所以默认 ±1 桶（共 3 格），中心 = 1，
+// 邻居只有 ~0.3 的弱光晕（让"细线"看起来不是 1px 锯齿，但也不会糊成块）。
+// 可通过 LIQ_PRICE_SPREAD_BUCKETS env 调节，需要更连续的视觉可设 2~3。
 const DEFAULT_PRICE_SPREAD_BUCKETS = (() => {
   const v = Number(process.env.LIQ_PRICE_SPREAD_BUCKETS);
-  return Number.isFinite(v) && v >= 0 && v <= 10 ? Math.floor(v) : 4;
+  return Number.isFinite(v) && v >= 0 && v <= 10 ? Math.floor(v) : 1;
 })();
-// 时间平滑：CoinGlass 的水平亮带从产生时间起就连续延伸，不会有突兀的"边缘"。
-// 我们对 (time × price) 矩阵做一次 3-tap horizontal box blur（时间方向），
-// 仅当两个相邻时间桶的强度差超过中心值 30% 时才平滑，避免主峰被抹平。
-// 可通过 LIQ_TIME_SMOOTH=0 关闭。
-const ENABLE_TIME_SMOOTH = process.env.LIQ_TIME_SMOOTH !== '0';
+// 时间平滑：默认关闭。开启会让相邻时间桶的强度互相溢出，把多条独立的
+// 清算线"焊"成一大块色团，丢失 CoinGlass 那种"清晰线条"的辨识度。
+// 时间方向的连续性已经由 ti 累加机制 + 24h 半衰期保证。
+// 可通过 LIQ_TIME_SMOOTH=1 强制开启。
+const ENABLE_TIME_SMOOTH = process.env.LIQ_TIME_SMOOTH === '1';
 
 // 关键：中心归一化（中心=1）而不是总和归一化。
 // - 总和归一化会把中心权重压到 ~0.2（spread=2），让"主峰"被稀释 80%，
@@ -86,7 +85,10 @@ const ENABLE_TIME_SMOOTH = process.env.LIQ_TIME_SMOOTH !== '0';
 //     * threshold=0.6  能看到 ±2 桶的"粗连续亮带"（视觉连续性）
 function _gaussianWeights(spread) {
   if (!(spread > 0)) return [1];
-  const sigma = Math.max(0.5, spread / 1.5);
+  // sigma 收紧：spread=1 时邻居 ~0.14，spread=2 时 ±1=~0.61 / ±2=~0.14。
+  // 这样"线"中心高亮、边缘快速衰减，才是 CoinGlass 那种"清晰细线"的视觉。
+  // 之前 sigma = spread/1.5 让邻居 0.32~0.93，反而把线"涂宽"成色块。
+  const sigma = Math.max(0.4, spread / 2.5);
   const out = [];
   for (let k = -spread; k <= spread; k += 1) {
     out.push(Math.exp(-(k * k) / (2 * sigma * sigma)));

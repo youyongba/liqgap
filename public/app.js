@@ -991,12 +991,10 @@
       const cellW = pw / T;
       const cellH = ph / P;
 
-      // 用 "p95 × 1.6" 做色阶分母：让中等强度也能映射到青蓝/青绿，
-      // 同时保留极少数"超亮"格子做高光（CoinGlass 风格的层次感）。
-      // 单纯用 maxValue 会让 95% 数据被压到深色区，单纯用 p95 又让上 5% 全爆顶。
-      const normMax = (Number.isFinite(d.p95) && d.p95 > 0)
-        ? Math.min(d.maxValue, d.p95 * 1.6)
-        : d.maxValue;
+      // 用 p95 做色阶分母：让 5% 极值"爆顶为黄色"（明确的最强清算线），
+      // 95% 普通信号铺底为青蓝/青绿，形成 CoinGlass 那种"少数亮黄主峰 +
+      // 大量底色晕染"的层次。之前用 p95×1.6 会把黄色推到只剩 1~2 格。
+      const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
       // 流动性阈值：用 maxValue 作分母（不是 normMax），threshold 直接对应
       // 用户感知的"占最强清算的百分比"。比如 0.85 = 只显示强度 ≥ 85% 最大值
       // 的格子，这才是 CoinGlass "突出最重要集群" 的语义。
