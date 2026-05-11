@@ -53,7 +53,35 @@ function _readLeverageBuckets() {
 }
 
 const DEFAULT_MMR = 0.005;       // 0.5% 维持保证金（BTC 永续大致水平）
-const DECAY_HALF_LIFE_MS = 8 * 3600_000; // 仓位"半衰期"：8h 后强度衰减一半
+// 仓位"半衰期"：之前 8h 太短，导致 24h 窗口下"墙"会断成段。
+// 改成 24h（CoinGlass 量级），让清算线在 1 天窗口内基本不衰减，画面更连续。
+// 可通过 LIQ_HALF_LIFE_HOURS env 覆盖。
+const DECAY_HALF_LIFE_MS = (() => {
+  const v = Number(process.env.LIQ_HALF_LIFE_HOURS);
+  return Number.isFinite(v) && v > 0 ? v * 3600_000 : 24 * 3600_000;
+})();
+// 价格扩散：单根 K 线的清算价不只贡献到 1 格，而是按高斯核扩散到 ±N 个
+// priceBucket，让相邻 K 线（close 抖动 1~2 格）的清算线能彼此重叠，
+// 形成 CoinGlass 风格的"粗连续亮带"，而不是孤立的散点段。
+// 默认 ±2 桶（共 5 格）。可通过 LIQ_PRICE_SPREAD_BUCKETS env 调节。
+const DEFAULT_PRICE_SPREAD_BUCKETS = (() => {
+  const v = Number(process.env.LIQ_PRICE_SPREAD_BUCKETS);
+  return Number.isFinite(v) && v >= 0 && v <= 10 ? Math.floor(v) : 2;
+})();
+
+function _gaussianWeights(spread) {
+  if (!(spread > 0)) return [1];
+  const sigma = Math.max(0.5, spread / 1.5);
+  const out = [];
+  let sum = 0;
+  for (let k = -spread; k <= spread; k += 1) {
+    const w = Math.exp(-(k * k) / (2 * sigma * sigma));
+    out.push(w);
+    sum += w;
+  }
+  for (let i = 0; i < out.length; i += 1) out[i] /= sum;
+  return out;
+}
 
 /**
  * @param {Array<{openTime,close,volume,takerBuyBase}>} candles
@@ -68,6 +96,10 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
   const mmr = Number.isFinite(opts.mmr) ? opts.mmr : DEFAULT_MMR;
   const halfLife = Number.isFinite(opts.halfLifeMs) ? opts.halfLifeMs : DECAY_HALF_LIFE_MS;
   const leverages = opts.leverageBuckets || _readLeverageBuckets();
+  const spreadBuckets = Number.isFinite(opts.priceSpreadBuckets)
+    ? Math.max(0, Math.min(10, Math.floor(opts.priceSpreadBuckets)))
+    : DEFAULT_PRICE_SPREAD_BUCKETS;
+  const spreadWeights = _gaussianWeights(spreadBuckets);
 
   const tCount = Math.max(1, Math.ceil((toMs - fromMs) / bucketMs));
   const pCount = Math.max(1, Math.ceil((priceMax - priceMin) / priceBucket));
@@ -122,21 +154,34 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
       totalShort += shortContrib;
 
       // 从 tiStart 一直累加到 tCount-1，每过一个桶 × decay。
-      // 用 running weight 避免循环里调用 Math.pow / Math.exp。
-      if (piLong >= 0 && piLong < pCount && longContrib > 0) {
+      // 同时把贡献按高斯核扩散到 piLong±spreadBuckets 个相邻价位，
+      // 这样相邻 K 线的清算线在视觉上能连成一条粗带。
+      if (longContrib > 0) {
         let w = 1;
         for (let ti = tiStart; ti < tCount; ti += 1) {
-          longMatrix[ti][piLong] += longContrib * w;
-          if (longMatrix[ti][piLong] > maxValue) maxValue = longMatrix[ti][piLong];
+          for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
+            const pIdx = piLong + s;
+            if (pIdx < 0 || pIdx >= pCount) continue;
+            const sw = spreadWeights[s + spreadBuckets];
+            const cell = longMatrix[ti][pIdx] + longContrib * w * sw;
+            longMatrix[ti][pIdx] = cell;
+            if (cell > maxValue) maxValue = cell;
+          }
           w *= decayPerBucket;
-          if (w < 1e-4) break; // 衰减到极小直接截断
+          if (w < 1e-4) break;
         }
       }
-      if (piShort >= 0 && piShort < pCount && shortContrib > 0) {
+      if (shortContrib > 0) {
         let w = 1;
         for (let ti = tiStart; ti < tCount; ti += 1) {
-          shortMatrix[ti][piShort] += shortContrib * w;
-          if (shortMatrix[ti][piShort] > maxValue) maxValue = shortMatrix[ti][piShort];
+          for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
+            const pIdx = piShort + s;
+            if (pIdx < 0 || pIdx >= pCount) continue;
+            const sw = spreadWeights[s + spreadBuckets];
+            const cell = shortMatrix[ti][pIdx] + shortContrib * w * sw;
+            shortMatrix[ti][pIdx] = cell;
+            if (cell > maxValue) maxValue = cell;
+          }
           w *= decayPerBucket;
           if (w < 1e-4) break;
         }
@@ -152,7 +197,8 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
     candleCount,
     leverageBuckets: leverages,
     mmr,
-    halfLifeMs: halfLife
+    halfLifeMs: halfLife,
+    priceSpreadBuckets: spreadBuckets
   };
 }
 

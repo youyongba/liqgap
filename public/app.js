@@ -975,7 +975,12 @@
       const d = state.data;
       const { x: ox, y: oy, w: pw, h: ph } = state.plot;
       if (!d || !d.times || !d.times.length || !d.prices || !d.prices.length || !(d.maxValue > 0)) {
-        if (empty) empty.style.display = 'flex';
+        if (empty) {
+          // 后端返回的 reason 优先（已包含 recorder 状态），没有则用默认提示
+          if (d && d.reason) empty.textContent = d.reason;
+          else empty.textContent = '尚无强平事件 / No liquidations yet（liqRecorder 启动后会随强平实时累积）';
+          empty.style.display = 'flex';
+        }
         return;
       }
       if (empty) empty.style.display = 'none';

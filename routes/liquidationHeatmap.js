@@ -92,6 +92,25 @@ router.get('/liquidations/heatmap', async (req, res) => {
     }
 
     if (!Number.isFinite(midPrice) || midPrice <= 0 || events.length === 0) {
+      // 把 recorder 真实状态告诉前端，方便用户判断"是没数据还是录盘没起来"
+      let recStatus = null;
+      try {
+        const s = recorder.getStatus();
+        const memBuf = (s.memBuffers || {})[symbol] || {};
+        recStatus = {
+          started: !!s.started,
+          totalMemEvents: memBuf.memCount || 0,
+          totalFiles: (s.files || []).length,
+          latestEvent: memBuf.latest || null
+        };
+      } catch (_) { /* noop */ }
+      const reason = events.length === 0
+        ? `该窗口内尚无强平事件 / No liquidations in window — `
+          + `录盘${recStatus && recStatus.started ? '已启动' : '未启动'}` 
+          + `，内存事件 ${recStatus ? recStatus.totalMemEvents : '?'} 条`
+          + `，磁盘文件 ${recStatus ? recStatus.totalFiles : '?'} 个`
+          + ` · 建议先切到 "预测 / Predicted" 模式查看`
+        : '价格无法确定 / mid price unknown';
       return res.json({
         success: true,
         data: {
@@ -107,9 +126,8 @@ router.get('/liquidations/heatmap', async (req, res) => {
           snapshotCount: 0,
           generatedAt: now,
           empty: true,
-          reason: events.length === 0
-            ? '该窗口内尚无强平事件 / No liquidations recorded yet（liqRecorder 启动需累积数据）'
-            : '价格无法确定 / mid price unknown'
+          recorderStatus: recStatus,
+          reason
         }
       });
     }
