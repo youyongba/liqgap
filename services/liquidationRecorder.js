@@ -48,8 +48,17 @@ function _dailyFile(symbol, market, dateStr) {
 }
 
 let _started = false;
+let _startedAt = 0;
 let _flushTimer = null;
 let _cleanupTimer = null;
+const _stats = {
+  totalEvents: 0,
+  lastEventAt: 0,
+  lastEventSymbol: null,
+  subscribeOk: false,
+  subscribeError: null,
+  subscribeAttempts: 0
+};
 
 // 每个 (symbol) 维护一个待 flush 缓冲 + 内存滚动 buffer
 // pendingBySymbol: Map<sym, Array<event>>  待写盘（写完清空）
@@ -61,6 +70,7 @@ let _hubListenersAttached = new Set();
 function start() {
   if (_started) return;
   _started = true;
+  _startedAt = Date.now();
   // eslint-disable-next-line no-console
   console.log(`[liqRecorder] start · dir=${RECORD_DIR} symbols=[${SYMBOLS_TO_RECORD.join(',')}] market=${MARKET}`);
 
@@ -100,23 +110,34 @@ async function _attachHub(symbol) {
   hub.on('liquidation', (evt) => {
     if (!evt || !Number.isFinite(evt.ts)) return;
     const sym = evt.symbol || symbol;
+    // 只录制配置中的 symbol（!forceOrder@arr 推送全市场事件，
+    // 不过滤会导致内存里堆积上百个 symbol 的 buffer，且永远不被消费）
+    if (!SYMBOLS_TO_RECORD.includes(sym)) return;
     if (!_pendingBySymbol.has(sym)) _pendingBySymbol.set(sym, []);
     _pendingBySymbol.get(sym).push(evt);
     if (!_memBufferBySymbol.has(sym)) _memBufferBySymbol.set(sym, []);
     const buf = _memBufferBySymbol.get(sym);
     buf.push(evt);
     if (buf.length > MEM_BUFFER_MAX) buf.splice(0, buf.length - MEM_BUFFER_MAX);
+    _stats.totalEvents += 1;
+    _stats.lastEventAt = evt.ts;
+    _stats.lastEventSymbol = sym;
   });
   _hubListenersAttached.add(k);
 
   // 触发订阅；失败则间隔重试（hub 内部已有指数退避，
   // 这里再加一层 30s 兜底重试覆盖 ensureForceOrderSubscription 抛错的情况）
   const trySubscribe = async () => {
+    _stats.subscribeAttempts += 1;
     try {
       await hub.ensureForceOrderSubscription();
+      _stats.subscribeOk = true;
+      _stats.subscribeError = null;
       // eslint-disable-next-line no-console
-      console.log(`[liqRecorder] forceOrder subscribed · ${symbol} ${MARKET}`);
+      console.log(`[liqRecorder] forceOrder subscribed · ${symbol} ${MARKET} (attempt ${_stats.subscribeAttempts})`);
     } catch (err) {
+      _stats.subscribeOk = false;
+      _stats.subscribeError = err.message;
       // eslint-disable-next-line no-console
       console.warn(`[liqRecorder] subscribe failed · ${symbol} ${MARKET}: ${err.message} (retry in 30s)`);
       setTimeout(trySubscribe, 30_000);
@@ -277,8 +298,11 @@ function getStatus() {
   for (const [sym, buf] of _memBufferBySymbol.entries()) {
     buffers[sym] = { memCount: buf.length, latest: buf[buf.length - 1] || null };
   }
+  const now = Date.now();
   return {
     started: _started,
+    startedAt: _startedAt,
+    uptimeMs: _startedAt ? now - _startedAt : 0,
     dir: RECORD_DIR,
     symbols: SYMBOLS_TO_RECORD,
     market: MARKET,
@@ -288,7 +312,14 @@ function getStatus() {
     pendingFlushBySymbol: Object.fromEntries(
       Array.from(_pendingBySymbol.entries()).map(([k, v]) => [k, v.length])
     ),
-    memBuffers: buffers
+    memBuffers: buffers,
+    subscribeOk: _stats.subscribeOk,
+    subscribeError: _stats.subscribeError,
+    subscribeAttempts: _stats.subscribeAttempts,
+    totalEventsSinceStart: _stats.totalEvents,
+    lastEventAt: _stats.lastEventAt,
+    lastEventSymbol: _stats.lastEventSymbol,
+    msSinceLastEvent: _stats.lastEventAt ? now - _stats.lastEventAt : null
   };
 }
 

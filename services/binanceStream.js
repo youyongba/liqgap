@@ -906,7 +906,12 @@ class StreamHub extends EventEmitter {
    */
   async ensureForceOrderSubscription() {
     if (this.market !== 'futures') return;
-    const stream = `${this.lower}@forceOrder`;
+    // BTCUSDT 单 symbol 的 forceOrder 流在平静时段可能数小时无事件，
+    // 导致 ws 被认为 idle 并断连/重连失败 → recorder 永远拿不到数据。
+    // 改订阅 "!forceOrder@arr"（全市场强平广播）：频率高（每秒多条）、
+    // 链路稳定，BTCUSDT 的事件自然包含其中（_handleForceOrder 按 data.o.s
+    // 取 symbol 后下游 recorder 再按 SYMBOLS_TO_RECORD 过滤）。
+    const stream = '!forceOrder@arr';
     if (!this.subscribedStreams.has(stream)) {
       await this._subscribe([stream]);
     } else {

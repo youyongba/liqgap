@@ -1086,9 +1086,10 @@
         }
       }
 
-      // 多空主峰高亮：扫描 long/short 矩阵，找出"该价位累计强度最大"的两条
-      // 价位线，用最亮黄色横线覆盖。这是用户最该警惕的两个清算磁极。
-      // 用累计而非单格 max，避免被某个时间桶的瞬间峰值带偏。
+      // 多空主峰高亮：按金融语义约束方向。
+      //   多头清算 = 多头开仓后价格跌穿清算价 → 必在当前价【下方】
+      //   空头清算 = 空头开仓后价格涨穿清算价 → 必在当前价【上方】
+      // 沿价位累计（不是单格 max，避免被瞬间峰值带偏）后取各方向 argmax。
       {
         const Tlen = d.times.length;
         const Plen = d.prices.length;
@@ -1103,11 +1104,30 @@
             shortSum[pi] += sr[pi]  || 0;
           }
         }
+        const mid = Number.isFinite(d.midPrice) ? d.midPrice : null;
         let longArg = -1, longMax = 0;
         let shortArg = -1, shortMax = 0;
         for (let pi = 0; pi < Plen; pi += 1) {
-          if (longSum[pi]  > longMax)  { longMax  = longSum[pi];  longArg  = pi; }
-          if (shortSum[pi] > shortMax) { shortMax = shortSum[pi]; shortArg = pi; }
+          const price = d.prices[pi];
+          // 多头清算：仅在价格下方（含 ~中价附近）搜
+          if (mid == null || price < mid) {
+            if (longSum[pi] > longMax)  { longMax  = longSum[pi];  longArg  = pi; }
+          }
+          // 空头清算：仅在价格上方搜
+          if (mid == null || price > mid) {
+            if (shortSum[pi] > shortMax) { shortMax = shortSum[pi]; shortArg = pi; }
+          }
+        }
+        // 兜底：如果某方向没有任何信号（比如热图全在一侧），全局取 max
+        if (longArg < 0) {
+          for (let pi = 0; pi < Plen; pi += 1) {
+            if (longSum[pi] > longMax) { longMax = longSum[pi]; longArg = pi; }
+          }
+        }
+        if (shortArg < 0) {
+          for (let pi = 0; pi < Plen; pi += 1) {
+            if (shortSum[pi] > shortMax) { shortMax = shortSum[pi]; shortArg = pi; }
+          }
         }
         const fmtMoneyShort = (v) => v >= 1e9
           ? (v / 1e9).toFixed(2) + 'B'
@@ -1120,10 +1140,8 @@
           const yPeak = oy + ph * (1 - (price - d.priceMin) / priceSpan);
           if (yPeak < oy - 0.5 || yPeak > oy + ph + 0.5) return;
           ctx.save();
-          // 外光晕（让线在亮黄热带上仍能凸显）
           ctx.shadowColor = 'rgba(0,0,0,0.85)';
           ctx.shadowBlur = 4;
-          // 主线：CoinGlass 风格的纯亮黄
           ctx.strokeStyle = '#ffeb3b';
           ctx.lineWidth = 2;
           ctx.beginPath();
@@ -1131,14 +1149,11 @@
           ctx.lineTo(ox + pw, Math.round(yPeak) + 0.5);
           ctx.stroke();
           ctx.shadowBlur = 0;
-          // 左侧标签：sideTag 长短方向 + 价格
           ctx.font = 'bold 10px ui-monospace, SFMono-Regular, Menlo, monospace';
           const tagText = `${sideTag} ${priceFmt(price)} · ${fmtMoneyShort(totalVal)}`;
           const tagW = ctx.measureText(tagText).width + 8;
-          // 标签优先放在左边，避免和右侧中价 tag 撞
           const tagX = ox + 4;
           const tagY = yPeak - 8;
-          // 圆角矩形背景（黄底黑字突出）
           ctx.fillStyle = 'rgba(255, 235, 59, 0.95)';
           ctx.fillRect(tagX, tagY, tagW, 16);
           ctx.fillStyle = '#0b0e16';
@@ -1147,11 +1162,11 @@
           ctx.fillText(tagText, tagX + 4, tagY + 8);
           ctx.restore();
         };
-        // 先画 short（红方向，通常在中价上方），再画 long（绿方向，通常在
-        // 中价下方），让它们顺序稳定，标签互不遮挡。
-        drawPeak(shortArg, shortMax, 'S↓ MAX');
-        drawPeak(longArg,  longMax,  'L↑ MAX');
-        // 把两个主峰也存到 state 上，供右键菜单 / hover 引用
+        // 标签箭头表示"价格触发方向"：
+        //   S↑ = 价格涨到这里触发空头爆仓（在上方）
+        //   L↓ = 价格跌到这里触发多头爆仓（在下方）
+        drawPeak(shortArg, shortMax, 'S↑ MAX');
+        drawPeak(longArg,  longMax,  'L↓ MAX');
         state._peakLongPi  = longArg;
         state._peakShortPi = shortArg;
         state._peakLongVal  = longMax;

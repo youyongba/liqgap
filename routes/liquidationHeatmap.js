@@ -99,18 +99,35 @@ router.get('/liquidations/heatmap', async (req, res) => {
         const memBuf = (s.memBuffers || {})[symbol] || {};
         recStatus = {
           started: !!s.started,
+          uptimeMs: s.uptimeMs || 0,
+          subscribeOk: !!s.subscribeOk,
+          subscribeError: s.subscribeError,
+          subscribeAttempts: s.subscribeAttempts || 0,
+          totalEventsSinceStart: s.totalEventsSinceStart || 0,
           totalMemEvents: memBuf.memCount || 0,
           totalFiles: (s.files || []).length,
-          latestEvent: memBuf.latest || null
+          latestEvent: memBuf.latest || null,
+          msSinceLastEvent: s.msSinceLastEvent
         };
       } catch (_) { /* noop */ }
-      const reason = events.length === 0
-        ? `该窗口内尚无强平事件 / No liquidations in window — `
-          + `录盘${recStatus && recStatus.started ? '已启动' : '未启动'}` 
-          + `，内存事件 ${recStatus ? recStatus.totalMemEvents : '?'} 条`
-          + `，磁盘文件 ${recStatus ? recStatus.totalFiles : '?'} 个`
-          + ` · 建议先切到 "预测 / Predicted" 模式查看`
-        : '价格无法确定 / mid price unknown';
+      const reason = (() => {
+        if (events.length !== 0) return '价格无法确定 / mid price unknown';
+        if (!recStatus) return '该窗口内尚无强平事件（recorder 状态不可用）';
+        const upMin = Math.floor((recStatus.uptimeMs || 0) / 60_000);
+        if (!recStatus.started) return '录盘未启动 / recorder not started · 检查 server 启动日志';
+        if (!recStatus.subscribeOk) {
+          return `订阅失败 / Subscribe failed (尝试 ${recStatus.subscribeAttempts} 次): `
+            + `${recStatus.subscribeError || 'unknown'} · 30s 后会自动重试`;
+        }
+        // 订阅成功但本 symbol 无事件
+        const total = recStatus.totalEventsSinceStart;
+        if (total === 0) {
+          return `该窗口内尚无强平事件 — 录盘运行 ${upMin} 分钟，全市场已收 0 条 ` 
+            + `(可能 Binance 全市场都很平静，或网络中断) · 建议先切 "预测 / Predicted"`;
+        }
+        return `该窗口内 ${symbol} 无强平 — 录盘运行 ${upMin} 分钟，全市场已收 ${total} 条 `
+          + `(${symbol} 单 symbol 在该窗口内未触发强平) · 建议先切 "预测 / Predicted"`;
+      })();
       return res.json({
         success: true,
         data: {
