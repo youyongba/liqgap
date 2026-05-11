@@ -43,11 +43,16 @@ const ONE_MIN_MS = 60_000;
 
 // 根据回放窗口宽度选 K 线粒度（与 predictiveLiquidations 保持一致的体感）
 function _chooseCandleInterval(spanMs) {
-  if (spanMs <= ONE_HOUR_MS)         return { interval: '1m',  ms: ONE_MIN_MS };
-  if (spanMs <= 4 * ONE_HOUR_MS)     return { interval: '1m',  ms: ONE_MIN_MS };
-  if (spanMs <= 12 * ONE_HOUR_MS)    return { interval: '5m',  ms: 5 * ONE_MIN_MS };
-  if (spanMs <= 24 * ONE_HOUR_MS)    return { interval: '5m',  ms: 5 * ONE_MIN_MS };
-  return                                    { interval: '15m', ms: 15 * ONE_MIN_MS };
+  if (spanMs <=       ONE_HOUR_MS) return { interval: '1m',  ms: ONE_MIN_MS };
+  if (spanMs <=   4 * ONE_HOUR_MS) return { interval: '1m',  ms: ONE_MIN_MS };
+  if (spanMs <=  12 * ONE_HOUR_MS) return { interval: '5m',  ms: 5 * ONE_MIN_MS };
+  if (spanMs <=  24 * ONE_HOUR_MS) return { interval: '5m',  ms: 5 * ONE_MIN_MS };
+  if (spanMs <=  48 * ONE_HOUR_MS) return { interval: '5m',  ms: 5 * ONE_MIN_MS };
+  if (spanMs <=  72 * ONE_HOUR_MS) return { interval: '15m', ms: 15 * ONE_MIN_MS };
+  if (spanMs <=   7 * 24 * ONE_HOUR_MS) return { interval: '15m', ms: 15 * ONE_MIN_MS };
+  if (spanMs <=  14 * 24 * ONE_HOUR_MS) return { interval: '30m', ms: 30 * ONE_MIN_MS };
+  if (spanMs <=  21 * 24 * ONE_HOUR_MS) return { interval: '1h',  ms: 60 * ONE_MIN_MS };
+  return                                       { interval: '1h',  ms: 60 * ONE_MIN_MS };
 }
 
 router.get('/liquidations/heatmap', async (req, res) => {

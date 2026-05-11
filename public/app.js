@@ -1224,6 +1224,89 @@
       tooltip.style.top  = ttY + 'px';
       _draw();
     });
+    // 右键复制：根据鼠标位置反推 (price, time)，把价格 / OHLC / 清算数据
+    // 一并放进自定义菜单，与主图右键菜单体感保持一致。
+    canvas.addEventListener('contextmenu', (ev) => {
+      const d = state.data;
+      if (!d || !(d.priceMax > d.priceMin)) return;
+      ev.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const cx = ev.clientX - rect.left;
+      const cy = ev.clientY - rect.top;
+      const { x: ox, y: oy, w: pw, h: ph } = state.plot;
+      const inPlot = cx >= ox && cx <= ox + pw && cy >= oy && cy <= oy + ph;
+      const meta = (typeof getMainSymbolMeta === 'function')
+        ? getMainSymbolMeta()
+        : { symbol: 'BTCUSDT', market: 'futures', interval: '' };
+      const items = [];
+      let header = `${meta.symbol} · ${meta.market} · 清算热力图 / Liq Heatmap`;
+      if (inPlot) {
+        const cursorPrice = d.priceMin + (d.priceMax - d.priceMin) * (1 - (cy - oy) / ph);
+        if (Number.isFinite(cursorPrice)) {
+          const v = fmtPrice(cursorPrice);
+          items.push({ label: '光标价 / Cursor Price', value: v, display: v });
+        }
+        const tFrac = (cx - ox) / pw;
+        const tMs = d.fromMs + (d.toMs - d.fromMs) * tFrac;
+        if (Number.isFinite(tMs) && d.times && d.times.length) {
+          let bestIdx = 0, bestDiff = Infinity;
+          for (let i = 0; i < d.times.length; i += 1) {
+            const diff = Math.abs(d.times[i] - tMs);
+            if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
+          }
+          const ti = bestIdx;
+          let pi = -1;
+          if (d.prices && d.prices.length) {
+            const pFrac = 1 - (cy - oy) / ph;
+            pi = Math.round(pFrac * (d.prices.length - 1));
+            if (pi < 0) pi = 0;
+            if (pi >= d.prices.length) pi = d.prices.length - 1;
+          }
+          if (pi >= 0) {
+            const lv = (d.longMatrix[ti]  || [])[pi] || 0;
+            const sv = (d.shortMatrix[ti] || [])[pi] || 0;
+            const isPred = state.mode === 'predicted';
+            const longLab  = isPred ? '潜在多头清算 / Long liq pot.'  : '多被强平 / Long liq';
+            const shortLab = isPred ? '潜在空头清算 / Short liq pot.' : '空被强平 / Short liq';
+            const fmt = (v) => v >= 1e6
+              ? (v / 1e6).toFixed(2) + 'M'
+              : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : v.toFixed(0);
+            if (lv > 0 || sv > 0) {
+              items.push('divider');
+              if (lv > 0) items.push({ label: longLab,  value: lv.toFixed(0), display: fmt(lv) + ' USDT' });
+              if (sv > 0) items.push({ label: shortLab, value: sv.toFixed(0), display: fmt(sv) + ' USDT' });
+              items.push({ label: '合计 / Total',    value: (lv + sv).toFixed(0), display: fmt(lv + sv) + ' USDT' });
+            }
+          }
+          if (d.candles && d.candles.length) {
+            let bestC = null, bestCD = Infinity;
+            for (let i = 0; i < d.candles.length; i += 1) {
+              const cd = Math.abs(d.candles[i].t - tMs);
+              if (cd < bestCD) { bestCD = cd; bestC = d.candles[i]; }
+            }
+            if (bestC) {
+              items.push('divider');
+              items.push({ label: '开 / Open',  value: fmtPrice(bestC.o), display: fmtPrice(bestC.o) });
+              items.push({ label: '高 / High',  value: fmtPrice(bestC.h), display: fmtPrice(bestC.h) });
+              items.push({ label: '低 / Low',   value: fmtPrice(bestC.l), display: fmtPrice(bestC.l) });
+              items.push({ label: '收 / Close', value: fmtPrice(bestC.c), display: fmtPrice(bestC.c) });
+            }
+          }
+          if (typeof fmtBJShortDateTime === 'function') {
+            header += ` · ${fmtBJShortDateTime(d.times[ti])} (UTC+8)`;
+          }
+        }
+      }
+      if (items.length === 0) {
+        items.push({ label: '无价格 / No price', value: '', display: '-' });
+      }
+      if (typeof showCtxMenuAt === 'function') {
+        showCtxMenuAt(ev.clientX, ev.clientY, items, header);
+      }
+    });
+    canvas.addEventListener('wheel', () => {
+      if (typeof hideCtxMenu === 'function') hideCtxMenu();
+    }, { passive: true });
     canvas.addEventListener('mouseleave', () => {
       state.hoverCell = null;
       tooltip.style.display = 'none';

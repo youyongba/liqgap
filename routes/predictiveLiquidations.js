@@ -30,13 +30,19 @@ const ONE_HOUR_MS = 3600_000;
 const ONE_MIN_MS = 60_000;
 
 // 把 windowMs 映射成合理的 (sourceInterval, bucketMs)
-// 目标：源 K 线 ~300 根，时间桶 ~120 个
+// 设计目标：源 K 线 ≤ 1500 根（Binance 单次拉取上限），时间桶 ≤ ~120 个，
+// 让前端渲染流畅、清算分布在长窗口下也能看出 macro 趋势。
 function _autoSampling(windowMs) {
-  if (windowMs <= ONE_HOUR_MS)         return { source: '1m',  bucketMs: ONE_MIN_MS };       // 1h: 60×1m
-  if (windowMs <= 4 * ONE_HOUR_MS)     return { source: '1m',  bucketMs: 2 * ONE_MIN_MS };   // 4h: 240×1m → 桶 120
-  if (windowMs <= 12 * ONE_HOUR_MS)    return { source: '5m',  bucketMs: 5 * ONE_MIN_MS };   // 12h: 144×5m
-  if (windowMs <= 24 * ONE_HOUR_MS)    return { source: '5m',  bucketMs: 15 * ONE_MIN_MS };  // 24h: 288×5m → 桶 96
-  return                                      { source: '15m', bucketMs: 60 * ONE_MIN_MS }; // 7d
+  if (windowMs <=       ONE_HOUR_MS) return { source: '1m',  bucketMs:        ONE_MIN_MS };  // 1h: 60×1m
+  if (windowMs <=   4 * ONE_HOUR_MS) return { source: '1m',  bucketMs:   2  * ONE_MIN_MS };  // 4h: 240×1m → 桶 120
+  if (windowMs <=  12 * ONE_HOUR_MS) return { source: '5m',  bucketMs:   5  * ONE_MIN_MS };  // 12h: 144×5m
+  if (windowMs <=  24 * ONE_HOUR_MS) return { source: '5m',  bucketMs:  15  * ONE_MIN_MS };  // 24h: 288×5m → 桶 96
+  if (windowMs <=  48 * ONE_HOUR_MS) return { source: '5m',  bucketMs:  30  * ONE_MIN_MS };  // 48h: 576×5m → 桶 96
+  if (windowMs <=  72 * ONE_HOUR_MS) return { source: '15m', bucketMs:  60  * ONE_MIN_MS };  // 3d:  288×15m → 桶 72
+  if (windowMs <=   7 * 24 * ONE_HOUR_MS) return { source: '15m', bucketMs:   2 * 60 * ONE_MIN_MS }; // 1w: 672×15m → 桶 84
+  if (windowMs <=  14 * 24 * ONE_HOUR_MS) return { source: '30m', bucketMs:   4 * 60 * ONE_MIN_MS }; // 2w: 672×30m → 桶 84
+  if (windowMs <=  21 * 24 * ONE_HOUR_MS) return { source: '1h',  bucketMs:   6 * 60 * ONE_MIN_MS }; // 3w: 504×1h  → 桶 84
+  return                                          { source: '1h',  bucketMs:   8 * 60 * ONE_MIN_MS }; // 1mo:744×1h → 桶 ~93
 }
 
 router.get('/predictive/liquidations', async (req, res) => {
@@ -48,7 +54,8 @@ router.get('/predictive/liquidations', async (req, res) => {
     const now = Date.now();
     let windowMs = Number(req.query.windowMs);
     if (!Number.isFinite(windowMs) || windowMs < 15 * ONE_MIN_MS) windowMs = 24 * ONE_HOUR_MS;
-    if (windowMs > 7 * 24 * ONE_HOUR_MS) windowMs = 7 * 24 * ONE_HOUR_MS;
+    // 上限放宽到 31 天，覆盖前端 48h / 3d / 1w / 2w / 3w / 1月 选项
+    if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
 
     const toMs = now;
     const fromMs = toMs - windowMs;
@@ -57,13 +64,16 @@ router.get('/predictive/liquidations', async (req, res) => {
     const sourceInterval = (req.query.sourceInterval || auto.source);
     let bucketMs = Number(req.query.bucketMs);
     if (!Number.isFinite(bucketMs) || bucketMs < ONE_MIN_MS) bucketMs = auto.bucketMs;
-    if (bucketMs > ONE_HOUR_MS) bucketMs = ONE_HOUR_MS;
+    // 长窗口（>= 1 周）需要更大的时间桶（4h/6h/8h），不再硬封顶到 1h，
+    // 否则 1月窗口会出现 744 桶而把热图压得糊成一片。
+    const MAX_BUCKET_MS = 12 * ONE_HOUR_MS;
+    if (bucketMs > MAX_BUCKET_MS) bucketMs = MAX_BUCKET_MS;
 
     // 拉 K 线（最大 1500 根；如果 windowMs 需要更多就分批）
     // 这里做单次拉取覆盖：windowMs / sourceMs ≤ 1500 时直接一次拉。
     const sourceMs = ({
       '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
-      '30m': 1800_000, '1h': 3600_000
+      '30m': 1800_000, '1h': 3600_000, '2h': 7200_000, '4h': 14400_000
     })[sourceInterval] || 60_000;
     const needed = Math.ceil(windowMs / sourceMs);
     const limit = Math.min(needed + 5, 1500); // 多拉 5 根做边界兜底
