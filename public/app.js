@@ -62,6 +62,7 @@
     liqHeatmapMode: document.getElementById('liq-heatmap-mode'),
     liqHeatmapThreshold: document.getElementById('liq-heatmap-threshold'),
     liqHeatmapThresholdVal: document.getElementById('liq-heatmap-threshold-val'),
+    liqHeatmapMeasure: document.getElementById('liq-heatmap-measure'),
     subCard: document.getElementById('sub-card'),
     mainCard: document.getElementById('main-card')
   };
@@ -1497,6 +1498,7 @@
       els.liqHeatmapWindow.addEventListener('change', () => {
         state.windowMs = Number(els.liqHeatmapWindow.value) || 86_400_000;
         state.lastFetchKey = '';
+        if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         scheduleFetch(0);
       });
     }
@@ -1504,6 +1506,7 @@
       els.liqHeatmapRange.addEventListener('change', () => {
         state.priceRange = _readPriceRange();
         state.lastFetchKey = '';
+        if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         scheduleFetch(0);
       });
     }
@@ -1512,6 +1515,7 @@
         state.mode = els.liqHeatmapMode.value || 'predicted';
         state.data = null;
         state.lastFetchKey = '';
+        if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         _draw();
         scheduleFetch(0);
       });
@@ -1545,6 +1549,231 @@
       requestAnimationFrame(() => { _roPending = false; _resizeCanvas(); });
     });
 
+    // ============================================================
+    // 测量工具 (Measurement tool · drag-to-measure on liq heatmap)
+    // 与主图测量工具的体感一致：toggle 按钮 → 拖拽 → 显示 ΔPrice / ΔPct /
+    // 时间长度。测量激活时禁用 hover tooltip 和右键菜单，避免冲突。
+    // ============================================================
+    const measureBtn = els.liqHeatmapMeasure;
+    const measureLayer = document.createElement('div');
+    measureLayer.style.cssText =
+      'position:absolute;inset:0;display:none;z-index:7;pointer-events:none;';
+    const measureCanvas = document.createElement('canvas');
+    measureCanvas.style.cssText =
+      'position:absolute;inset:0;width:100%;height:100%;pointer-events:none;';
+    measureLayer.appendChild(measureCanvas);
+    const measureLabel = document.createElement('div');
+    measureLabel.className = 'measure-label';
+    measureLabel.style.display = 'none';
+    measureLayer.appendChild(measureLabel);
+    if (canvas.parentElement) canvas.parentElement.appendChild(measureLayer);
+
+    let measureActive = false;
+    let measureDrag = null;
+    let measureResult = null;
+
+    function _resizeMeasureCanvas() {
+      const parent = canvas.parentElement;
+      if (!parent) return;
+      const w = parent.clientWidth;
+      const h = parent.clientHeight;
+      if (w <= 0 || h <= 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      measureCanvas.width = Math.round(w * dpr);
+      measureCanvas.height = Math.round(h * dpr);
+      measureCanvas.style.width = w + 'px';
+      measureCanvas.style.height = h + 'px';
+      const ctx2 = measureCanvas.getContext('2d');
+      ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    function _clearMeasureCanvas() {
+      const ctx2 = measureCanvas.getContext('2d');
+      ctx2.setTransform(1, 0, 0, 1, 0, 0);
+      ctx2.clearRect(0, 0, measureCanvas.width, measureCanvas.height);
+      const dpr = window.devicePixelRatio || 1;
+      ctx2.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    function _measurePoint(ev) {
+      const rect = canvas.getBoundingClientRect();
+      const cx = ev.clientX - rect.left;
+      const cy = ev.clientY - rect.top;
+      const { x: ox, y: oy, w: pw, h: ph } = state.plot;
+      const d = state.data;
+      // clamp 到绘图区，防止边界外取到无意义价格
+      const clampedCx = Math.max(ox, Math.min(ox + pw, cx));
+      const clampedCy = Math.max(oy, Math.min(oy + ph, cy));
+      let price = NaN, time = NaN;
+      if (d && d.priceMax > d.priceMin) {
+        price = d.priceMin + (d.priceMax - d.priceMin) * (1 - (clampedCy - oy) / ph);
+      }
+      if (d && d.toMs > d.fromMs) {
+        time = d.fromMs + (d.toMs - d.fromMs) * ((clampedCx - ox) / pw);
+      }
+      // x/y 用相对 measureCanvas 的像素（与 canvas 的相对 parentElement 对齐）
+      return { x: cx, y: cy, price, time };
+    }
+
+    function _drawMeasure(start, end) {
+      _resizeMeasureCanvas();
+      const ctx2 = measureCanvas.getContext('2d');
+      const w = measureCanvas.width / (window.devicePixelRatio || 1);
+      const h = measureCanvas.height / (window.devicePixelRatio || 1);
+      ctx2.clearRect(0, 0, w, h);
+      const x0 = Math.min(start.x, end.x);
+      const x1 = Math.max(start.x, end.x);
+      const y0 = Math.min(start.y, end.y);
+      const y1 = Math.max(start.y, end.y);
+      const isUp = end.price >= start.price;
+      const fill = isUp ? 'rgba(74, 222, 128, 0.14)' : 'rgba(248, 113, 113, 0.14)';
+      const stroke = isUp ? 'rgba(74, 222, 128, 0.95)' : 'rgba(248, 113, 113, 0.95)';
+      ctx2.fillStyle = fill;
+      ctx2.fillRect(x0, y0, x1 - x0, y1 - y0);
+      ctx2.strokeStyle = stroke;
+      ctx2.lineWidth = 1;
+      ctx2.setLineDash([4, 3]);
+      ctx2.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0, y1 - y0);
+      ctx2.setLineDash([]);
+      ctx2.lineWidth = 1.4;
+      ctx2.beginPath();
+      ctx2.moveTo(start.x, start.y);
+      ctx2.lineTo(end.x, end.y);
+      ctx2.stroke();
+      ctx2.fillStyle = stroke;
+      [[start.x, start.y], [end.x, end.y]].forEach(([px, py]) => {
+        ctx2.beginPath();
+        ctx2.arc(px, py, 3.5, 0, Math.PI * 2);
+        ctx2.fill();
+      });
+    }
+
+    function _fmtMeasureDuration(ms) {
+      const s = Math.abs(Number(ms) / 1000 || 0);
+      if (s < 60) return Math.round(s) + ' s';
+      if (s < 3600) return (s / 60).toFixed(1) + ' min';
+      if (s < 86400) return (s / 3600).toFixed(2) + ' h';
+      return (s / 86400).toFixed(2) + ' d';
+    }
+    function _fmtSigned(n, digits) {
+      const sign = n >= 0 ? '+' : '';
+      return sign + Number(n).toFixed(digits);
+    }
+    function _measureFmtPrice(p) {
+      if (!Number.isFinite(p)) return '-';
+      const ap = Math.abs(p);
+      const digits = ap >= 1000 ? 2 : ap >= 1 ? 4 : 6;
+      return p.toFixed(digits);
+    }
+
+    function _updateMeasureLabel(start, end) {
+      const dPrice = end.price - start.price;
+      const pct = (Number.isFinite(start.price) && start.price !== 0)
+        ? (dPrice / start.price) * 100 : 0;
+      const dTimeMs = (Number.isFinite(end.time) && Number.isFinite(start.time))
+        ? (end.time - start.time) : 0;
+      const isUp = dPrice >= 0;
+      const arrow = isUp ? '▲' : '▼';
+      const color = isUp ? 'var(--accent)' : 'var(--accent-down)';
+      const ap = Math.max(Math.abs(start.price || 0), Math.abs(end.price || 0));
+      const digits = ap >= 1000 ? 2 : ap >= 1 ? 4 : 6;
+      measureLabel.innerHTML =
+        `<div class="ml-headline" style="color:${color}">`
+          + `${arrow} ${_fmtSigned(dPrice, digits)} (${_fmtSigned(pct, 2)}%)`
+        + `</div>`
+        + `<div class="ml-row"><span class="ml-k">起 / From</span><span class="ml-v">${_measureFmtPrice(start.price)}</span></div>`
+        + `<div class="ml-row"><span class="ml-k">止 / To</span><span class="ml-v">${_measureFmtPrice(end.price)}</span></div>`
+        + `<div class="ml-row"><span class="ml-k">时长 / Duration</span><span class="ml-v">${_fmtMeasureDuration(dTimeMs)}</span></div>`
+        + `<div class="ml-hint">Esc 清除 / clear · 再次点击按钮退出</div>`;
+      measureLabel.style.display = 'block';
+      measureLabel.style.left = '0px';
+      measureLabel.style.top = '0px';
+      const lr = measureLabel.getBoundingClientRect();
+      const parent = canvas.parentElement;
+      const cw = parent ? parent.clientWidth  : 800;
+      const ch = parent ? parent.clientHeight : 400;
+      const padX = 12, padY = 12;
+      let lx = end.x + padX;
+      let ly = end.y + padY;
+      if (lx + lr.width  > cw - 4) lx = end.x - lr.width  - padX;
+      if (ly + lr.height > ch - 4) ly = end.y - lr.height - padY;
+      if (lx < 4) lx = 4;
+      if (ly < 4) ly = 4;
+      measureLabel.style.left = lx + 'px';
+      measureLabel.style.top  = ly + 'px';
+    }
+
+    function _setMeasureActive(on) {
+      measureActive = !!on;
+      if (measureActive) {
+        if (measureBtn) {
+          measureBtn.classList.add('active');
+          measureBtn.textContent = '📏 测量中 / Measuring';
+        }
+        measureLayer.style.display = 'block';
+        measureLayer.style.pointerEvents = 'auto';
+        measureLayer.style.cursor = 'crosshair';
+      } else {
+        if (measureBtn) {
+          measureBtn.classList.remove('active');
+          measureBtn.textContent = '📏 测量 / Measure';
+        }
+        measureLayer.style.pointerEvents = 'none';
+        measureDrag = null;
+        measureResult = null;
+        _clearMeasureCanvas();
+        measureLabel.style.display = 'none';
+        measureLayer.style.display = 'none';
+      }
+    }
+    function _clearCurrentMeasure() {
+      measureDrag = null;
+      measureResult = null;
+      _clearMeasureCanvas();
+      measureLabel.style.display = 'none';
+    }
+
+    if (measureBtn) {
+      measureBtn.addEventListener('click', () => _setMeasureActive(!measureActive));
+    }
+    measureLayer.addEventListener('mousedown', (ev) => {
+      if (!measureActive || ev.button !== 0) return;
+      ev.preventDefault();
+      _resizeMeasureCanvas();
+      const start = _measurePoint(ev);
+      if (!Number.isFinite(start.price)) return;
+      measureDrag = { start, end: start };
+      measureResult = null;
+      _drawMeasure(start, start);
+      _updateMeasureLabel(start, start);
+    });
+    measureLayer.addEventListener('mousemove', (ev) => {
+      if (!measureActive || !measureDrag) return;
+      const end = _measurePoint(ev);
+      if (!Number.isFinite(end.price)) return;
+      measureDrag.end = end;
+      _drawMeasure(measureDrag.start, end);
+      _updateMeasureLabel(measureDrag.start, end);
+    });
+    window.addEventListener('mouseup', (ev) => {
+      if (!measureActive || !measureDrag) return;
+      const end = _measurePoint(ev);
+      if (Number.isFinite(end.price)) {
+        measureDrag.end = end;
+        _drawMeasure(measureDrag.start, end);
+        _updateMeasureLabel(measureDrag.start, end);
+      }
+      measureResult = measureDrag;
+      measureDrag = null;
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Escape' || !measureActive) return;
+      if (measureDrag || measureResult) _clearCurrentMeasure();
+      else _setMeasureActive(false);
+    });
+    // resize 时清空（坐标系会变，旧像素位置已不可信）
+    new ResizeObserver(() => { if (measureActive) _clearCurrentMeasure(); })
+      .observe(canvas.parentElement);
+
     // 周期 30s 自动刷新（清算事件比快照高频，重要事件不容延迟）
     setInterval(() => scheduleFetch(0), 30_000);
 
@@ -1561,6 +1790,7 @@
         state.data = null;
         state.lastFetchKey = '';
         state.anchorMs = null;
+        if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         _draw();
         if (_isApplicable()) scheduleFetch(300);
       }

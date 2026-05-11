@@ -926,6 +926,9 @@
                      style="width:100px; accent-color: var(--accent-yellow);"
                      title="只显示强度 ≥ 阈值 × max 的格子。0 = 全部（CoinGlass 默认）· 0.85 = 仅强清算墙 · 0.99 = 仅极值。" />
               <span id="liq-heatmap-threshold-val" class="meta" style="min-width:38px; text-align:right; font-variant-numeric: tabular-nums;">0.00</span>
+              <button id="liq-heatmap-measure" class="ghost tool-btn" type="button"
+                      title="点击开启拖拽测量：在画面上按住左键拖动，松开后显示 ΔPrice / ΔPercent / 时间长度。Esc 清除。"
+                      style="font-size:11px; padding:2px 8px;">📏 测量 / Measure</button>
               <span class="meta" id="liq-heatmap-meta">等待数据… / Loading…</span>
               <span class="heatmap-legend viridis-legend" title="低 → 高：紫 → 蓝 → 青 → 绿 → 黄"><span>低</span><span class="grad"></span><span>高</span></span>
               <button class="min-btn" type="button" data-min-target="liq-heatmap-card"
