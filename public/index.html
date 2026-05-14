@@ -351,6 +351,68 @@
         color: var(--fg-1);
       }
 
+      /* 🧲 清算磁极信号卡片 / Liq-Magnet Signal sub-card */
+      .liq-signal-card {
+        background: linear-gradient(180deg, rgba(255, 235, 59, 0.06), rgba(255, 235, 59, 0.02));
+        border: 1px solid rgba(255, 235, 59, 0.3);
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+      }
+      .liq-signal-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+      }
+      .liq-signal-header .title {
+        font-weight: 600;
+        font-size: 13px;
+        color: #ffeb3b;
+      }
+      .liq-signal-header .meta {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--fg-1);
+        font-variant-numeric: tabular-nums;
+      }
+      .liq-signal-card .signal-banner {
+        font-size: 14px;
+        padding: 10px;
+      }
+      .liq-playbook {
+        font-size: 12px;
+        color: var(--fg-1);
+        background: var(--bg-2);
+        padding: 6px 8px;
+        border-radius: 4px;
+        border-left: 2px solid rgba(255, 235, 59, 0.5);
+      }
+      .liq-signal-card .conditions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .liq-signal-card .conditions .cond-chip {
+        font-size: 11px;
+        padding: 2px 6px;
+        border-radius: 10px;
+        background: var(--bg-2);
+        border: 1px solid var(--border);
+        color: var(--fg-1);
+      }
+      .liq-signal-card .conditions .cond-chip.ok {
+        background: rgba(74, 222, 128, 0.12);
+        border-color: rgba(74, 222, 128, 0.4);
+        color: var(--accent);
+      }
+      .liq-signal-card .conditions .cond-chip.fail {
+        background: rgba(248, 113, 113, 0.08);
+        border-color: rgba(248, 113, 113, 0.3);
+        color: var(--accent-down);
+      }
+
       .kv-grid {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -1024,6 +1086,34 @@
           <button id="btn-copy-signal" type="button" class="ghost" title="复制当前交易信号信息">一键复制 / Copy</button>
           <button id="btn-ai-analyze" type="button" class="ghost" title="发送数据进行 AI 分析">AI 分析 / AI Analyze</button>
           <span id="fs-status" class="meta">飞书状态加载中… / Loading…</span>
+        </div>
+
+        <!-- ====== 🧲 清算磁极信号 / Liq-Magnet Signal ====== -->
+        <div id="liq-signal-card" class="liq-signal-card">
+          <div class="liq-signal-header">
+            <span class="title">🧲 清算磁极信号 / Liq-Magnet Signal</span>
+            <span class="meta" id="liq-signal-meta">加载中… / Loading…</span>
+            <button id="btn-copy-liq-signal" type="button" class="ghost" style="font-size:11px;padding:2px 8px;"
+                    title="复制清算磁极信号详情">复制 / Copy</button>
+          </div>
+          <div id="liq-signal-banner" class="signal-banner none" style="margin-bottom:8px;">
+            等待清算磁极信号… / Waiting…
+          </div>
+          <div class="liq-signal-body" id="liq-signal-body" style="display:none;">
+            <div class="kv-grid" style="grid-template-columns:auto 1fr auto 1fr;">
+              <div class="label">入场 / Entry</div>      <div class="value" id="liq-kv-entry">-</div>
+              <div class="label">止损 / Stop</div>       <div class="value" id="liq-kv-sl">-</div>
+              <div class="label">触发墙 / Wall</div>     <div class="value" id="liq-kv-wall">-</div>
+              <div class="label">置信度 / Conf</div>     <div class="value" id="liq-kv-conf">-</div>
+              <div class="label">L↓ 多头墙</div>          <div class="value" id="liq-kv-long-peak">-</div>
+              <div class="label">S↑ 空头墙</div>          <div class="value" id="liq-kv-short-peak">-</div>
+              <div class="label">仓位 / Size</div>       <div class="value" id="liq-kv-size">-</div>
+              <div class="label">名义 / Notional</div>   <div class="value" id="liq-kv-notional">-</div>
+            </div>
+            <div id="liq-tp-list" style="margin-bottom:8px;"></div>
+            <div id="liq-playbook" class="liq-playbook"></div>
+            <div id="liq-conditions" class="conditions" style="margin-top:6px;"></div>
+          </div>
         </div>
 
         <div id="signal-banner" class="signal-banner none">等待信号… / Waiting…</div>

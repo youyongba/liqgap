@@ -65,7 +65,24 @@
     liqHeatmapMeasure: document.getElementById('liq-heatmap-measure'),
     liqHeatmapAlert: document.getElementById('liq-heatmap-alert'),
     subCard: document.getElementById('sub-card'),
-    mainCard: document.getElementById('main-card')
+    mainCard: document.getElementById('main-card'),
+    // 🧲 清算磁极信号 / Liq-Magnet Signal sub-card
+    liqSignalCard: document.getElementById('liq-signal-card'),
+    liqSignalMeta: document.getElementById('liq-signal-meta'),
+    liqSignalBanner: document.getElementById('liq-signal-banner'),
+    liqSignalBody: document.getElementById('liq-signal-body'),
+    liqKvEntry: document.getElementById('liq-kv-entry'),
+    liqKvSL: document.getElementById('liq-kv-sl'),
+    liqKvWall: document.getElementById('liq-kv-wall'),
+    liqKvConf: document.getElementById('liq-kv-conf'),
+    liqKvLongPeak: document.getElementById('liq-kv-long-peak'),
+    liqKvShortPeak: document.getElementById('liq-kv-short-peak'),
+    liqKvSize: document.getElementById('liq-kv-size'),
+    liqKvNotional: document.getElementById('liq-kv-notional'),
+    liqTpList: document.getElementById('liq-tp-list'),
+    liqPlaybook: document.getElementById('liq-playbook'),
+    liqConditions: document.getElementById('liq-conditions'),
+    btnCopyLiqSignal: document.getElementById('btn-copy-liq-signal')
   };
 
   // 当前周期下两个副图的取数策略
@@ -3370,6 +3387,158 @@
     kv('空头评分 / Short Score', String(snap.shortScore ?? '-'));
   }
 
+  // ===== 🧲 清算磁极信号 / Liq-Magnet Signal =====
+  let _lastLiqSignal = null;
+  const LIQ_SIGNAL_LABELS = {
+    LIQ_REVERSAL_LONG:  { emoji: '🟢', text: '反转做多 / Reversal Long', cls: 'long' },
+    LIQ_REVERSAL_SHORT: { emoji: '🔴', text: '反转做空 / Reversal Short', cls: 'short' },
+    LIQ_SQUEEZE_LONG:   { emoji: '🚀', text: 'Squeeze 追多 / Squeeze Long', cls: 'long' },
+    LIQ_SQUEEZE_SHORT:  { emoji: '💥', text: 'Cascade 追空 / Squeeze Short', cls: 'short' }
+  };
+  const LIQ_COND_LABELS = {
+    nearLongPeak:           '价格触碰 L↓ (≤0.3%)',
+    nearShortPeak:          '价格触碰 S↑ (≤0.3%)',
+    cvdBullishDivergence:   '看涨背离 (价跌 CVD 涨)',
+    cvdBearishDivergence:   '看跌背离 (价涨 CVD 跌)',
+    oiNotSurging:           'OI 未暴涨 (反转条件)',
+    oiSurging:              'OI 暴涨 (squeeze 条件)',
+    volSurging:             '成交量暴涨 ≥3×',
+    longPowerDominant:      '多头堆积过重 ≥1.5×',
+    shortPowerDominant:     '空头堆积过重 ≥1.5×',
+    crossedShortPeakUp:     '价格刚穿过 S↑',
+    crossedLongPeakDown:    '价格刚穿过 L↓',
+    priceTrendUp:           '价格趋势向上',
+    priceTrendDown:         '价格趋势向下',
+    cvdTrendUp:             'CVD 上升',
+    cvdTrendDown:           'CVD 下降',
+    priceWithinRecentRange: '价格在最近 10min 区间内'
+  };
+
+  function renderLiqSignal(sig) {
+    _lastLiqSignal = sig;
+    if (!els.liqSignalCard) return;
+    const banner = els.liqSignalBanner;
+    banner.classList.remove('long', 'short', 'none');
+    const label = LIQ_SIGNAL_LABELS[sig.signal];
+    const isActionable = !!label && sig.confidence >= 50;
+
+    if (isActionable) {
+      banner.classList.add(label.cls);
+      banner.textContent = `${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100`;
+      els.liqSignalBody.style.display = '';
+    } else {
+      banner.classList.add('none');
+      const reason = sig.reason ? ` · ${sig.reason}` : '';
+      banner.textContent = `⚪ 无清算磁极信号${reason}`;
+      els.liqSignalBody.style.display = 'none';
+    }
+
+    // meta 行：永远显示主峰，方便用户对照清算热图
+    const peakLong  = sig.peakLong;
+    const peakShort = sig.peakShort;
+    const snap = sig.indicatorsSnapshot || {};
+    const distL = snap.distLongPct  != null ? `(-${(snap.distLongPct * 100).toFixed(2)}%)` : '';
+    const distS = snap.distShortPct != null ? `(+${(snap.distShortPct * 100).toFixed(2)}%)` : '';
+    els.liqSignalMeta.textContent = (snap.symbol || '') + ' · ' + (snap.market || 'futures')
+      + ' · windowMs=' + ((snap.windowMs || 14400000) / 3600000).toFixed(1) + 'h';
+    els.liqKvLongPeak.textContent  = peakLong  ? `${fmt(peakLong.price, 2)} ${distL}`  : '-';
+    els.liqKvShortPeak.textContent = peakShort ? `${fmt(peakShort.price, 2)} ${distS}` : '-';
+
+    if (!isActionable) {
+      // 即使没信号，也清空可能的旧数据
+      els.liqKvEntry.textContent = '-';
+      els.liqKvSL.textContent = '-';
+      els.liqKvWall.textContent = '-';
+      els.liqKvConf.textContent = '-';
+      els.liqKvSize.textContent = '-';
+      els.liqKvNotional.textContent = '-';
+      els.liqTpList.innerHTML = '';
+      els.liqPlaybook.textContent = '';
+      els.liqConditions.innerHTML = '';
+      return;
+    }
+
+    // 入场详情
+    els.liqKvEntry.textContent = fmt(sig.entryPrice, 2);
+    els.liqKvSL.textContent = fmt(sig.stopLoss, 2);
+    els.liqKvSL.className = 'value ' + (sig.side === 'long' ? 'down' : 'up');
+    const triggerPeakObj = sig.triggerPeak === 'long' ? peakLong : peakShort;
+    els.liqKvWall.textContent = triggerPeakObj
+      ? `${sig.triggerPeak === 'long' ? 'L↓' : 'S↑'} ${fmt(triggerPeakObj.price, 2)}`
+      : '-';
+    els.liqKvConf.textContent = `${sig.confidence}/100`;
+    els.liqKvConf.className = 'value ' + (sig.confidence >= 80 ? 'up' : sig.confidence >= 60 ? '' : 'down');
+    els.liqKvSize.textContent = sig.positionSize == null ? '-' : fmt(sig.positionSize, 6);
+    els.liqKvNotional.textContent = sig.positionSizeQuote == null ? '-' : fmt(sig.positionSizeQuote, 2);
+
+    // TP 列表
+    els.liqTpList.innerHTML = '';
+    if (Array.isArray(sig.takeProfits)) {
+      sig.takeProfits.forEach((tp, i) => {
+        const row = document.createElement('div');
+        row.className = 'tp-item';
+        row.innerHTML = `
+          <span class="tp-label">TP${i + 1}</span>
+          <span class="tp-price">${fmt(tp.price, 2)}</span>
+          <span class="tp-fraction">平仓 ${(tp.closeFraction * 100).toFixed(0)}%</span>
+        `;
+        els.liqTpList.appendChild(row);
+      });
+    }
+
+    // playbook
+    els.liqPlaybook.textContent = sig.playbook || '';
+
+    // 条件 chips
+    els.liqConditions.innerHTML = '';
+    Object.entries(sig.conditions || {}).forEach(([k, v]) => {
+      const chip = document.createElement('span');
+      chip.className = 'cond-chip ' + (v ? 'ok' : 'fail');
+      chip.textContent = (v ? '✓ ' : '✗ ') + (LIQ_COND_LABELS[k] || k);
+      els.liqConditions.appendChild(chip);
+    });
+  }
+
+  function renderLiqSignalUnsupported() {
+    _lastLiqSignal = null;
+    if (!els.liqSignalCard) return;
+    els.liqSignalBanner.classList.remove('long', 'short');
+    els.liqSignalBanner.classList.add('none');
+    els.liqSignalBanner.textContent = '⚪ 现货市场无杠杆，无清算磁极信号 / Spot has no liquidations';
+    els.liqSignalBody.style.display = 'none';
+    els.liqSignalMeta.textContent = '';
+  }
+
+  // 复制按钮：把当前清算磁极信号格式化成文本
+  if (els.btnCopyLiqSignal) {
+    els.btnCopyLiqSignal.addEventListener('click', async () => {
+      const s = _lastLiqSignal;
+      if (!s || !LIQ_SIGNAL_LABELS[s.signal]) {
+        showCopyToast && showCopyToast('暂无清算磁极信号 / No liq signal');
+        return;
+      }
+      const lines = [];
+      lines.push(`🧲 ${s.signal} · 置信度 ${s.confidence}/100`);
+      lines.push(`方向 / Side: ${s.side?.toUpperCase()}`);
+      lines.push(`触发墙 / Wall: ${s.triggerPeak === 'long' ? 'L↓' : 'S↑'} ${fmt((s.triggerPeak === 'long' ? s.peakLong : s.peakShort)?.price, 2)}`);
+      lines.push(`入场 / Entry: ${fmt(s.entryPrice, 2)}`);
+      lines.push(`止损 / Stop: ${fmt(s.stopLoss, 2)}`);
+      if (Array.isArray(s.takeProfits)) {
+        s.takeProfits.forEach((tp, i) => {
+          lines.push(`TP${i + 1} (${(tp.closeFraction * 100).toFixed(0)}%): ${fmt(tp.price, 2)}`);
+        });
+      }
+      lines.push(`仓位 / Size: ${fmt(s.positionSize, 6)} (~${fmt(s.positionSizeQuote, 2)} USDT)`);
+      lines.push(`Playbook: ${s.playbook}`);
+      try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        if (typeof showCopyToast === 'function') showCopyToast('已复制 / Copied');
+      } catch (e) {
+        console.warn('copy failed', e);
+      }
+    });
+  }
+
   function renderAlerts(alertData) {
     currentAlertsData = alertData;
     const flagLabels = {
@@ -3753,12 +3922,22 @@
       const oiFetch = fetchJsonSoft(
         `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200`
       );
-      const [kData, obData, oiData, signal, alerts] = await Promise.all([
+      // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆），4h 主峰窗口
+      const btCapital = Number(document.getElementById('bt-capital')?.value) || 1000;
+      const btRisk = Number(document.getElementById('bt-risk')?.value) || 1;
+      const liqSignalFetch = market === 'futures'
+        ? fetchJsonSoft(
+            `/api/trade/liq-signal?symbol=${symbol}&windowMs=14400000&accountBalance=${btCapital}&riskPercent=${btRisk}`
+          )
+        : Promise.resolve(null);
+
+      const [kData, obData, oiData, signal, alerts, liqSignal] = await Promise.all([
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=200&market=${market}&detectPatterns=true`),
         obFetch,
         oiFetch,
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
-        fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`)
+        fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`),
+        liqSignalFetch
       ]);
 
       const failed = [];
@@ -3787,6 +3966,12 @@
       else failed.push('openInterest');
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
+      if (market === 'futures') {
+        if (liqSignal) renderLiqSignal(liqSignal);
+        else failed.push('liqSignal');
+      } else {
+        renderLiqSignalUnsupported();
+      }
       fitCharts();
       // 任何 series setData/update + chart.resize 都可能让 lightweight-charts
       // 内部 crosshair 状态被擦掉 → hover 中虚线消失。统一在这里恢复。
