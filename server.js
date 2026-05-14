@@ -40,6 +40,7 @@ const orderbookSnapshotRoute = require('./routes/orderbookSnapshot');
 const orderbookHeatmapRoute = require('./routes/orderbookHeatmap');
 const liquidationHeatmapRoute = require('./routes/liquidationHeatmap');
 const predictiveLiquidationsRoute = require('./routes/predictiveLiquidations');
+const alertCrossRoute = require('./routes/alertCross');
 const orderbookRecorder = require('./services/orderbookRecorder');
 const liquidationRecorder = require('./services/liquidationRecorder');
 
@@ -73,6 +74,7 @@ app.use('/api', orderbookSnapshotRoute);
 app.use('/api', orderbookHeatmapRoute);
 app.use('/api', liquidationHeatmapRoute);
 app.use('/api', predictiveLiquidationsRoute);
+app.use('/api', alertCrossRoute);
 app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)

@@ -63,6 +63,7 @@
     liqHeatmapThreshold: document.getElementById('liq-heatmap-threshold'),
     liqHeatmapThresholdVal: document.getElementById('liq-heatmap-threshold-val'),
     liqHeatmapMeasure: document.getElementById('liq-heatmap-measure'),
+    liqHeatmapAlert: document.getElementById('liq-heatmap-alert'),
     subCard: document.getElementById('sub-card'),
     mainCard: document.getElementById('main-card')
   };
@@ -1773,6 +1774,148 @@
     // resize 时清空（坐标系会变，旧像素位置已不可信）
     new ResizeObserver(() => { if (measureActive) _clearCurrentMeasure(); })
       .observe(canvas.parentElement);
+
+    // ============================================================
+    // 价格穿越警报 (Liquidation cross alert · sound + Feishu)
+    // 当现价穿过主峰横线（L↓ 多头清算墙 / S↑ 空头清算墙）时触发：
+    //   1. 浏览器 Web Audio 警报声（无需外部音频文件）
+    //   2. 调后端 /api/alerts/liquidation-cross 转发飞书
+    //   3. 同一价位 5 分钟内只触发一次（前后端都做去重）
+    // 默认关闭，按钮 toggle 切换；偏好持久化到 localStorage。
+    // ============================================================
+    const alertBtn = els.liqHeatmapAlert;
+    const ALERT_LS_KEY = 'liq-heatmap-alert-enabled';
+    const ALERT_COOLDOWN_MS = 5 * 60_000;
+    let alertEnabled = false;
+    try { alertEnabled = localStorage.getItem(ALERT_LS_KEY) === '1'; } catch (_) {}
+    let _alertPrevPrice = null;
+    const _alertLastAt = { long: 0, short: 0 };
+    let _audioCtx = null;
+
+    function _ensureAudioCtx() {
+      if (_audioCtx) return _audioCtx;
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (Ctx) _audioCtx = new Ctx();
+      } catch (_) { /* noop */ }
+      return _audioCtx;
+    }
+
+    // 超大警报声：3 段 frequency-modulated 蜂鸣 + 高 gain，叠加成"警笛"感
+    function _playAlertSound() {
+      const ctx2 = _ensureAudioCtx();
+      if (!ctx2) return;
+      try {
+        if (ctx2.state === 'suspended') ctx2.resume();
+      } catch (_) {}
+      const now = ctx2.currentTime;
+      // 6 个 beep，每个 0.18s on / 0.10s off，频率 880↔1320 交替（电子警报感）
+      for (let i = 0; i < 6; i += 1) {
+        const t0 = now + i * 0.28;
+        const t1 = t0 + 0.18;
+        const osc = ctx2.createOscillator();
+        const gain = ctx2.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(i % 2 === 0 ? 880 : 1320, t0);
+        // 平滑包络避免爆音
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.85, t0 + 0.01);
+        gain.gain.setValueAtTime(0.85, t1 - 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+        osc.connect(gain).connect(ctx2.destination);
+        osc.start(t0);
+        osc.stop(t1 + 0.02);
+      }
+    }
+
+    function _setAlertEnabled(on) {
+      alertEnabled = !!on;
+      try { localStorage.setItem(ALERT_LS_KEY, alertEnabled ? '1' : '0'); } catch (_) {}
+      if (alertBtn) {
+        alertBtn.classList.toggle('active', alertEnabled);
+        alertBtn.textContent = alertEnabled ? '🔔 警报 / Alert: ON' : '🔔 警报 / Alert: OFF';
+      }
+      if (alertEnabled) {
+        // 用户开启时立刻 unlock AudioContext（浏览器要求用户交互后才允许播放）
+        const ctx2 = _ensureAudioCtx();
+        if (ctx2 && ctx2.state === 'suspended') {
+          try { ctx2.resume(); } catch (_) {}
+        }
+      }
+    }
+    if (alertBtn) {
+      _setAlertEnabled(alertEnabled); // 同步初始按钮文字
+      alertBtn.addEventListener('click', () => _setAlertEnabled(!alertEnabled));
+    }
+
+    function _readLatestPrice() {
+      // 优先用主图 SSE 推送的最新 K 线 close（更新最高频）；
+      // 其次用本图 d.midPrice（fetch 时同步的当前价，频率较低）
+      try {
+        if (Array.isArray(lastCandles) && lastCandles.length) {
+          const c = lastCandles[lastCandles.length - 1];
+          const v = Number(c && c.close);
+          if (Number.isFinite(v) && v > 0) return v;
+        }
+      } catch (_) {}
+      const d = state.data;
+      const m = d && Number(d.midPrice);
+      return Number.isFinite(m) && m > 0 ? m : null;
+    }
+
+    async function _triggerAlarm(side, peakPrice, peakValue, prevPrice, curPrice) {
+      // eslint-disable-next-line no-console
+      console.log(`[liq-cross] cross ${side} @ ${peakPrice} · ${prevPrice} → ${curPrice}`);
+      _playAlertSound();
+      const sym = els.symbol ? els.symbol.value.toUpperCase() : 'BTCUSDT';
+      const market = els.market ? els.market.value : 'futures';
+      const body = {
+        symbol: sym, market,
+        mode: state.mode || 'predicted',
+        side,
+        peakPrice, peakValue,
+        prevPrice, curPrice,
+        crossDirection: curPrice < prevPrice ? 'down' : 'up',
+        timestamp: Date.now()
+      };
+      try {
+        await fetch('/api/alerts/liquidation-cross', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[liq-cross] feishu push failed:', err.message);
+      }
+    }
+
+    function _checkCross() {
+      if (!alertEnabled) { _alertPrevPrice = _readLatestPrice(); return; }
+      const d = state.data;
+      if (!d || !d.prices || !d.prices.length) return;
+      const cur = _readLatestPrice();
+      if (!Number.isFinite(cur)) return;
+      const prev = _alertPrevPrice;
+      _alertPrevPrice = cur;
+      if (!Number.isFinite(prev) || prev === cur) return;
+      const now = Date.now();
+
+      const checkOne = (side, pi, val) => {
+        if (pi == null || pi < 0) return;
+        const peak = d.prices[pi];
+        if (!Number.isFinite(peak) || peak <= 0) return;
+        const crossed = (prev < peak && cur >= peak) || (prev > peak && cur <= peak);
+        if (!crossed) return;
+        if (now - (_alertLastAt[side] || 0) < ALERT_COOLDOWN_MS) return;
+        _alertLastAt[side] = now;
+        _triggerAlarm(side, peak, val || 0, prev, cur);
+      };
+      checkOne('long',  state._peakLongPi,  state._peakLongVal);
+      checkOne('short', state._peakShortPi, state._peakShortVal);
+    }
+    // 500ms 轮询：足够快响应主图价格跳动，cpu 占用可忽略
+    setInterval(_checkCross, 500);
 
     // 周期 30s 自动刷新（清算事件比快照高频，重要事件不容延迟）
     setInterval(() => scheduleFetch(0), 30_000);

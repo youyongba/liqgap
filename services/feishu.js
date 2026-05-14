@@ -493,6 +493,82 @@ function formatTs(ts) {
   return new Date(Number(ts)).toLocaleString('zh-CN', { hour12: false });
 }
 
+// ============================================================================
+// 清算穿越卡片 (Liquidation cross alert card)
+// ============================================================================
+/**
+ * 当现价穿过预测/已发生清算热图上的主峰价位（L↓ 多头清算墙 或 S↑ 空头清算墙）
+ * 时调用此卡片。是高紧急度的实时风险事件。
+ *
+ * @param {object} payload
+ *   symbol, market, mode:'predicted'|'realized',
+ *   side:'long'|'short',  // 被清算的方向
+ *   peakPrice:number, peakValue:number,  // 主峰价位 / 累计清算量(USDT)
+ *   prevPrice:number, curPrice:number,   // 穿越瞬间的前一刻价 / 当前价
+ *   crossDirection:'down'|'up',          // 穿越方向（自上而下/自下而上）
+ *   timestamp:number
+ */
+function buildLiquidationCrossCard(payload) {
+  const sym = String(payload.symbol || 'BTCUSDT').toUpperCase();
+  const market = payload.market || 'futures';
+  const isLong = payload.side === 'long';
+  // long 清算 = 多头爆仓（价格跌穿） → 红色卡片
+  // short 清算 = 空头爆仓（价格涨穿） → 绿色卡片
+  const template = isLong ? 'red' : 'green';
+  const sideLabel = isLong
+    ? '🔻 多头清算墙击穿 / Long Liq Wall Broken'
+    : '🚀 空头清算墙击穿 / Short Liq Wall Broken';
+  const arrow = payload.crossDirection === 'down' ? '⬇️ 自上而下' : '⬆️ 自下而上';
+  const dPrice = Number(payload.curPrice) - Number(payload.prevPrice);
+  const dPct = (Number(payload.prevPrice) > 0)
+    ? (dPrice / Number(payload.prevPrice)) * 100 : 0;
+  const sign = (n) => (n >= 0 ? '+' : '') + n.toFixed(Math.abs(n) >= 100 ? 2 : 4);
+  const fmtMoney = (v) => v >= 1e9
+    ? (v / 1e9).toFixed(2) + 'B'
+    : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
+    : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : Number(v).toFixed(0);
+
+  const lines = [];
+  lines.push(`**标的 / Symbol**: ${sym} · ${market === 'spot' ? '现货' : '合约'}`);
+  lines.push(`**模式 / Mode**: ${payload.mode === 'realized' ? '已发生 / Realized' : '预测性 / Predicted'}`);
+  lines.push('---');
+  lines.push(`**清算价 / Liq Wall**: \`${fmt(payload.peakPrice)}\``);
+  lines.push(`**累计清算量 / Cumulative**: \`${fmtMoney(Number(payload.peakValue) || 0)}\` USDT`);
+  lines.push(`**穿越方向 / Direction**: ${arrow}`);
+  lines.push('---');
+  lines.push(`**前价 / Prev**: \`${fmt(payload.prevPrice)}\``);
+  lines.push(`**现价 / Now**: \`${fmt(payload.curPrice)}\``);
+  lines.push(`**变动 / Δ**: ${sign(dPrice)} (${sign(dPct)}%)`);
+  lines.push('---');
+  lines.push(isLong
+    ? '⚠️ 多头爆仓被触发，下方支撑可能进一步崩塌；密切关注成交量与 OI'
+    : '⚠️ 空头爆仓被触发，上方阻力被收割；可能进入快速 squeeze 行情');
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `${sideLabel} · ${sym}` },
+      template
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'lark_md',
+            content: `触发 / Trigger: **liq-cross alert** · ${formatTs(payload.timestamp || Date.now())}`
+          }
+        ]
+      }
+    ]
+  };
+}
+
+async function sendLiquidationCrossCard(payload) {
+  return sendCard(buildLiquidationCrossCard(payload));
+}
+
 module.exports = {
   isEnabled,
   isSignalNotifyEnabled,
@@ -513,5 +589,8 @@ module.exports = {
   pushNewFvgs,
   getFvgNotifiedSnapshot,
   resetFvgNotifiedState,
+  // 清算穿越警报
+  buildLiquidationCrossCard,
+  sendLiquidationCrossCard,
   feishuSign
 };
