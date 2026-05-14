@@ -16,10 +16,20 @@
  * 查询参数：
  *   symbol           默认 'BTCUSDT'
  *   market           固定 'futures'（spot 无杠杆故无清算）
- *   windowMs         主峰窗口，默认 4h；范围 [1h, 24h]（太长主峰过时，太短噪声大）
+ *   windowMs         主峰窗口，默认 24h（与前端"清算热图"一致）；范围 [15m, 31d]
+ *   priceRange       价格范围 'auto' 或 0~0.5（与前端"清算热图"一致；默认 auto）
+ *   sourceInterval   K 线粒度（可选；默认按 windowMs 自适应，与 predictive 接口一致）
+ *   bucketMs         时间桶大小（可选；默认按 windowMs 自适应）
  *   riskPercent      默认 1
  *   accountBalance   默认 1000 USDT
  *   notify           'false' 关闭本次飞书推送
+ *
+ * 设计原则：
+ *   • **主峰位置** 必须与前端"清算热图"完全一致（同一份算法，同一份采样），
+ *     避免出现"图上显示 S↑ 82171，信号却报 S↑ 81806"的混乱。
+ *   • **信号触发条件**（CVD 背离 / OI 暴涨 / 成交量暴涨 / 10min 穿越判定）
+ *     永远使用最近 1h 的近场 1m K 线 + aggTrades + OI 5m × 24 历史，
+ *     不受 windowMs 影响——因为"信号"本质是近期事件。
  *
  * 响应：
  *   {
@@ -79,23 +89,40 @@ router.get('/trade/liq-signal', async (req, res) => {
     const symbol = String(req.query.symbol || 'BTCUSDT').toUpperCase();
     const market = 'futures'; // spot 无杠杆不可能爆仓
     let windowMs = Number(req.query.windowMs);
-    if (!Number.isFinite(windowMs) || windowMs < ONE_HOUR_MS) windowMs = 4 * ONE_HOUR_MS;
-    if (windowMs > 24 * ONE_HOUR_MS) windowMs = 24 * ONE_HOUR_MS;
+    if (!Number.isFinite(windowMs) || windowMs < 15 * ONE_MIN_MS) windowMs = 24 * ONE_HOUR_MS;
+    if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
     const riskPercent = Number(req.query.riskPercent) || 1;
     const accountBalance = Number(req.query.accountBalance) || 1000;
 
+    // ---- 主峰采样策略：与 routes/predictiveLiquidations._autoSampling 同源 ----
+    const auto = _autoSampling(windowMs);
+    const sourceInterval = String(req.query.sourceInterval || auto.source);
+    let bucketMs = Number(req.query.bucketMs);
+    if (!Number.isFinite(bucketMs) || bucketMs < ONE_MIN_MS) bucketMs = auto.bucketMs;
+    if (bucketMs > 12 * ONE_HOUR_MS) bucketMs = 12 * ONE_HOUR_MS;
+    const sourceMs = ({
+      '1m': 60_000, '3m': 180_000, '5m': 300_000, '15m': 900_000,
+      '30m': 1800_000, '1h': 3600_000, '2h': 7200_000, '4h': 14400_000
+    })[sourceInterval] || 60_000;
+    const hmLimit = Math.min(Math.ceil(windowMs / sourceMs) + 5, 1500);
+
     // ---- 数据源（并行拉取）----
-    // 主峰用 1m K 线（精度高，4h 窗口 240 根）
-    // 趋势用 1m × 60 根（最近 1h 的价格 + CVD 趋势）
-    // OI 用 5m × 24 根（最近 2h 的持仓量序列）
-    // 成交用 500 笔 aggTrades（实时 CVD）
-    const [hmRaw, oiHist, trades] = await Promise.all([
-      BinanceService.getKlines(symbol, '1m', Math.min(Math.ceil(windowMs / ONE_MIN_MS) + 5, 1500), market),
+    //   • hmKlines:    主峰窗口 K 线（粒度 = sourceInterval），用于算两条主峰横线
+    //   • trendKlines: 永远是 1m × 60 根 = 最近 1h 的"近场"K 线，用于趋势 / 成交量
+    //   • oiHist:      5m × 24 = 最近 2h OI 历史
+    //   • trades:      500 笔最新成交，用于实时 CVD
+    // 当 windowMs 较短（≤ 1h）时 hmKlines 与 trendKlines 等价，多拉一次也只是几 KB。
+    const [hmRaw, trendRaw, oiHist, trades] = await Promise.all([
+      BinanceService.getKlines(symbol, sourceInterval, hmLimit, market),
+      BinanceService.getKlines(symbol, '1m', 60, market),
       BinanceService.getOpenInterestHist(symbol, '5m', 24).catch(() => []),
       BinanceService.getAggTrades(symbol, 500, market).catch(() => [])
     ]);
 
-    const candles1m = normalizeKlines(hmRaw);
+    const toMs = Date.now();
+    const fromMs = toMs - windowMs;
+    const hmCandles = normalizeKlines(hmRaw).filter((c) => c.openTime >= fromMs - sourceMs);
+    const candles1m = normalizeKlines(trendRaw);
     if (!candles1m.length) {
       return res.json({ success: true, data: _empty('Not enough kline data', { symbol, market, windowMs }) });
     }
@@ -104,23 +131,60 @@ router.get('/trade/liq-signal', async (req, res) => {
     if (!Number.isFinite(midPrice) || midPrice <= 0) {
       return res.json({ success: true, data: _empty('Invalid midPrice', { symbol, market, midPrice }) });
     }
+    if (!hmCandles.length) {
+      return res.json({ success: true, data: _empty('Not enough heatmap kline data', { symbol, market, windowMs, sourceInterval }) });
+    }
 
-    // ---- 计算两个主峰（与 routes/predictiveLiquidations 同算法，但只跑一次）----
-    const toMs = Date.now();
-    const fromMs = toMs - windowMs;
-    const priceMin = midPrice * 0.95;
-    const priceMax = midPrice * 1.05;
-    const priceBucket = Math.max(0.01, midPrice * 0.0002);
-    const bucketMs = Math.max(2 * ONE_MIN_MS, Math.floor(windowMs / 120));
-    const heat = buildPredictiveLiquidationHeatmap(candles1m, {
+    // ---- 计算两个主峰（与 routes/predictiveLiquidations 同采样、同算法）----
+    // 价格范围（auto / 显式数值），与前端清算热图同一套逻辑
+    const priceRangeRaw = req.query.priceRange;
+    let priceRange = NaN;
+    let autoRange = false;
+    if (priceRangeRaw === undefined || priceRangeRaw === '' || priceRangeRaw === 'auto') {
+      autoRange = true;
+    } else {
+      priceRange = Number(priceRangeRaw);
+      if (!Number.isFinite(priceRange) || priceRange <= 0) autoRange = true;
+      else if (priceRange > 0.5) priceRange = 0.5;
+    }
+    let priceMin, priceMax;
+    if (autoRange) {
+      let lo = Infinity, hi = -Infinity;
+      for (const c of hmCandles) {
+        if (c.low < lo) lo = c.low;
+        if (c.high > hi) hi = c.high;
+      }
+      if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) {
+        priceRange = 0.05;
+        const half = midPrice * priceRange;
+        priceMin = midPrice - half; priceMax = midPrice + half;
+      } else {
+        const pad = (hi - lo) * 0.3 + midPrice * 0.005;
+        const half = Math.max(midPrice - lo, hi - midPrice) + pad;
+        priceMin = midPrice - half;
+        priceMax = midPrice + half;
+        priceRange = half / midPrice;
+      }
+    } else {
+      const half = midPrice * priceRange;
+      priceMin = midPrice - half; priceMax = midPrice + half;
+    }
+    // 价格桶（约 240 桶，按 1/2/5/10 取整阶进位）
+    const rawBucket = (priceMax - priceMin) / 240;
+    const exp = Math.pow(10, Math.floor(Math.log10(rawBucket)));
+    const norm = rawBucket / exp;
+    const factor = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+    const priceBucket = Math.max(0.01, factor * exp);
+
+    const heat = buildPredictiveLiquidationHeatmap(hmCandles, {
       fromMs, toMs, bucketMs, priceMin, priceMax, priceBucket
     });
     const peaks = _findPeaks(heat, midPrice);
     if (!peaks.peakLong && !peaks.peakShort) {
-      return res.json({ success: true, data: _empty('No peaks detected', { symbol, market, midPrice }) });
+      return res.json({ success: true, data: _empty('No peaks detected', { symbol, market, midPrice, windowMs, sourceInterval }) });
     }
 
-    // ---- 趋势 / CVD / OI / 成交量 指标 ----
+    // ---- 趋势 / CVD / OI / 成交量 指标（始终用最近 1h × 1m 近场数据）----
     // 价格趋势：最近 30 根 1m K 线的 close 斜率
     const trendWindow = candles1m.slice(-30);
     const priceSlope = _slope(trendWindow.map((c) => Number(c.close)));
@@ -270,6 +334,8 @@ router.get('/trade/liq-signal', async (req, res) => {
     const best = signals[0];
     const snapshot = {
       symbol, market, windowMs, midPrice,
+      sourceInterval, bucketMs,
+      priceRange, autoRange, priceMin, priceMax, priceBucket,
       peakLong: peaks.peakLong, peakShort: peaks.peakShort,
       distLongPct, distShortPct,
       cvdDivergence, priceSlope, cvdSlope,
@@ -382,6 +448,21 @@ router.get('/trade/liq-signal', async (req, res) => {
 // ============================================================================
 // helpers
 // ============================================================================
+// 主峰采样策略：与 routes/predictiveLiquidations._autoSampling 完全一致。
+// 任何调整请同步两处，否则信号触发墙价位会与前端清算热图不一致。
+function _autoSampling(windowMs) {
+  if (windowMs <=       ONE_HOUR_MS) return { source: '1m',  bucketMs:        60_000 };
+  if (windowMs <=   4 * ONE_HOUR_MS) return { source: '1m',  bucketMs:   2  * 60_000 };
+  if (windowMs <=  12 * ONE_HOUR_MS) return { source: '5m',  bucketMs:   5  * 60_000 };
+  if (windowMs <=  24 * ONE_HOUR_MS) return { source: '5m',  bucketMs:  15  * 60_000 };
+  if (windowMs <=  48 * ONE_HOUR_MS) return { source: '5m',  bucketMs:  30  * 60_000 };
+  if (windowMs <=  72 * ONE_HOUR_MS) return { source: '15m', bucketMs:  60  * 60_000 };
+  if (windowMs <=   7 * 24 * ONE_HOUR_MS) return { source: '15m', bucketMs:   2 * 60 * 60_000 };
+  if (windowMs <=  14 * 24 * ONE_HOUR_MS) return { source: '30m', bucketMs:   4 * 60 * 60_000 };
+  if (windowMs <=  21 * 24 * ONE_HOUR_MS) return { source: '1h',  bucketMs:   6 * 60 * 60_000 };
+  return                                          { source: '1h',  bucketMs:   8 * 60 * 60_000 };
+}
+
 function _findPeaks(heat, midPrice) {
   const Plen = heat.prices.length;
   const longSum = new Array(Plen).fill(0);

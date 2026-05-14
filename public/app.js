@@ -82,8 +82,79 @@
     liqTpList: document.getElementById('liq-tp-list'),
     liqPlaybook: document.getElementById('liq-playbook'),
     liqConditions: document.getElementById('liq-conditions'),
-    btnCopyLiqSignal: document.getElementById('btn-copy-liq-signal')
+    btnCopyLiqSignal: document.getElementById('btn-copy-liq-signal'),
+    liqSignalAlert: document.getElementById('liq-signal-alert')
   };
+
+  // ============================================================
+  // 全局警报模块（共享于"清算热图"卡 + "🧲 清算磁极信号"卡）
+  // - 一个 alertEnabled 开关 + 一个 localStorage key，所有按钮联动
+  // - 价格穿越主峰 = 清算热图 _checkCross() 触发（声音 + 后端飞书 cross 卡）
+  // - 清算磁极信号 actionable = renderLiqSignal() 触发（声音 + 后端飞书 signal 卡）
+  // - 同一来源 5 分钟内只响 1 次，避免吵
+  // ============================================================
+  const GLOBAL_ALERT_LS_KEY = 'liq-heatmap-alert-enabled';
+  // 默认 ON（用户多次表达需求；首次访问就能听到声音验证设置正确）
+  let _globalAlertEnabled;
+  try {
+    const raw = localStorage.getItem(GLOBAL_ALERT_LS_KEY);
+    _globalAlertEnabled = raw == null ? true : raw === '1';
+  } catch (_) { _globalAlertEnabled = true; }
+  let _globalAudioCtx = null;
+  function ensureAudioCtx() {
+    if (_globalAudioCtx) return _globalAudioCtx;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) _globalAudioCtx = new Ctx();
+    } catch (_) { /* noop */ }
+    return _globalAudioCtx;
+  }
+  // 6 个 0.18s "嘟"，频率 880↔1320 Hz 交替，模拟电子警报
+  function playAlertSound() {
+    const ctx2 = ensureAudioCtx();
+    if (!ctx2) return;
+    try { if (ctx2.state === 'suspended') ctx2.resume(); } catch (_) {}
+    const now = ctx2.currentTime;
+    for (let i = 0; i < 6; i += 1) {
+      const t0 = now + i * 0.28;
+      const t1 = t0 + 0.18;
+      const osc = ctx2.createOscillator();
+      const gain = ctx2.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(i % 2 === 0 ? 880 : 1320, t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.85, t0 + 0.01);
+      gain.gain.setValueAtTime(0.85, t1 - 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+      osc.connect(gain).connect(ctx2.destination);
+      osc.start(t0);
+      osc.stop(t1 + 0.02);
+    }
+  }
+  const _alertButtons = new Set();
+  function _renderAlertButton(btn) {
+    btn.classList.toggle('active', _globalAlertEnabled);
+    btn.textContent = _globalAlertEnabled ? '🔔 警报 / Alert: ON' : '🔔 警报 / Alert: OFF';
+  }
+  function isAlertEnabled() { return _globalAlertEnabled; }
+  function setAlertEnabled(on) {
+    _globalAlertEnabled = !!on;
+    try { localStorage.setItem(GLOBAL_ALERT_LS_KEY, _globalAlertEnabled ? '1' : '0'); } catch (_) {}
+    _alertButtons.forEach(_renderAlertButton);
+    if (_globalAlertEnabled) {
+      // unlock audio context on user interaction
+      const ctx2 = ensureAudioCtx();
+      if (ctx2 && ctx2.state === 'suspended') {
+        try { ctx2.resume(); } catch (_) {}
+      }
+    }
+  }
+  function registerAlertButton(btn) {
+    if (!btn || _alertButtons.has(btn)) return;
+    _alertButtons.add(btn);
+    _renderAlertButton(btn);
+    btn.addEventListener('click', () => setAlertEnabled(!_globalAlertEnabled));
+  }
 
   // 当前周期下两个副图的取数策略
   // (Per-interval policy for sub-chart data fetching.)
@@ -1518,6 +1589,8 @@
         state.lastFetchKey = '';
         if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         scheduleFetch(0);
+        // 主峰跟随窗口 → 信号也立刻重算（避免要等 10s 轮询）
+        if (typeof window.__refreshLiqSignal === 'function') window.__refreshLiqSignal();
       });
     }
     if (els.liqHeatmapRange) {
@@ -1526,6 +1599,7 @@
         state.lastFetchKey = '';
         if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         scheduleFetch(0);
+        if (typeof window.__refreshLiqSignal === 'function') window.__refreshLiqSignal();
       });
     }
     if (els.liqHeatmapMode) {
@@ -1800,70 +1874,13 @@
     //   3. 同一价位 5 分钟内只触发一次（前后端都做去重）
     // 默认关闭，按钮 toggle 切换；偏好持久化到 localStorage。
     // ============================================================
-    const alertBtn = els.liqHeatmapAlert;
-    const ALERT_LS_KEY = 'liq-heatmap-alert-enabled';
+    // 警报状态、声音、按钮渲染由 IIFE 顶层的全局警报模块统一管理；
+    // 这里只把本卡的按钮注册进去即可。
     const ALERT_COOLDOWN_MS = 5 * 60_000;
-    let alertEnabled = false;
-    try { alertEnabled = localStorage.getItem(ALERT_LS_KEY) === '1'; } catch (_) {}
     let _alertPrevPrice = null;
     const _alertLastAt = { long: 0, short: 0 };
-    let _audioCtx = null;
-
-    function _ensureAudioCtx() {
-      if (_audioCtx) return _audioCtx;
-      try {
-        const Ctx = window.AudioContext || window.webkitAudioContext;
-        if (Ctx) _audioCtx = new Ctx();
-      } catch (_) { /* noop */ }
-      return _audioCtx;
-    }
-
-    // 超大警报声：3 段 frequency-modulated 蜂鸣 + 高 gain，叠加成"警笛"感
-    function _playAlertSound() {
-      const ctx2 = _ensureAudioCtx();
-      if (!ctx2) return;
-      try {
-        if (ctx2.state === 'suspended') ctx2.resume();
-      } catch (_) {}
-      const now = ctx2.currentTime;
-      // 6 个 beep，每个 0.18s on / 0.10s off，频率 880↔1320 交替（电子警报感）
-      for (let i = 0; i < 6; i += 1) {
-        const t0 = now + i * 0.28;
-        const t1 = t0 + 0.18;
-        const osc = ctx2.createOscillator();
-        const gain = ctx2.createGain();
-        osc.type = 'square';
-        osc.frequency.setValueAtTime(i % 2 === 0 ? 880 : 1320, t0);
-        // 平滑包络避免爆音
-        gain.gain.setValueAtTime(0.0001, t0);
-        gain.gain.exponentialRampToValueAtTime(0.85, t0 + 0.01);
-        gain.gain.setValueAtTime(0.85, t1 - 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, t1);
-        osc.connect(gain).connect(ctx2.destination);
-        osc.start(t0);
-        osc.stop(t1 + 0.02);
-      }
-    }
-
-    function _setAlertEnabled(on) {
-      alertEnabled = !!on;
-      try { localStorage.setItem(ALERT_LS_KEY, alertEnabled ? '1' : '0'); } catch (_) {}
-      if (alertBtn) {
-        alertBtn.classList.toggle('active', alertEnabled);
-        alertBtn.textContent = alertEnabled ? '🔔 警报 / Alert: ON' : '🔔 警报 / Alert: OFF';
-      }
-      if (alertEnabled) {
-        // 用户开启时立刻 unlock AudioContext（浏览器要求用户交互后才允许播放）
-        const ctx2 = _ensureAudioCtx();
-        if (ctx2 && ctx2.state === 'suspended') {
-          try { ctx2.resume(); } catch (_) {}
-        }
-      }
-    }
-    if (alertBtn) {
-      _setAlertEnabled(alertEnabled); // 同步初始按钮文字
-      alertBtn.addEventListener('click', () => _setAlertEnabled(!alertEnabled));
-    }
+    const _playAlertSound = playAlertSound; // 别名，下方调用代码不变
+    registerAlertButton(els.liqHeatmapAlert);
 
     function _readLatestPrice() {
       // 优先用主图 SSE 推送的最新 K 线 close（更新最高频）；
@@ -1908,7 +1925,7 @@
     }
 
     function _checkCross() {
-      if (!alertEnabled) { _alertPrevPrice = _readLatestPrice(); return; }
+      if (!isAlertEnabled()) { _alertPrevPrice = _readLatestPrice(); return; }
       const d = state.data;
       if (!d || !d.prices || !d.prices.length) return;
       const cur = _readLatestPrice();
@@ -3389,6 +3406,11 @@
 
   // ===== 🧲 清算磁极信号 / Liq-Magnet Signal =====
   let _lastLiqSignal = null;
+  // 信号声音警报去重：按 signal type 5 分钟内只响一次
+  const LIQ_SIGNAL_ALERT_COOLDOWN_MS = 5 * 60_000;
+  const _liqSignalAlertLastAt = {};
+  // 注册本卡片的 🔔 按钮（与清算热图卡共享同一个 alertEnabled）
+  registerAlertButton(els.liqSignalAlert);
   const LIQ_SIGNAL_LABELS = {
     LIQ_REVERSAL_LONG:  { emoji: '🟢', text: '反转做多 / Reversal Long', cls: 'long' },
     LIQ_REVERSAL_SHORT: { emoji: '🔴', text: '反转做空 / Reversal Short', cls: 'short' },
@@ -3422,6 +3444,19 @@
     const label = LIQ_SIGNAL_LABELS[sig.signal];
     const isActionable = !!label && sig.confidence >= 50;
 
+    // 触发声音警报：actionable 信号 + 警报开启 + 同一 signal type 5min 内未响过
+    // 飞书推送在后端完成（confidence ≥ 75 时由 routes/liqSignal.js 调 feishu.sendCard）
+    if (isActionable && isAlertEnabled()) {
+      const now = Date.now();
+      const lastAt = _liqSignalAlertLastAt[sig.signal] || 0;
+      if (now - lastAt >= LIQ_SIGNAL_ALERT_COOLDOWN_MS) {
+        _liqSignalAlertLastAt[sig.signal] = now;
+        playAlertSound();
+        // eslint-disable-next-line no-console
+        console.log(`[liq-signal] alarm fired · ${sig.signal} conf=${sig.confidence}`);
+      }
+    }
+
     if (isActionable) {
       banner.classList.add(label.cls);
       banner.textContent = `${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100`;
@@ -3439,8 +3474,13 @@
     const snap = sig.indicatorsSnapshot || {};
     const distL = snap.distLongPct  != null ? `(-${(snap.distLongPct * 100).toFixed(2)}%)` : '';
     const distS = snap.distShortPct != null ? `(+${(snap.distShortPct * 100).toFixed(2)}%)` : '';
-    els.liqSignalMeta.textContent = (snap.symbol || '') + ' · ' + (snap.market || 'futures')
-      + ' · windowMs=' + ((snap.windowMs || 14400000) / 3600000).toFixed(1) + 'h';
+    // meta：包含窗口、源 K 线粒度、价格范围，方便和清算热图卡对照
+    const winH = (snap.windowMs || 86400000) / 3600000;
+    const winLabel = winH >= 24 ? `${(winH / 24).toFixed(0)}d` : `${winH.toFixed(1)}h`;
+    const rangeLabel = snap.autoRange
+      ? `±${((snap.priceRange || 0.05) * 100).toFixed(2)}% (auto)`
+      : `±${((snap.priceRange || 0.05) * 100).toFixed(2)}%`;
+    els.liqSignalMeta.textContent = `${snap.symbol || ''} · ${snap.market || 'futures'} · 窗口 ${winLabel} · 源 ${snap.sourceInterval || '?'} · ${rangeLabel}`;
     els.liqKvLongPeak.textContent  = peakLong  ? `${fmt(peakLong.price, 2)} ${distL}`  : '-';
     els.liqKvShortPeak.textContent = peakShort ? `${fmt(peakShort.price, 2)} ${distS}` : '-';
 
@@ -3498,6 +3538,38 @@
       els.liqConditions.appendChild(chip);
     });
   }
+
+  // 轻量刷新：仅重拉清算磁极信号；用于热图窗口/范围切换时即时反馈
+  let _liqSignalInFlight = false;
+  async function refreshLiqSignal() {
+    if (_liqSignalInFlight) return;
+    const market = els.market.value;
+    if (market !== 'futures') {
+      renderLiqSignalUnsupported();
+      return;
+    }
+    _liqSignalInFlight = true;
+    try {
+      const symbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
+      const btCapital = Number(document.getElementById('bt-capital')?.value) || 1000;
+      const btRisk = Number(document.getElementById('bt-risk')?.value) || 1;
+      const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
+      const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
+      const params = new URLSearchParams({
+        symbol,
+        windowMs: String(liqWindowMs),
+        accountBalance: String(btCapital),
+        riskPercent: String(btRisk)
+      });
+      if (liqRange && liqRange !== 'auto') params.set('priceRange', String(liqRange));
+      const data = await fetchJsonSoft(`/api/trade/liq-signal?${params.toString()}`);
+      if (data) renderLiqSignal(data);
+    } finally {
+      _liqSignalInFlight = false;
+    }
+  }
+  // 暴露给 liqHeatmap 模块内部用
+  window.__refreshLiqSignal = refreshLiqSignal;
 
   function renderLiqSignalUnsupported() {
     _lastLiqSignal = null;
@@ -3922,13 +3994,22 @@
       const oiFetch = fetchJsonSoft(
         `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200`
       );
-      // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆），4h 主峰窗口
+      // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆）。
+      // 主峰窗口 / 价格范围 = 用户当前在"清算热图"卡片上的选择，确保信号
+      // 报告的"触发墙价位"和图上视觉看到的主峰完全一致。
       const btCapital = Number(document.getElementById('bt-capital')?.value) || 1000;
       const btRisk = Number(document.getElementById('bt-risk')?.value) || 1;
+      const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
+      const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
+      const liqSignalParams = new URLSearchParams({
+        symbol,
+        windowMs: String(liqWindowMs),
+        accountBalance: String(btCapital),
+        riskPercent: String(btRisk)
+      });
+      if (liqRange && liqRange !== 'auto') liqSignalParams.set('priceRange', String(liqRange));
       const liqSignalFetch = market === 'futures'
-        ? fetchJsonSoft(
-            `/api/trade/liq-signal?symbol=${symbol}&windowMs=14400000&accountBalance=${btCapital}&riskPercent=${btRisk}`
-          )
+        ? fetchJsonSoft(`/api/trade/liq-signal?${liqSignalParams.toString()}`)
         : Promise.resolve(null);
 
       const [kData, obData, oiData, signal, alerts, liqSignal] = await Promise.all([
