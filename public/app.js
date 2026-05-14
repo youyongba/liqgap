@@ -3412,28 +3412,53 @@
   // 注册本卡片的 🔔 按钮（与清算热图卡共享同一个 alertEnabled）
   registerAlertButton(els.liqSignalAlert);
   const LIQ_SIGNAL_LABELS = {
-    LIQ_REVERSAL_LONG:  { emoji: '🟢', text: '反转做多 / Reversal Long', cls: 'long' },
-    LIQ_REVERSAL_SHORT: { emoji: '🔴', text: '反转做空 / Reversal Short', cls: 'short' },
-    LIQ_SQUEEZE_LONG:   { emoji: '🚀', text: 'Squeeze 追多 / Squeeze Long', cls: 'long' },
-    LIQ_SQUEEZE_SHORT:  { emoji: '💥', text: 'Cascade 追空 / Squeeze Short', cls: 'short' }
+    LIQ_REVERSAL_LONG:      { emoji: '🟢', text: '反转做多 / Reversal Long', cls: 'long' },
+    LIQ_REVERSAL_SHORT:     { emoji: '🔴', text: '反转做空 / Reversal Short', cls: 'short' },
+    LIQ_SQUEEZE_LONG:       { emoji: '🚀', text: 'Squeeze 追多 / Squeeze Long', cls: 'long' },
+    LIQ_SQUEEZE_SHORT:      { emoji: '💥', text: 'Cascade 追空 / Squeeze Short', cls: 'short' },
+    LIQ_SWEEP_REJECT_LONG:  { emoji: '🪤', text: '下插针 + 反弹做多 / Sweep & Reject Long', cls: 'long' },
+    LIQ_SWEEP_REJECT_SHORT: { emoji: '🪤', text: '上插针 + 跌回做空 / Sweep & Reject Short', cls: 'short' }
   };
   const LIQ_COND_LABELS = {
-    nearLongPeak:           '价格触碰 L↓ (≤0.3%)',
-    nearShortPeak:          '价格触碰 S↑ (≤0.3%)',
-    cvdBullishDivergence:   '看涨背离 (价跌 CVD 涨)',
-    cvdBearishDivergence:   '看跌背离 (价涨 CVD 跌)',
-    oiNotSurging:           'OI 未暴涨 (反转条件)',
-    oiSurging:              'OI 暴涨 (squeeze 条件)',
-    volSurging:             '成交量暴涨 ≥3×',
-    longPowerDominant:      '多头堆积过重 ≥1.5×',
-    shortPowerDominant:     '空头堆积过重 ≥1.5×',
-    crossedShortPeakUp:     '价格刚穿过 S↑',
-    crossedLongPeakDown:    '价格刚穿过 L↓',
-    priceTrendUp:           '价格趋势向上',
-    priceTrendDown:         '价格趋势向下',
-    cvdTrendUp:             'CVD 上升',
-    cvdTrendDown:           'CVD 下降',
-    priceWithinRecentRange: '价格在最近 10min 区间内'
+    // REVERSAL 必要条件
+    nearLongPeak:               '价格触碰 L↓ (≤0.3%)',
+    nearShortPeak:              '价格触碰 S↑ (≤0.3%)',
+    klineRejectShape:           'K线 reject 形态 (插针 + 实体反弹)',
+    // SQUEEZE 必要条件
+    justCrossedShortPeakUp:     '价格刚穿过 S↑',
+    justCrossedLongPeakDown:    '价格刚穿过 L↓',
+    // SWEEP_REJECT 必要条件
+    sweptShortPeakAndReturned:  '上插穿过 S↑ 后跌回 (sweep)',
+    sweptLongPeakAndReturned:   '下插跌破 L↓ 后涨回 (sweep)',
+    closedAbovePeak:            '已收回 L↓ 上方',
+    closedBelowPeak:            '已收回 S↑ 下方',
+    // CVD
+    cvdBullishDivergence:       '看涨背离 (价跌 CVD 涨)',
+    cvdBearishDivergence:       '看跌背离 (价涨 CVD 跌)',
+    cvdBullishDuringSweep:      'sweep 期间 CVD 看涨',
+    cvdBearishDuringSweep:      'sweep 期间 CVD 看跌',
+    cvdTrendUp:                 'CVD 上升',
+    cvdTrendDown:               'CVD 下降',
+    // OI
+    oiNotSurging:               'OI 未暴涨 (反转条件)',
+    oiSurging:                  'OI 暴涨 ≥2.5× (squeeze 条件)',
+    oiHoldingHigh:              'OI 维持高位 ≥1.2× (sweep 后新空/多进场)',
+    // Volume
+    volSurging24h:              '成交量暴涨 ≥3× (vs 24h 均值)',
+    // Power
+    longPowerDominant:          '多头堆积过重 ≥1.5×',
+    shortPowerDominant:         '空头堆积过重 ≥1.5×',
+    longPowerStillDominant:     '多头堆积仍过重 (sweep 后)',
+    shortPowerStillDominant:    '空头堆积仍过重 (sweep 后)',
+    // Daily trend (高级别对齐)
+    dailyTrendUp:               '日线趋势向上 (顺势)',
+    dailyTrendDown:             '日线趋势向下 (顺势)',
+    dailyTrendNotLong:          '日线非强多 (允许做空)',
+    dailyTrendNotShort:         '日线非强空 (允许做多)',
+    // 其他
+    priceTrendUp:               '近期价格趋势向上',
+    priceTrendDown:             '近期价格趋势向下',
+    priceWithinRecentRange:     '价格在最近 10min 区间内'
   };
 
   function renderLiqSignal(sig) {
@@ -3474,13 +3499,20 @@
     const snap = sig.indicatorsSnapshot || {};
     const distL = snap.distLongPct  != null ? `(-${(snap.distLongPct * 100).toFixed(2)}%)` : '';
     const distS = snap.distShortPct != null ? `(+${(snap.distShortPct * 100).toFixed(2)}%)` : '';
-    // meta：包含窗口、源 K 线粒度、价格范围，方便和清算热图卡对照
+    // meta：窗口 + 源粒度 + 范围 + 日线趋势（让用户一眼看到当前过滤状态）
     const winH = (snap.windowMs || 86400000) / 3600000;
     const winLabel = winH >= 24 ? `${(winH / 24).toFixed(0)}d` : `${winH.toFixed(1)}h`;
     const rangeLabel = snap.autoRange
       ? `±${((snap.priceRange || 0.05) * 100).toFixed(2)}% (auto)`
       : `±${((snap.priceRange || 0.05) * 100).toFixed(2)}%`;
-    els.liqSignalMeta.textContent = `${snap.symbol || ''} · ${snap.market || 'futures'} · 窗口 ${winLabel} · 源 ${snap.sourceInterval || '?'} · ${rangeLabel}`;
+    const trendEmoji = ({
+      'strong-up':   '🟢↑↑',
+      'up':          '🟢↑',
+      'down':        '🔴↓',
+      'strong-down': '🔴↓↓',
+      'unknown':     '⚪'
+    })[snap.dailyTrend] || '⚪';
+    els.liqSignalMeta.textContent = `${snap.symbol || ''} · ${snap.market || 'futures'} · 窗口 ${winLabel} · 源 ${snap.sourceInterval || '?'} · ${rangeLabel} · 日线 ${trendEmoji}`;
     els.liqKvLongPeak.textContent  = peakLong  ? `${fmt(peakLong.price, 2)} ${distL}`  : '-';
     els.liqKvShortPeak.textContent = peakShort ? `${fmt(peakShort.price, 2)} ${distS}` : '-';
 
