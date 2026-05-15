@@ -47,6 +47,7 @@ const {
 const { computeTradeIndicators } = require('../indicators/tradeIndicators');
 const { buildPredictiveLiquidationHeatmap } = require('../services/predictiveLiquidations');
 const feishu = require('../services/feishu');
+const autoTrade = require('../services/autoTrade');
 
 const router = express.Router();
 
@@ -469,6 +470,41 @@ router.get('/trade/liq-signal', async (req, res) => {
       sweepExtreme: best.sweepExtreme || null,
       indicatorsSnapshot: snapshot
     };
+
+    // ---- 自动交易 webhook（仅 LIQ_REVERSAL_* + 高置信度，由 services/autoTrade 内部白名单/冷却把关）----
+    // fire-and-forget：不阻塞响应；失败只记录日志和 ring buffer。
+    if (req.query.notify !== 'false' && req.query.autoTrade !== 'false') {
+      autoTrade.sendPendingOrder({
+        signal: data.signal,
+        direction: data.side,
+        confidence: data.confidence,
+        symbol,
+        extra: {
+          entryPrice: data.entryPrice,
+          stopLoss: data.stopLoss,
+          takeProfits: data.takeProfits,
+          peakPrice: best.peakPrice,
+          windowMs,
+          sourceInterval
+        }
+      })
+        .then((r) => {
+          if (r.ok) {
+            // eslint-disable-next-line no-console
+            console.log(`[auto-trade] sent ${symbol} ${data.signal} ${data.side} (HTTP ${r.status})`);
+          } else if (!r.skipped) {
+            // eslint-disable-next-line no-console
+            console.warn(`[auto-trade] ${symbol} ${data.signal} not sent: ${r.error}`);
+          } else if (process.env.AUTO_TRADE_DEBUG === 'true') {
+            // eslint-disable-next-line no-console
+            console.log(`[auto-trade] skipped ${symbol} ${data.signal}: ${r.reason}`);
+          }
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.error('[auto-trade] threw:', err && err.message);
+        });
+    }
 
     // ---- 飞书推送（≥ 75 + 通过冷却）----
     if (feishu.isSignalNotifyEnabled() && data.confidence >= MIN_CONFIDENCE_TO_NOTIFY && req.query.notify !== 'false') {

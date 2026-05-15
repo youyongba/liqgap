@@ -19,7 +19,8 @@ liq-gap/
 │   ├── binance.js             # 币安 REST API 封装（现货+合约通用 K线/盘口/成交）
 │   ├── binanceFutures.js      # 合约专属 API（资金费率 / OI / 多空比 / Taker / 强平）
 │   ├── binanceData.js         # data.binance.vision 历史 aggTrades 流式下载/聚合 (回测专用)
-│   └── feishu.js              # 飞书自定义机器人推送（签名 + 交互卡片 + 去重冷却）
+│   ├── feishu.js              # 飞书自定义机器人推送（签名 + 交互卡片 + 去重冷却）
+│   └── autoTrade.js           # 自动交易 webhook 客户端（清算反转信号 → 外部下挂单）
 ├── routes/
 │   ├── klines.js              # GET /api/klines
 │   ├── orderbook.js           # GET /api/orderbook/indicators
@@ -31,7 +32,9 @@ liq-gap/
 │   ├── signal.js              # GET /api/trade/signal  (核心信号)
 │   ├── squeeze.js             # /api/squeeze/{warning,confirmation,heatmap,signal}
 │   ├── backtest.js            # GET /api/backtest/run  (30 天回测)
-│   └── notify.js              # /api/notify/{status,test,signal}  (飞书推送)
+│   ├── notify.js              # /api/notify/{status,test,signal}  (飞书推送)
+│   ├── liqSignal.js           # GET /api/trade/liq-signal  (清算磁极高胜率信号 v2)
+│   └── autoTrade.js           # /api/auto-trade/{status,test}  (自动交易 webhook 状态/测试)
 ├── indicators/
 │   ├── klineIndicators.js     # VWAP / MFI / ATR / FVG / Liquidity Voids
 │   ├── orderbookIndicators.js # 深度比 / 估算有效价差 / 滑点模拟
@@ -84,6 +87,14 @@ npm run dev            # nodemon 热重载
 | `REGIME_API_METHOD` | 否 | 默认 `POST`，可改 `GET`（GET 用 query string 传参）|
 | `REGIME_API_TOKEN` | 否 | 可选 Bearer token，附加在 `Authorization` 头 |
 | `REGIME_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭 regime 通知 |
+| **`AUTO_TRADE_API_URL`** | 否 | **清算反转信号触发挂单的 webhook URL**（留空则整体关闭，详见下方"自动交易 Webhook"章节）|
+| `AUTO_TRADE_API_TOKEN` | 否 | 上面 URL 的 `X-Auth-Token` 请求头值 |
+| `AUTO_TRADE_ENABLED` | 否 | `false` 显式关闭自动交易推送（默认 `true`）|
+| `AUTO_TRADE_TRIGGER_SIGNALS` | 否 | CSV 白名单，默认 `LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT` |
+| `AUTO_TRADE_MIN_CONFIDENCE` | 否 | 触发的最低 confidence，默认 `75` |
+| `AUTO_TRADE_COOLDOWN_MS` | 否 | 同 `symbol+direction` 的推送冷却毫秒，默认 `1800000` (30 min) |
+| `AUTO_TRADE_SOURCE` | 否 | payload `source` 字段，默认 `liq-signal` |
+| `AUTO_TRADE_LABEL_TEMPLATE` | 否 | payload `label` 模板，默认 `{symbol}-{signal}`；支持 `{symbol}` `{direction}` `{signal}` `{confidence}` |
 
 不填密钥 `/api/squeeze/*` 会自动降级（强平数据返回空 + `degraded:true`），其余路由全部可用。
 
@@ -109,6 +120,9 @@ npm run dev            # nodemon 热重载
 | GET | `/api/notify/status` | 飞书 webhook 状态（是否启用、签名、上次推送时间） |
 | POST | `/api/notify/test` | 发送一条测试卡片验证 webhook |
 | POST | `/api/notify/signal` | 手动推送当前 `/api/trade/signal` (body 支持 `{symbol, market, force}`) |
+| GET | `/api/trade/liq-signal` | **核心**：清算磁极高胜率信号 v2（6 类，REVERSAL/SQUEEZE/SWEEP_REJECT × LONG/SHORT）|
+| GET | `/api/auto-trade/status` | 自动交易 webhook 状态 + 冷却 + 最近 10 次调用记录 |
+| POST | `/api/auto-trade/test` | 手动发一条挂单测试 payload 验证 URL+Token（绕过白名单/置信度/冷却）|
 | GET | `/api/health` | 健康检查 |
 
 公共参数：`symbol`（默认 `BTCUSDT`）、`market`（`spot` / `futures`，**默认 `futures`，即 U 本位合约**）。
@@ -407,6 +421,107 @@ GET 模式下，参数会拼到 URL：`?fvg=long` 或 `?fvg=short`。
 - 服务端日志里 `[regime] notified regime for N new FVG(s)` = 成功 N 条
 - `[regime] notify long failed: ...` = 单条失败，不会影响其他 FVG
 - 调 `GET /api/notify/status` 查看 `regime.recentCalls`，最近 10 次调用的方向 / 状态码 / 响应都在里面
+
+---
+
+## 自动交易 Webhook (Auto-Trade · 由清算反转信号触发挂单)
+
+当 `routes/liqSignal.js` 产出高置信度 (`confidence ≥ AUTO_TRADE_MIN_CONFIDENCE`) 的
+**`LIQ_REVERSAL_LONG` / `LIQ_REVERSAL_SHORT`** 信号时，后端会异步把方向 POST 到外部
+自动交易系统（默认 `https://aitrade.24os.cn/api/auto-trade/pending-order`），
+对方收到后下挂单。
+
+> 设计目的：把 `liq-signal` 6 类信号里**理论胜率最高、止损最近**的"反转触墙未穿"
+> setup 直接接到下单系统；其它类型（SQUEEZE 顺势追、SWEEP_REJECT 流动性扫荡）
+> 可通过 `AUTO_TRADE_TRIGGER_SIGNALS` 加入白名单。
+
+### 触发示例 (Trigger example)
+
+```bash
+curl -X POST https://aitrade.24os.cn/api/auto-trade/pending-order \
+  -H 'Content-Type: application/json' \
+  -H 'X-Auth-Token: 54006625db5c6a03b3ba5e112b326eb69e4828ba00c5efab403c03e217263455' \
+  -d '{
+    "direction": "short",
+    "source":    "liq-signal",
+    "label":     "BTCUSDT-LIQ_REVERSAL_SHORT"
+  }'
+```
+
+后端构造的 payload 字段（与上面 curl 一致）：
+
+| 字段 | 值 | 说明 |
+| --- | --- | --- |
+| `direction` | `'long'` / `'short'` | 取自 `data.side`（与 LIQ_REVERSAL_LONG/SHORT 对齐）|
+| `source` | `AUTO_TRADE_SOURCE`，默认 `'liq-signal'` | 给对方系统区分来源 |
+| `label` | 由 `AUTO_TRADE_LABEL_TEMPLATE` 渲染 | 默认 `{symbol}-{signal}`，可改 `{symbol}-15m-Reversal-v2` 之类 |
+
+请求头：
+
+```
+Content-Type: application/json; charset=utf-8
+X-Auth-Token: <AUTO_TRADE_API_TOKEN>
+User-Agent:   liq-gap/1.0 (+auto-trade)
+```
+
+### 配置 (`.env`)
+
+```bash
+AUTO_TRADE_API_URL=https://aitrade.24os.cn/api/auto-trade/pending-order
+AUTO_TRADE_API_TOKEN=54006625db5c6a03b3ba5e112b326eb69e4828ba00c5efab403c03e217263455
+AUTO_TRADE_ENABLED=true                          # false 一键关闭
+AUTO_TRADE_TRIGGER_SIGNALS=LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT
+AUTO_TRADE_MIN_CONFIDENCE=75                     # 与 LIQ_SIGNAL_MIN_CONFIDENCE 同步推荐
+AUTO_TRADE_COOLDOWN_MS=1800000                   # 同 symbol+direction 30 min 冷却
+AUTO_TRADE_SOURCE=liq-signal
+AUTO_TRADE_LABEL_TEMPLATE={symbol}-{signal}      # 占位符：{symbol} {direction} {signal} {confidence}
+# AUTO_TRADE_DEBUG=true                           # 'true' 时连"被冷却跳过"也打日志
+```
+
+留空 `AUTO_TRADE_API_URL` 即整体禁用，**不会影响其它功能**。
+
+### 触发规则
+
+`services/autoTrade.js` 内部三道闸门，全部通过才会真正发出 HTTP：
+
+1. **白名单**：`signal ∈ AUTO_TRADE_TRIGGER_SIGNALS`（默认仅 REVERSAL 两类）
+2. **置信度门槛**：`confidence ≥ AUTO_TRADE_MIN_CONFIDENCE`（默认 75）
+3. **冷却**：同 `symbol+direction` 距离上次发送 ≥ `AUTO_TRADE_COOLDOWN_MS`（默认 30 min）
+
+> 冷却 key 为 `${symbol}|${direction}`，所以同一品种 LONG/SHORT 互不影响；
+> 不同 symbol 也互不影响。冷却在调用 axios **之前**就标记，避免并发重复触发。
+
+### 失败语义
+
+- **fire-and-forget**：异步发送，不阻塞 `/api/trade/liq-signal` 响应
+- **永不重试**：避免对方收到重复挂单；网络异常 / 非 2xx 都只写服务端日志
+- **永不抛错**：调用方拿不到异常，只能在服务端日志和 `recentCalls` 里查
+
+### 查询 / 测试端点
+
+| 路径 | 用途 |
+| --- | --- |
+| `GET /api/auto-trade/status` | 查看 webhook 配置（不回显 token 明文）+ 冷却状态 + 最近 10 次调用 |
+| `POST /api/auto-trade/test` | 手动发一条测试 payload（**绕过白名单/置信度/冷却**），验证 URL+Token |
+
+测试调用示例：
+
+```bash
+curl -X POST http://localhost:3003/api/auto-trade/test \
+  -H 'Content-Type: application/json' \
+  -d '{ "direction": "short", "symbol": "BTCUSDT", "label": "manual-test" }'
+```
+
+### 临时关闭
+
+- 单次请求级：在前端调用 `/api/trade/liq-signal` 时加 `&autoTrade=false`，或加 `&notify=false`（同时也会跳过飞书）
+- 进程级：`.env` 里 `AUTO_TRADE_ENABLED=false`，重启服务
+
+### 排查
+
+- 服务端日志里 `[auto-trade] sent BTCUSDT LIQ_REVERSAL_SHORT short (HTTP 200)` = 成功
+- `[auto-trade] BTCUSDT LIQ_REVERSAL_SHORT failed (HTTP 401)...` = 网络/鉴权失败，按状态码排查
+- `GET /api/auto-trade/status` → `recentCalls[]` 含每次的 `payload` / `status` / `response` / `durationMs` / `error`
 
 ---
 

@@ -42,6 +42,7 @@ const liquidationHeatmapRoute = require('./routes/liquidationHeatmap');
 const predictiveLiquidationsRoute = require('./routes/predictiveLiquidations');
 const alertCrossRoute = require('./routes/alertCross');
 const liqSignalRoute = require('./routes/liqSignal');
+const autoTradeRoute = require('./routes/autoTrade');
 const orderbookRecorder = require('./services/orderbookRecorder');
 const liquidationRecorder = require('./services/liquidationRecorder');
 
@@ -77,6 +78,7 @@ app.use('/api', liquidationHeatmapRoute);
 app.use('/api', predictiveLiquidationsRoute);
 app.use('/api', alertCrossRoute);
 app.use('/api', liqSignalRoute);
+app.use('/api', autoTradeRoute);
 app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)
