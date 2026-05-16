@@ -1233,32 +1233,40 @@
         } catch (_) { /* noop */ }
         if (mid == null && Number.isFinite(d.midPrice)) mid = d.midPrice;
 
-        function _argmaxSplit(rowArr) {
-          let longArg = -1, longMax = 0;
-          let shortArg = -1, shortMax = 0;
+        // 多头主峰：在 longRow 里找 mid 下方 argmax
+        // 空头主峰：在 shortRow 里找 mid 上方 argmax
+        // 注意 long/short 是两套独立矩阵，不能用同一个数组算两侧。
+        function _argmaxLong(longRow) {
+          let arg = -1, max = 0;
           for (let pi = 0; pi < Plen; pi += 1) {
-            const v = rowArr[pi];
+            const v = longRow[pi];
             if (!(v > 0)) continue;
-            const price = d.prices[pi];
-            if (mid == null || price < mid) {
-              if (v > longMax)  { longMax  = v;  longArg  = pi; }
-            }
-            if (mid == null || price > mid) {
-              if (v > shortMax) { shortMax = v; shortArg = pi; }
-            }
+            if (mid != null && d.prices[pi] >= mid) continue;
+            if (v > max) { max = v; arg = pi; }
           }
-          // 兜底：方向全空时全局取 max
-          if (longArg < 0) for (let pi = 0; pi < Plen; pi += 1) {
-            if (rowArr[pi] > longMax) { longMax = rowArr[pi]; longArg = pi; }
+          // 兜底：方向全空时不限制方向取全局 max
+          if (arg < 0) for (let pi = 0; pi < Plen; pi += 1) {
+            if (longRow[pi] > max) { max = longRow[pi]; arg = pi; }
           }
-          if (shortArg < 0) for (let pi = 0; pi < Plen; pi += 1) {
-            if (rowArr[pi] > shortMax) { shortMax = rowArr[pi]; shortArg = pi; }
-          }
-          return { longArg, longMax, shortArg, shortMax };
+          return { arg, max };
         }
-        const mxPeaks  = _argmaxSplit(longMaxRow);
-        const sumPeaksL = _argmaxSplit(longSumRow);
-        const sumPeaksS = _argmaxSplit(shortSumRow);
+        function _argmaxShort(shortRow) {
+          let arg = -1, max = 0;
+          for (let pi = 0; pi < Plen; pi += 1) {
+            const v = shortRow[pi];
+            if (!(v > 0)) continue;
+            if (mid != null && d.prices[pi] <= mid) continue;
+            if (v > max) { max = v; arg = pi; }
+          }
+          if (arg < 0) for (let pi = 0; pi < Plen; pi += 1) {
+            if (shortRow[pi] > max) { max = shortRow[pi]; arg = pi; }
+          }
+          return { arg, max };
+        }
+        const maxLongPeak  = _argmaxLong(longMaxRow);
+        const maxShortPeak = _argmaxShort(shortMaxRow);
+        const sumLongPeak  = _argmaxLong(longSumRow);
+        const sumShortPeak = _argmaxShort(shortSumRow);
 
         const fmtMoneyShort = (v) => v >= 1e9
           ? (v / 1e9).toFixed(2) + 'B'
@@ -1299,24 +1307,24 @@
         };
         // MAX（实线 · 黄）：用户视觉感受 + 警报 / 信号触发墙
         // SUM（虚线 · 橙）：累计深度，仅参考；与 MAX 同价位则不画第二条
-        drawPeak(mxPeaks.shortArg, mxPeaks.shortMax, 'S↑ MAX');
-        drawPeak(mxPeaks.longArg,  mxPeaks.longMax,  'L↓ MAX');
-        if (sumPeaksS.shortArg !== mxPeaks.shortArg) {
-          drawPeak(sumPeaksS.shortArg, sumPeaksS.shortMax, 'S↑ SUM', { kind: 'sum' });
+        drawPeak(maxShortPeak.arg, maxShortPeak.max, 'S↑ MAX');
+        drawPeak(maxLongPeak.arg,  maxLongPeak.max,  'L↓ MAX');
+        if (sumShortPeak.arg !== maxShortPeak.arg) {
+          drawPeak(sumShortPeak.arg, sumShortPeak.max, 'S↑ SUM', { kind: 'sum' });
         }
-        if (sumPeaksL.longArg !== mxPeaks.longArg) {
-          drawPeak(sumPeaksL.longArg, sumPeaksL.longMax, 'L↓ SUM', { kind: 'sum' });
+        if (sumLongPeak.arg !== maxLongPeak.arg) {
+          drawPeak(sumLongPeak.arg, sumLongPeak.max, 'L↓ SUM', { kind: 'sum' });
         }
         // 警报 / 信号 / 跨越判定永远跟 row-max（活墙）
-        state._peakLongPi  = mxPeaks.longArg;
-        state._peakShortPi = mxPeaks.shortArg;
-        state._peakLongVal  = mxPeaks.longMax;
-        state._peakShortVal = mxPeaks.shortMax;
+        state._peakLongPi  = maxLongPeak.arg;
+        state._peakShortPi = maxShortPeak.arg;
+        state._peakLongVal  = maxLongPeak.max;
+        state._peakShortVal = maxShortPeak.max;
         // 把 SUM 主峰也存下来，给 meta / tooltip 显示用
-        state._peakLongSumPi  = sumPeaksL.longArg;
-        state._peakShortSumPi = sumPeaksS.shortArg;
-        state._peakLongSumVal  = sumPeaksL.longMax;
-        state._peakShortSumVal = sumPeaksS.shortMax;
+        state._peakLongSumPi  = sumLongPeak.arg;
+        state._peakShortSumPi = sumShortPeak.arg;
+        state._peakLongSumVal  = sumLongPeak.max;
+        state._peakShortSumVal = sumShortPeak.max;
         // 把 row-sum 数组也存下来供 tooltip 显示该价位的累计值
         state._longSumRow  = longSumRow;
         state._shortSumRow = shortSumRow;
