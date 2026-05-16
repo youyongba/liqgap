@@ -1044,17 +1044,25 @@
         const sumSp = state._peakShortSumPi >= 0 && d.prices ? d.prices[state._peakShortSumPi] : null;
         const sumLp = state._peakLongSumPi  >= 0 && d.prices ? d.prices[state._peakLongSumPi]  : null;
         const out = [];
-        // 空头：MAX + 不同时附 SUM
+        // 空头：MAX + 不同时附 SUM；同价位则合并为 MAX=SUM
         if (Number.isFinite(maxSp)) {
-          let s = `S↑ MAX ${fmtPx(maxSp)}`;
-          if (Number.isFinite(sumSp) && sumSp !== maxSp) s += ` · SUM ${fmtPx(sumSp)}`;
-          out.push(s);
+          if (Number.isFinite(sumSp) && sumSp === maxSp) {
+            out.push(`S↑ MAX=SUM ${fmtPx(maxSp)}`);
+          } else {
+            let s = `S↑ MAX ${fmtPx(maxSp)}`;
+            if (Number.isFinite(sumSp)) s += ` · SUM ${fmtPx(sumSp)}`;
+            out.push(s);
+          }
         }
-        // 多头：MAX + 不同时附 SUM
+        // 多头：MAX + 不同时附 SUM；同价位则合并为 MAX=SUM
         if (Number.isFinite(maxLp)) {
-          let s = `L↓ MAX ${fmtPx(maxLp)}`;
-          if (Number.isFinite(sumLp) && sumLp !== maxLp) s += ` · SUM ${fmtPx(sumLp)}`;
-          out.push(s);
+          if (Number.isFinite(sumLp) && sumLp === maxLp) {
+            out.push(`L↓ MAX=SUM ${fmtPx(maxLp)}`);
+          } else {
+            let s = `L↓ MAX ${fmtPx(maxLp)}`;
+            if (Number.isFinite(sumLp)) s += ` · SUM ${fmtPx(sumLp)}`;
+            out.push(s);
+          }
         }
         return out.length ? ` · 主峰 ${out.join(' / ')}` : '';
       })();
@@ -1208,6 +1216,10 @@
         const shortMaxRow = new Array(Plen).fill(0);
         const longSumRow  = new Array(Plen).fill(0);
         const shortSumRow = new Array(Plen).fill(0);
+        // nonZeroCount = 该价位有多少个时间桶非零 → 反映"亮带长度 / 持续时间"。
+        // 用来加权 row-max，避免单瞬时尖峰胜过长亮带（视觉感知 vs 单格最大值）。
+        const longHits  = new Array(Plen).fill(0);
+        const shortHits = new Array(Plen).fill(0);
         for (let ti = 0; ti < Tlen; ti += 1) {
           const lr = d.longMatrix[ti];
           const sr = d.shortMatrix[ti];
@@ -1219,6 +1231,8 @@
             if (sv > shortMaxRow[pi]) shortMaxRow[pi] = sv;
             longSumRow[pi]  += lv;
             shortSumRow[pi] += sv;
+            if (lv > 0) longHits[pi]  += 1;
+            if (sv > 0) shortHits[pi] += 1;
           }
         }
         // 优先用主图 SSE 推送的最新 K 线 close 作为 mid（更新最高频），
@@ -1233,40 +1247,87 @@
         } catch (_) { /* noop */ }
         if (mid == null && Number.isFinite(d.midPrice)) mid = d.midPrice;
 
+        // 3-tap 平滑：减少 priceBucket 切割造成的"亮带边缘 vs 中心"漂移。
+        // 一条"粗黄线"通常跨越 3-5 个相邻 bucket，argmax 在原始 row 上跑
+        // 容易选到亮带边缘的小尖峰；在平滑后的 row 上跑会更倾向选中心。
+        // 平滑只用来定位（argmax），显示的强度数值仍引用原始 row 的真实值
+        // —— 这样 tooltip 数值 / 标签数值依然严格一致。
+        function _smooth3(row) {
+          const n = row.length;
+          if (n < 3) return row.slice();
+          const out = new Array(n);
+          out[0]     = row[0] * 0.75 + row[1] * 0.25;
+          out[n - 1] = row[n - 1] * 0.75 + row[n - 2] * 0.25;
+          for (let i = 1; i < n - 1; i += 1) {
+            out[i] = row[i - 1] * 0.25 + row[i] * 0.5 + row[i + 1] * 0.25;
+          }
+          return out;
+        }
+
         // 多头主峰：在 longRow 里找 mid 下方 argmax
         // 空头主峰：在 shortRow 里找 mid 上方 argmax
         // 注意 long/short 是两套独立矩阵，不能用同一个数组算两侧。
-        function _argmaxLong(longRow) {
-          let arg = -1, max = 0;
+        // refRow 是用来定位（argmax）的数组（通常是平滑后的），
+        // valRow 是用来取数值的数组（原始 row，与 tooltip 一致）。
+        function _argmaxLong(refRow, valRow) {
+          let arg = -1, refMax = 0;
           for (let pi = 0; pi < Plen; pi += 1) {
-            const v = longRow[pi];
+            const v = refRow[pi];
             if (!(v > 0)) continue;
             if (mid != null && d.prices[pi] >= mid) continue;
-            if (v > max) { max = v; arg = pi; }
+            if (v > refMax) { refMax = v; arg = pi; }
           }
-          // 兜底：方向全空时不限制方向取全局 max
           if (arg < 0) for (let pi = 0; pi < Plen; pi += 1) {
-            if (longRow[pi] > max) { max = longRow[pi]; arg = pi; }
+            if (refRow[pi] > refMax) { refMax = refRow[pi]; arg = pi; }
           }
-          return { arg, max };
+          return { arg, max: arg >= 0 ? (valRow[arg] || 0) : 0 };
         }
-        function _argmaxShort(shortRow) {
-          let arg = -1, max = 0;
+        function _argmaxShort(refRow, valRow) {
+          let arg = -1, refMax = 0;
           for (let pi = 0; pi < Plen; pi += 1) {
-            const v = shortRow[pi];
+            const v = refRow[pi];
             if (!(v > 0)) continue;
             if (mid != null && d.prices[pi] <= mid) continue;
-            if (v > max) { max = v; arg = pi; }
+            if (v > refMax) { refMax = v; arg = pi; }
           }
           if (arg < 0) for (let pi = 0; pi < Plen; pi += 1) {
-            if (shortRow[pi] > max) { max = shortRow[pi]; arg = pi; }
+            if (refRow[pi] > refMax) { refMax = refRow[pi]; arg = pi; }
           }
-          return { arg, max };
+          return { arg, max: arg >= 0 ? (valRow[arg] || 0) : 0 };
         }
-        const maxLongPeak  = _argmaxLong(longMaxRow);
-        const maxShortPeak = _argmaxShort(shortMaxRow);
-        const sumLongPeak  = _argmaxLong(longSumRow);
-        const sumShortPeak = _argmaxShort(shortSumRow);
+        // MAX 主峰定位 = "持续度加权 row-max" 的 3-tap 平滑后 argmax。
+        // 持续度因子 = 1 + α × √(hits / T)，hits = 该价位非零时间桶数：
+        //   • 单瞬尖峰   hits=1,  T=96 → 因子 ≈ 1.15（基本不被推高）
+        //   • 半窗亮带   hits=48, T=96 → 因子 ≈ 2.06
+        //   • 满窗亮带   hits=96, T=96 → 因子 ≈ 2.50
+        // sqrt 曲线在中段比 ln 更陡，能稳定让"亮+长"胜过"很亮+单瞬"。
+        // α=1.5 校准点：
+        //   • 700/长带(70桶)  胜过 1000/单瞬(5桶)   ✓ 解决用户反馈的视觉错位
+        //   • 800/中度(80桶)  胜过 1000/中度(30桶)  ✓ 长带优先
+        //   • 100/弱长(96桶)  输给 800/中等(20桶)   ✓ 弱噪声不会反客为主
+        //   • 700/长带(70桶)  仍输给 3000/极强尖峰   ✓ 真信号能压倒
+        // 显示的强度数值仍取该位置的原始 row-max（与 tooltip 严格一致）。
+        // SUM 主峰按"整窗累积深度"选位，不加持续度（row-sum 已自带时间维度）。
+        const PERSIST_ALPHA = 1.5;
+        const persistRow = (maxRow, hits) => {
+          const out = new Array(Plen);
+          const denom = Math.max(1, Tlen);
+          for (let pi = 0; pi < Plen; pi += 1) {
+            const persist = 1 + PERSIST_ALPHA * Math.sqrt(hits[pi] / denom);
+            out[pi] = maxRow[pi] * persist;
+          }
+          return out;
+        };
+        const longMaxScored  = persistRow(longMaxRow,  longHits);
+        const shortMaxScored = persistRow(shortMaxRow, shortHits);
+        const longMaxSmooth  = _smooth3(longMaxScored);
+        const shortMaxSmooth = _smooth3(shortMaxScored);
+        const longSumSmooth  = _smooth3(longSumRow);
+        const shortSumSmooth = _smooth3(shortSumRow);
+        const maxLongPeak  = _argmaxLong(longMaxSmooth,   longMaxRow);
+        const maxShortPeak = _argmaxShort(shortMaxSmooth, shortMaxRow);
+        const sumLongPeak  = _argmaxLong(longSumSmooth,   longSumRow);
+        const sumShortPeak = _argmaxShort(shortSumSmooth, shortSumRow);
 
         const fmtMoneyShort = (v) => v >= 1e9
           ? (v / 1e9).toFixed(2) + 'B'
@@ -1306,13 +1367,16 @@
           ctx.restore();
         };
         // MAX（实线 · 黄）：用户视觉感受 + 警报 / 信号触发墙
-        // SUM（虚线 · 橙）：累计深度，仅参考；与 MAX 同价位则不画第二条
-        drawPeak(maxShortPeak.arg, maxShortPeak.max, 'S↑ MAX');
-        drawPeak(maxLongPeak.arg,  maxLongPeak.max,  'L↓ MAX');
-        if (sumShortPeak.arg !== maxShortPeak.arg) {
+        // SUM（虚线 · 橙）：累计深度，仅参考；与 MAX 同价位时合并标签为 MAX=SUM
+        // 表明该价位"既亮又长期堆积"（最强活墙 + 最深累积一致 → 最稳）
+        const shortMerged = (sumShortPeak.arg === maxShortPeak.arg);
+        const longMerged  = (sumLongPeak.arg  === maxLongPeak.arg);
+        drawPeak(maxShortPeak.arg, maxShortPeak.max, shortMerged ? 'S↑ MAX=SUM' : 'S↑ MAX');
+        drawPeak(maxLongPeak.arg,  maxLongPeak.max,  longMerged  ? 'L↓ MAX=SUM' : 'L↓ MAX');
+        if (!shortMerged) {
           drawPeak(sumShortPeak.arg, sumShortPeak.max, 'S↑ SUM', { kind: 'sum' });
         }
-        if (sumLongPeak.arg !== maxLongPeak.arg) {
+        if (!longMerged) {
           drawPeak(sumLongPeak.arg, sumLongPeak.max, 'L↓ SUM', { kind: 'sum' });
         }
         // 警报 / 信号 / 跨越判定永远跟 row-max（活墙）
