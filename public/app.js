@@ -82,7 +82,27 @@
     liqPlaybook: document.getElementById('liq-playbook'),
     liqConditions: document.getElementById('liq-conditions'),
     btnCopyLiqSignal: document.getElementById('btn-copy-liq-signal'),
-    liqSignalAlert: document.getElementById('liq-signal-alert')
+    liqSignalAlert: document.getElementById('liq-signal-alert'),
+    // 🏆 双层共振信号 / Resonance Signal sub-card
+    resonanceCard: document.getElementById('resonance-card'),
+    resonanceMeta: document.getElementById('resonance-meta'),
+    resonanceBanner: document.getElementById('resonance-banner'),
+    resonanceBody: document.getElementById('resonance-body'),
+    resKvTier: document.getElementById('res-kv-tier'),
+    resKvConf: document.getElementById('res-kv-conf'),
+    resKvEntry: document.getElementById('res-kv-entry'),
+    resKvSL: document.getElementById('res-kv-sl'),
+    resKvWall: document.getElementById('res-kv-wall'),
+    resKvFvg: document.getElementById('res-kv-fvg'),
+    resKvLev: document.getElementById('res-kv-lev'),
+    resKvSize: document.getElementById('res-kv-size'),
+    resKvVwap: document.getElementById('res-kv-vwap'),
+    resKvVo: document.getElementById('res-kv-vo'),
+    resTpList: document.getElementById('res-tp-list'),
+    resPlaybook: document.getElementById('res-playbook'),
+    resConditions: document.getElementById('res-conditions'),
+    btnCopyResonance: document.getElementById('btn-copy-resonance'),
+    resonanceAlert: document.getElementById('resonance-alert')
   };
 
   // ============================================================
@@ -3756,6 +3776,205 @@
       }
     });
   }
+
+  // ===== 🏆 双层共振信号 / Two-Tier Resonance Signal =====
+  let _lastResonance = null;
+  const RESONANCE_ALERT_COOLDOWN_MS = 5 * 60_000;
+  const _resonanceAlertLastAt = {};
+  if (els.resonanceAlert) registerAlertButton(els.resonanceAlert);
+
+  const RESONANCE_LABELS = {
+    HEXA_RESONANCE_LONG:  { emoji: '🏆🟢', text: 'HEXA 顶级共振 · 做多 / HEXA Long', cls: 'long' },
+    HEXA_RESONANCE_SHORT: { emoji: '🏆🔴', text: 'HEXA 顶级共振 · 做空 / HEXA Short', cls: 'short' },
+    TRIO_RESONANCE_LONG:  { emoji: '⭐🟢', text: 'TRIO 日内共振 · 做多 / TRIO Long', cls: 'long' },
+    TRIO_RESONANCE_SHORT: { emoji: '⭐🔴', text: 'TRIO 日内共振 · 做空 / TRIO Short', cls: 'short' }
+  };
+  const RESONANCE_COND_LABELS = {
+    inFVG:           '价格在未填补 FVG 内',
+    vwapAligned:     'VWAP 同向（趋势对齐）',
+    nearLiqPeak:     '距清算主峰 < 0.5%',
+    volumeSurging:   '成交量暴涨 ≥ 2×',
+    oiSurging:       'OI 暴涨 ≥ 1.5×',
+    cvdDivergence:   'CVD 背离同向',
+    klineReject:     'K 线 reject 形态（插针）',
+    fvgFresh:        'FVG 新鲜（< 2h）',
+    fvgUnfilled:     'FVG 几乎未填补',
+    vwapStrongTrend: '强偏离 VWAP（≥ 0.5%）',
+    liqPeakStrong:   '主峰量 ≥ 50M USDT',
+    trend4hAligned:  '4h 趋势对齐',
+    trend60hAligned: '60h 趋势对齐',
+    vwap4hAligned:   '4h VWAP 同向'
+  };
+
+  function renderResonance(sig) {
+    _lastResonance = sig;
+    if (!els.resonanceCard) return;
+    const banner = els.resonanceBanner;
+    banner.classList.remove('long', 'short', 'none');
+    const label = RESONANCE_LABELS[sig.signal];
+    const isActionable = !!label && sig.confidence >= 75;
+
+    if (isActionable && isAlertEnabled()) {
+      const now = Date.now();
+      const lastAt = _resonanceAlertLastAt[sig.signal] || 0;
+      if (now - lastAt >= RESONANCE_ALERT_COOLDOWN_MS) {
+        _resonanceAlertLastAt[sig.signal] = now;
+        playAlertSound();
+        console.log(`[resonance] alarm fired · ${sig.signal} conf=${sig.confidence}`);
+      }
+    }
+
+    if (isActionable) {
+      banner.classList.add(label.cls);
+      banner.textContent = `${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100 (必要 ${sig.hitRequired}/6 · 加分 ${sig.hitOptional}/8)`;
+      els.resonanceBody.style.display = '';
+    } else {
+      banner.classList.add('none');
+      const reason = sig.reason ? ` · ${sig.reason}` : '';
+      banner.textContent = `⚪ 无共振信号${reason}`;
+      els.resonanceBody.style.display = 'none';
+    }
+
+    const snap = sig.indicatorsSnapshot || {};
+    const winH = (snap.windowMs || 86400000) / 3600000;
+    const winLabel = winH >= 24 ? `${(winH / 24).toFixed(0)}d` : `${winH.toFixed(1)}h`;
+    const tw = snap.timeWindowsExcluded || {};
+    const twFlag = tw.inFunding ? ' · ⏸ funding±15m' : tw.inWeekendLowLiq ? ' · ⏸ weekend' : '';
+    els.resonanceMeta.textContent = `${snap.symbol || ''} · 窗口 ${winLabel} · 源 ${snap.sourceInterval || '?'}${twFlag}`;
+
+    if (!isActionable) {
+      els.resKvTier.textContent = '-';
+      els.resKvConf.textContent = '-';
+      els.resKvEntry.textContent = '-';
+      els.resKvSL.textContent = '-';
+      els.resKvWall.textContent = '-';
+      els.resKvFvg.textContent = '-';
+      els.resKvLev.textContent = '-';
+      els.resKvSize.textContent = '-';
+      els.resKvVwap.textContent = '-';
+      els.resKvVo.textContent = '-';
+      els.resTpList.innerHTML = '';
+      els.resPlaybook.textContent = '';
+      els.resConditions.innerHTML = '';
+      return;
+    }
+
+    els.resKvTier.textContent = sig.tier === 'HEXA' ? '🏆 HEXA' : '⭐ TRIO';
+    els.resKvTier.className = 'value ' + (sig.tier === 'HEXA' ? 'up' : '');
+    els.resKvConf.textContent = `${sig.confidence}/100`;
+    els.resKvConf.className = 'value ' + (sig.confidence >= 90 ? 'up' : sig.confidence >= 75 ? '' : 'down');
+    els.resKvEntry.textContent = fmt(sig.entryPrice, 2);
+    els.resKvSL.textContent = fmt(sig.stopLoss, 2);
+    els.resKvSL.className = 'value ' + (sig.side === 'long' ? 'down' : 'up');
+    const trig = sig.side === 'long' ? sig.peakLong : sig.peakShort;
+    els.resKvWall.textContent = trig
+      ? `${sig.side === 'long' ? 'L↓' : 'S↑'} ${fmt(trig.price, 2)}`
+      : '-';
+    els.resKvFvg.textContent = sig.activeFvg
+      ? `${sig.activeFvg.type === 'bullish' ? '🟩' : '🟥'} [${fmt(sig.activeFvg.lower, 2)} ~ ${fmt(sig.activeFvg.upper, 2)}] · 填补 ${(sig.activeFvg.fillRatio * 100).toFixed(1)}%`
+      : '-';
+    els.resKvLev.textContent = `${sig.leverage}x`;
+    els.resKvSize.textContent = `${sig.positionPct}%`;
+    els.resKvVwap.textContent = `${fmt(snap.vwap1h, 2)}${snap.vwap4h != null ? ' / ' + fmt(snap.vwap4h, 2) : ''}`;
+    els.resKvVo.textContent = `${snap.volSurge != null ? snap.volSurge.toFixed(2) + 'x' : '-'} / ${snap.oiSurge != null ? snap.oiSurge.toFixed(2) + 'x' : '-'}`;
+
+    els.resTpList.innerHTML = '';
+    if (Array.isArray(sig.takeProfits)) {
+      sig.takeProfits.forEach((tp, i) => {
+        const row = document.createElement('div');
+        row.className = 'tp-item';
+        row.innerHTML = `
+          <span class="tp-label">TP${i + 1}</span>
+          <span class="tp-price">${fmt(tp.price, 2)}</span>
+          <span class="tp-fraction">平仓 ${(tp.closeFraction * 100).toFixed(0)}% (+${(tp.pct * 100).toFixed(2)}%)</span>
+        `;
+        els.resTpList.appendChild(row);
+      });
+    }
+    els.resPlaybook.textContent = sig.playbook || '';
+    els.resConditions.innerHTML = '';
+    Object.entries(sig.conditions || {}).forEach(([k, v]) => {
+      const chip = document.createElement('span');
+      chip.className = 'cond-chip ' + (v ? 'ok' : 'fail');
+      chip.textContent = (v ? '✓ ' : '✗ ') + (RESONANCE_COND_LABELS[k] || k);
+      els.resConditions.appendChild(chip);
+    });
+  }
+
+  function renderResonanceUnsupported() {
+    _lastResonance = null;
+    if (!els.resonanceCard) return;
+    els.resonanceBanner.classList.remove('long', 'short');
+    els.resonanceBanner.classList.add('none');
+    els.resonanceBanner.textContent = '⚪ 现货市场无杠杆，无共振信号 / Spot has no leveraged liquidations';
+    els.resonanceBody.style.display = 'none';
+    els.resonanceMeta.textContent = '';
+  }
+
+  let _resonanceInFlight = false;
+  async function refreshResonance() {
+    if (_resonanceInFlight) return;
+    const market = els.market.value;
+    if (market !== 'futures') {
+      renderResonanceUnsupported();
+      return;
+    }
+    _resonanceInFlight = true;
+    try {
+      const symbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
+      const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
+      const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
+      const params = new URLSearchParams({
+        symbol,
+        windowMs: String(liqWindowMs)
+      });
+      if (liqRange && liqRange !== 'auto') params.set('priceRange', String(liqRange));
+      const data = await fetchJsonSoft(`/api/trade/resonance-signal?${params.toString()}`);
+      if (data) renderResonance(data);
+    } finally {
+      _resonanceInFlight = false;
+    }
+  }
+  window.__refreshResonance = refreshResonance;
+
+  // 每 30 秒拉一次共振信号（比 liq-signal 慢，节省 API 调用，且 cooldown 已 ≥ 2h）
+  setInterval(() => { refreshResonance(); }, 30_000);
+  refreshResonance();
+
+  if (els.btnCopyResonance) {
+    els.btnCopyResonance.addEventListener('click', async () => {
+      const s = _lastResonance;
+      if (!s || !RESONANCE_LABELS[s.signal]) {
+        showCopyToast && showCopyToast('暂无共振信号 / No resonance');
+        return;
+      }
+      const lines = [];
+      lines.push(`${s.tier === 'HEXA' ? '🏆 HEXA' : '⭐ TRIO'} · ${s.signal} · 置信度 ${s.confidence}/100`);
+      lines.push(`方向 / Side: ${s.side?.toUpperCase()} · 杠杆 ${s.leverage}x · 仓位 ${s.positionPct}%`);
+      lines.push(`入场 / Entry: ${fmt(s.entryPrice, 2)} · 止损 / Stop: ${fmt(s.stopLoss, 2)} (${(s.stopLossPct * 100).toFixed(2)}%)`);
+      if (Array.isArray(s.takeProfits)) {
+        s.takeProfits.forEach((tp, i) => {
+          lines.push(`TP${i + 1} (${(tp.closeFraction * 100).toFixed(0)}%): ${fmt(tp.price, 2)} (+${(tp.pct * 100).toFixed(2)}%)`);
+        });
+      }
+      if (s.activeFvg) {
+        lines.push(`FVG: ${s.activeFvg.type} [${fmt(s.activeFvg.lower, 2)} ~ ${fmt(s.activeFvg.upper, 2)}] (填补 ${(s.activeFvg.fillRatio * 100).toFixed(1)}%)`);
+      }
+      const snap = s.indicatorsSnapshot || {};
+      lines.push(`VWAP 1h: ${fmt(snap.vwap1h, 2)} · 4h: ${snap.vwap4h != null ? fmt(snap.vwap4h, 2) : '-'}`);
+      lines.push(`Vol/OI Surge: ${snap.volSurge?.toFixed(2)}x / ${snap.oiSurge?.toFixed(2)}x · CVD: ${snap.cvdDivergence}`);
+      lines.push(`Playbook: ${s.playbook}`);
+      try {
+        await navigator.clipboard.writeText(lines.join('\n'));
+        if (typeof showCopyToast === 'function') showCopyToast('已复制 / Copied');
+      } catch (e) {
+        console.warn('copy failed', e);
+      }
+    });
+  }
+  // 切换 symbol/market 时同步刷新
+  if (els.symbol) els.symbol.addEventListener('change', refreshResonance);
+  if (els.market) els.market.addEventListener('change', refreshResonance);
 
   function renderAlerts(alertData) {
     currentAlertsData = alertData;

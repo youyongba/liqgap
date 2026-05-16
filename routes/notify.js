@@ -52,7 +52,7 @@ router.post('/notify/test', async (_req, res) => {
     });
   }
   const text =
-    `liq-gap webhook 测试 / Test ping · ${new Date().toLocaleString('zh-CN', { hour12: false })}\n` +
+    `liq-gap webhook 测试 / Test ping · ${feishu.fmtCnTime()}\n` +
     '若你看到这条消息，说明 webhook 连通 + 签名正确。';
   const r = await feishu.sendText(text);
   if (r.ok) {

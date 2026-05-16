@@ -40,6 +40,19 @@ const FEISHU_HEADERS = {
 };
 
 // ============================================================================
+// 时间格式化（东八区 / UTC+8 / Asia/Shanghai）
+// ============================================================================
+// 所有飞书卡片显示的时间统一用东八区，避免服务器跑在 UTC 时让用户看到差 8h 的
+// 时间戳。如需切换其他时区可设置环境变量 FEISHU_DISPLAY_TIMEZONE。
+const FEISHU_TIMEZONE = process.env.FEISHU_DISPLAY_TIMEZONE || 'Asia/Shanghai';
+
+function fmtCnTime(ts) {
+  const d = ts == null ? new Date() : new Date(Number(ts));
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleString('zh-CN', { hour12: false, timeZone: FEISHU_TIMEZONE });
+}
+
+// ============================================================================
 // 内部状态：上次推送 (last-notified state · in-memory only)
 // ============================================================================
 const lastNotified = new Map();      // 交易信号 · key: `${symbol}|${market}` → { signal, ts }
@@ -353,7 +366,7 @@ function buildSignalCard(payload, meta = {}) {
         elements: [
           {
             tag: 'lark_md',
-            content: `触发 / Trigger: **${triggerSource}** · ${new Date().toLocaleString('zh-CN', { hour12: false })}`
+            content: `触发 / Trigger: **${triggerSource}** · ${fmtCnTime()}`
           }
         ]
       }
@@ -441,7 +454,7 @@ function buildFvgCard(fvg, meta = {}) {
         elements: [
           {
             tag: 'lark_md',
-            content: `触发 / Trigger: **auto · klines polling** · ${new Date().toLocaleString('zh-CN', { hour12: false })}`
+            content: `触发 / Trigger: **auto · klines polling** · ${fmtCnTime()}`
           }
         ]
       }
@@ -490,7 +503,7 @@ async function pushNewFvgs(symbol, market, fvgs, meta = {}) {
 
 function formatTs(ts) {
   if (!ts) return '-';
-  return new Date(Number(ts)).toLocaleString('zh-CN', { hour12: false });
+  return fmtCnTime(ts);
 }
 
 // ============================================================================
@@ -592,5 +605,7 @@ module.exports = {
   // 清算穿越警报
   buildLiquidationCrossCard,
   sendLiquidationCrossCard,
-  feishuSign
+  feishuSign,
+  // 时间格式化（东八区）
+  fmtCnTime
 };

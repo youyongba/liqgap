@@ -41,6 +41,7 @@ const orderbookHeatmapRoute = require('./routes/orderbookHeatmap');
 const predictiveLiquidationsRoute = require('./routes/predictiveLiquidations');
 const alertCrossRoute = require('./routes/alertCross');
 const liqSignalRoute = require('./routes/liqSignal');
+const resonanceSignalRoute = require('./routes/resonanceSignal');
 const autoTradeRoute = require('./routes/autoTrade');
 const orderbookRecorder = require('./services/orderbookRecorder');
 
@@ -75,6 +76,7 @@ app.use('/api', orderbookHeatmapRoute);
 app.use('/api', predictiveLiquidationsRoute);
 app.use('/api', alertCrossRoute);
 app.use('/api', liqSignalRoute);
+app.use('/api', resonanceSignalRoute);
 app.use('/api', autoTradeRoute);
 app.use('/api/ai', aiRoute);
 

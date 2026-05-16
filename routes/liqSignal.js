@@ -785,7 +785,7 @@ function _buildLiqSignalCard(d) {
       {
         tag: 'note',
         elements: [
-          { tag: 'lark_md', content: `触发 / Trigger: **liq-signal v2** · ${new Date().toLocaleString('zh-CN', { hour12: false })}` }
+          { tag: 'lark_md', content: `触发 / Trigger: **liq-signal v2** · ${feishu.fmtCnTime()}` }
         ]
       }
     ]

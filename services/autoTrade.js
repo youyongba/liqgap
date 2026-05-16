@@ -42,7 +42,9 @@ const HTTP_TIMEOUT_MS = 8000;
 const MAX_RECENT = 50;
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 const DEFAULT_MIN_CONFIDENCE = 75;
-const DEFAULT_TRIGGER_SIGNALS = 'LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT';
+const DEFAULT_TRIGGER_SIGNALS = 'LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT,'
+  + 'HEXA_RESONANCE_LONG,HEXA_RESONANCE_SHORT,'
+  + 'TRIO_RESONANCE_LONG,TRIO_RESONANCE_SHORT';
 const DEFAULT_SOURCE = 'liq-signal';
 const DEFAULT_LABEL_TEMPLATE = '{symbol}-{signal}';
 
@@ -141,7 +143,11 @@ async function sendPendingOrder(input) {
   const url = process.env.AUTO_TRADE_API_URL;
   const source = process.env.AUTO_TRADE_SOURCE || DEFAULT_SOURCE;
   const labelTpl = process.env.AUTO_TRADE_LABEL_TEMPLATE || DEFAULT_LABEL_TEMPLATE;
-  const label = renderLabel(labelTpl, { symbol, direction, signal, confidence });
+  // extra.labelOverride 让 resonance / 其他自定义路由可以指定专属 label（区分 Tier）
+  // 中转服务那边可以按 label 前缀（HEXA-xxx / TRIO-xxx）选择不同杠杆/仓位预设
+  const label = (extra && extra.labelOverride)
+    ? renderLabel(extra.labelOverride, { symbol, direction, signal, confidence })
+    : renderLabel(labelTpl, { symbol, direction, signal, confidence });
 
   const payload = {
     direction: String(direction).toLowerCase(),

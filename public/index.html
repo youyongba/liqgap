@@ -1116,6 +1116,41 @@
           </div>
         </div>
 
+        <!-- ====== 🏆 双层共振信号 / Two-Tier Resonance Signal ====== -->
+        <div id="resonance-card" class="liq-signal-card">
+          <div class="liq-signal-header">
+            <span class="title">🏆 双层共振信号 / Two-Tier Resonance</span>
+            <span class="meta" id="resonance-meta">加载中… / Loading…</span>
+            <button id="resonance-alert" type="button" class="ghost"
+                    style="font-size:11px;padding:2px 8px;"
+                    title="HEXA 顶级 (90+) 或 TRIO 日内 (75+) 共振信号出现时：声音 + 飞书 + auto-trade webhook。冷却由后端控制 (HEXA 6h / TRIO 2h)。">
+              🔔 警报 / Alert: ON
+            </button>
+            <button id="btn-copy-resonance" type="button" class="ghost" style="font-size:11px;padding:2px 8px;"
+                    title="复制共振信号详情">复制 / Copy</button>
+          </div>
+          <div id="resonance-banner" class="signal-banner none" style="margin-bottom:8px;">
+            等待共振信号… / Waiting…
+          </div>
+          <div class="liq-signal-body" id="resonance-body" style="display:none;">
+            <div class="kv-grid" style="grid-template-columns:auto 1fr auto 1fr;">
+              <div class="label">Tier</div>            <div class="value" id="res-kv-tier">-</div>
+              <div class="label">置信度 / Conf</div>     <div class="value" id="res-kv-conf">-</div>
+              <div class="label">入场 / Entry</div>      <div class="value" id="res-kv-entry">-</div>
+              <div class="label">止损 / Stop</div>       <div class="value" id="res-kv-sl">-</div>
+              <div class="label">触发墙 / Wall</div>     <div class="value" id="res-kv-wall">-</div>
+              <div class="label">活跃 FVG</div>          <div class="value" id="res-kv-fvg">-</div>
+              <div class="label">杠杆 / Lev</div>        <div class="value" id="res-kv-lev">-</div>
+              <div class="label">仓位 / Size%</div>      <div class="value" id="res-kv-size">-</div>
+              <div class="label">VWAP 1h/4h</div>        <div class="value" id="res-kv-vwap">-</div>
+              <div class="label">Vol/OI Surge</div>      <div class="value" id="res-kv-vo">-</div>
+            </div>
+            <div id="res-tp-list" style="margin-bottom:8px;"></div>
+            <div id="res-playbook" class="liq-playbook"></div>
+            <div id="res-conditions" class="conditions" style="margin-top:6px;"></div>
+          </div>
+        </div>
+
         <div id="signal-banner" class="signal-banner none">等待信号… / Waiting…</div>
 
         <div class="kv-grid" id="signal-kv">

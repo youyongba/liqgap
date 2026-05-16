@@ -114,9 +114,15 @@ function computeATR(candles, period = 14) {
  * 公允价值缺口识别 (Fair Value Gap detection · 三根 K 线窗口)
  *  - 看涨缺口 (Bullish FVG): candle[i].high   < candle[i+2].low
  *  - 看跌缺口 (Bearish FVG): candle[i].low    > candle[i+2].high
- * 每个缺口包含上下边界、所在中间 K 线索引、起止时间，方便前端绘图。
- * (Each gap records [lower, upper] price boundary,
- *  midpoint candle index, and timestamps for plotting.)
+ *
+ * 每个缺口包含：
+ *  - lower / upper: 缺口上下边界
+ *  - mid: 缺口中线
+ *  - sizePct: 相对中线的尺寸百分比（用于过滤太小/太大的噪音缺口）
+ *  - filled: 是否被后续 K 线完全穿透（穿透 = 缺口失效）
+ *  - fillRatio: 0~1，0=完全未被触碰，1=完全填补
+ *  - startTime / endTime: 起止时间戳
+ *  - index: 中间 K 线索引
  */
 function detectFVGs(candles) {
   const gaps = [];
@@ -124,26 +130,129 @@ function detectFVGs(candles) {
     const c1 = candles[i];
     const c3 = candles[i + 2];
     if (c1.high < c3.low) {
+      const lower = c1.high, upper = c3.low;
+      const size = upper - lower;
+      const mid = (upper + lower) / 2;
       gaps.push({
         type: 'bullish',
-        lower: c1.high,
-        upper: c3.low,
+        lower, upper, mid, size,
+        sizePct: mid > 0 ? size / mid : 0,
         startTime: c1.openTime,
         endTime: c3.closeTime,
-        index: i + 1
+        index: i + 1,
+        filled: false,
+        fillRatio: 0
       });
     } else if (c1.low > c3.high) {
+      const lower = c3.high, upper = c1.low;
+      const size = upper - lower;
+      const mid = (upper + lower) / 2;
       gaps.push({
         type: 'bearish',
-        lower: c3.high,
-        upper: c1.low,
+        lower, upper, mid, size,
+        sizePct: mid > 0 ? size / mid : 0,
         startTime: c1.openTime,
         endTime: c3.closeTime,
-        index: i + 1
+        index: i + 1,
+        filled: false,
+        fillRatio: 0
       });
     }
   }
   return gaps;
+}
+
+/**
+ * 标记 FVG 是否被后续 K 线填补 / 失效
+ *  - filled = true: 缺口被价格完全穿透（反方向击穿） → 缺口失效
+ *  - fillRatio: 最大触碰深度（0=未触碰，1=完全填补到对面边界）
+ *
+ * Bullish FVG（在价格下方的看涨缺口）：
+ *   "填补" = 后续 K 线 low 触及缺口区间 [lower, upper]
+ *   "击穿" = 后续 K 线 low 跌破缺口下沿 lower 以下
+ *
+ * Bearish FVG（在价格上方的看跌缺口）：镜像
+ *
+ * 修改 fvgs 数组原地，并返回该数组（链式调用方便）。
+ */
+function markFVGFillStatus(fvgs, candles) {
+  if (!Array.isArray(fvgs) || !Array.isArray(candles)) return fvgs || [];
+  // 用 closeTime 倒查 K 线索引（避免 O(n²) 全表扫）
+  const closeIdx = new Map();
+  candles.forEach((c, i) => closeIdx.set(Number(c.closeTime), i));
+  for (const fvg of fvgs) {
+    const formedIdx = closeIdx.get(Number(fvg.endTime));
+    if (formedIdx == null) continue;
+    let maxRatio = 0;
+    let killed = false;
+    for (let i = formedIdx + 1; i < candles.length; i += 1) {
+      const k = candles[i];
+      if (!Number.isFinite(k.high) || !Number.isFinite(k.low)) continue;
+      if (fvg.type === 'bullish') {
+        // 进入缺口区间
+        if (k.low <= fvg.upper && k.low >= fvg.lower) {
+          const r = (fvg.upper - k.low) / fvg.size;
+          if (r > maxRatio) maxRatio = r;
+        }
+        // 击穿下沿 = 缺口失效
+        if (k.low < fvg.lower) { killed = true; maxRatio = 1; break; }
+      } else {
+        if (k.high >= fvg.lower && k.high <= fvg.upper) {
+          const r = (k.high - fvg.lower) / fvg.size;
+          if (r > maxRatio) maxRatio = r;
+        }
+        if (k.high > fvg.upper) { killed = true; maxRatio = 1; break; }
+      }
+    }
+    fvg.filled = killed || maxRatio >= 0.999;
+    fvg.fillRatio = Math.min(1, Math.max(0, maxRatio));
+  }
+  return fvgs;
+}
+
+/**
+ * 找出当前价格"正在测试"的未填补 FVG（用于入场信号）。
+ *
+ * @param {Array} fvgs              已标记 fill 状态的 FVG 列表
+ * @param {number} price            当前价格
+ * @param {object} opts
+ *  - opts.maxAgeMs                 FVG 最大年龄（毫秒），太老的不要
+ *  - opts.minSizePct / maxSizePct  尺寸过滤（避免噪音和异常）
+ *  - opts.maxFillRatio             已填补超过此比例视为消耗殆尽
+ *  - opts.tolerancePct             "正在测试"的边界容差（默认 0.001 = 0.1%）
+ *  - opts.type                     'bullish' / 'bearish' / 'any' (默认 'any')
+ *
+ * @returns {object|null} 命中的 FVG，否则 null
+ */
+function findActiveFVGAtPrice(fvgs, price, opts = {}) {
+  if (!Array.isArray(fvgs) || !Number.isFinite(price)) return null;
+  const now = Date.now();
+  const {
+    maxAgeMs = 4 * 60 * 60 * 1000,
+    minSizePct = 0.001,
+    maxSizePct = 0.020,
+    maxFillRatio = 0.5,
+    tolerancePct = 0.001,
+    type = 'any'
+  } = opts;
+  const tol = price * tolerancePct;
+  // 候选打分：优先选 fillRatio 最小（最新鲜）、尺寸最合理的
+  let best = null;
+  let bestScore = -Infinity;
+  for (const f of fvgs) {
+    if (f.filled) continue;
+    if (f.fillRatio > maxFillRatio) continue;
+    if (type !== 'any' && f.type !== type) continue;
+    if (now - f.endTime > maxAgeMs) continue;
+    if (f.sizePct < minSizePct || f.sizePct > maxSizePct) continue;
+    // 价格在 [lower - tol, upper + tol] 内视为"正在测试"
+    if (price < f.lower - tol || price > f.upper + tol) continue;
+    // 评分：新鲜度 + 未填补度 + 尺寸适中
+    const age = (now - f.endTime) / maxAgeMs;
+    const score = (1 - f.fillRatio) * 2 + (1 - age) - Math.abs(Math.log(f.sizePct / 0.005));
+    if (score > bestScore) { bestScore = score; best = f; }
+  }
+  return best;
 }
 
 /**
@@ -207,5 +316,7 @@ module.exports = {
   computeMFI,
   computeATR,
   detectFVGs,
+  markFVGFillStatus,
+  findActiveFVGAtPrice,
   detectLiquidityVoids
 };
