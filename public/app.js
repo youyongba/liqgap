@@ -59,7 +59,6 @@
     liqHeatmapMeta: document.getElementById('liq-heatmap-meta'),
     liqHeatmapWindow: document.getElementById('liq-heatmap-window'),
     liqHeatmapRange: document.getElementById('liq-heatmap-range'),
-    liqHeatmapMode: document.getElementById('liq-heatmap-mode'),
     liqHeatmapThreshold: document.getElementById('liq-heatmap-threshold'),
     liqHeatmapThresholdVal: document.getElementById('liq-heatmap-threshold-val'),
     liqHeatmapMeasure: document.getElementById('liq-heatmap-measure'),
@@ -930,15 +929,15 @@
     };
   })();
 
-  // ---- 清算热力图 (Liquidation Heatmap) ---------------------------------
+  // ---- 清算热力图 (Liquidation Heatmap · Predictive only) ---------------
   // 数据源 (Data source):
-  //   后端 liquidationRecorder 订阅 Binance Futures <symbol>@forceOrder 流，
-  //   把每条强平实时录盘；GET /api/liquidations/heatmap 按 (time bucket,
-  //   price bucket) 聚合返回 longMatrix / shortMatrix（USDT 累计名义额）。
+  //   GET /api/predictive/liquidations 基于 K 线 × 杠杆估算"潜在清算价位"
+  //   (CoinGlass 风格，longMatrix / shortMatrix · USDT 累计名义额)。
+  //   已扫消耗：未来 K 线穿过清算线时，从那一刻起从矩阵剔除该批仓位，
+  //   保证图上只显示"还活着的潜在清算"，不画无意义残影。
   // 视觉 (Visual):
-  //   - long 被强平 → 红色（与流动性 ask 同色：被卖出止损推低）
-  //   - short 被强平 → 绿色（被买入止损推高）
-  //   - alpha 用 P95 归一化 + log 拉伸，避免极端事件吃对比度
+  //   - viridis 配色（紫 → 蓝 → 青 → 绿 → 黄）
+  //   - 主峰=黄；alpha 用 P95 归一化 + sqrt 拉伸，避免极端值吃对比度
   // 联动 (Linkage):
   //   主图 hover → 锁定 anchor 时刻；hover 离开 → 实时 now。
   // 仅 BTCUSDT futures 显示。
@@ -962,7 +961,6 @@
     const state = {
       windowMs: Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000),
       priceRange: _readPriceRange(),
-      mode: (els.liqHeatmapMode && els.liqHeatmapMode.value) || 'predicted',
       // 流动性阈值 (CoinGlass 风格)：只显示 v / max ≥ threshold 的 cell。
       // 用户拖滑块即时过滤，0 = 显示全部（默认，与 CoinGlass 一致），
       // 0.85 = 突出关键清算墙。
@@ -1023,10 +1021,10 @@
         : (Number.isFinite(d.priceRange) ? `±${(d.priceRange * 100).toFixed(2)}%` : '-');
       const totalLong  = fmtMoney(d.totalLong  || 0);
       const totalShort = fmtMoney(d.totalShort || 0);
-      const modeTag = state.mode === 'predicted' ? '预测 / Predicted' : '已发生 / Realized';
+      const modeTag = '预测 / Predicted';
       const sourceTag = d.sourceInterval ? ` · 源 ${d.sourceInterval}` : '';
-      const cntLabel = state.mode === 'predicted' ? 'K线' : '事件';
-      const cntVal = state.mode === 'predicted' ? (d.candleCount || 0) : (d.eventCount || 0);
+      const cntLabel = 'K线';
+      const cntVal = d.candleCount || 0;
       const thrPct = (state.threshold * 100).toFixed(0);
       const thrTxt = state.threshold > 0
         ? ` · 阈值 ${thrPct}%（≥${thrPct}% max 才显示）`
@@ -1076,9 +1074,8 @@
       const { x: ox, y: oy, w: pw, h: ph } = state.plot;
       if (!d || !d.times || !d.times.length || !d.prices || !d.prices.length || !(d.maxValue > 0)) {
         if (empty) {
-          // 后端返回的 reason 优先（已包含 recorder 状态），没有则用默认提示
           if (d && d.reason) empty.textContent = d.reason;
-          else empty.textContent = '尚无强平事件 / No liquidations yet（liqRecorder 启动后会随强平实时累积）';
+          else empty.textContent = '等待数据… / Loading predictive heatmap…';
           empty.style.display = 'flex';
         }
         return;
@@ -1402,9 +1399,8 @@
       const p  = d.prices[hit.pi];
       const lv = (d.longMatrix[hit.ti]  || [])[hit.pi] || 0;
       const sv = (d.shortMatrix[hit.ti] || [])[hit.pi] || 0;
-      const isPred = state.mode === 'predicted';
-      const longLab  = isPred ? '潜在多头清算 / Long liq pot.'  : '多被强平 / Long liq';
-      const shortLab = isPred ? '潜在空头清算 / Short liq pot.' : '空被强平 / Short liq';
+      const longLab  = '潜在多头清算 / Long liq pot.';
+      const shortLab = '潜在空头清算 / Short liq pot.';
       tooltip.innerHTML =
         `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
         `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
@@ -1460,9 +1456,8 @@
           if (pi >= 0) {
             const lv = (d.longMatrix[ti]  || [])[pi] || 0;
             const sv = (d.shortMatrix[ti] || [])[pi] || 0;
-            const isPred = state.mode === 'predicted';
-            const longLab  = isPred ? '潜在多头清算 / Long liq pot.'  : '多被强平 / Long liq';
-            const shortLab = isPred ? '潜在空头清算 / Short liq pot.' : '空被强平 / Short liq';
+            const longLab  = '潜在多头清算 / Long liq pot.';
+            const shortLab = '潜在空头清算 / Short liq pot.';
             const fmt = (v) => v >= 1e6
               ? (v / 1e6).toFixed(2) + 'M'
               : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : v.toFixed(0);
@@ -1531,35 +1526,21 @@
 
     async function _fetch() {
       if (!_isApplicable()) return;
-      const { fromMs, toMs, bucketMs } = _resolveRange();
       const symbol = els.symbol.value.toUpperCase();
       const market = els.market.value;
-      const mode = state.mode;
-      const key = `${mode}|${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
+      const key = `${symbol}|${market}|${state.windowMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
       const now = Date.now();
       if (key === state.lastFetchKey && now - state.lastFetchAt < 5_000) return;
       state.lastFetchKey = key;
       state.lastFetchAt = now;
       try {
-        let url;
-        if (mode === 'predicted') {
-          // 预测性接口按 windowMs + 实时 now 自己定窗口（不接受 from/to）
-          const params = new URLSearchParams({
-            symbol, market,
-            windowMs: String(state.windowMs)
-          });
-          if (state.priceRange !== 'auto') params.set('priceRange', String(state.priceRange));
-          url = `/api/predictive/liquidations?${params.toString()}`;
-        } else {
-          const params = new URLSearchParams({
-            symbol, market,
-            from: String(fromMs),
-            to: String(toMs),
-            bucketMs: String(bucketMs)
-          });
-          params.set('priceRange', state.priceRange === 'auto' ? 'auto' : String(state.priceRange));
-          url = `/api/liquidations/heatmap?${params.toString()}`;
-        }
+        // 预测性接口按 windowMs + 实时 now 自己定窗口（不接受 from/to）
+        const params = new URLSearchParams({
+          symbol, market,
+          windowMs: String(state.windowMs)
+        });
+        if (state.priceRange !== 'auto') params.set('priceRange', String(state.priceRange));
+        const url = `/api/predictive/liquidations?${params.toString()}`;
         const data = await fetchJsonSoft(url);
         if (!data) {
           _updateMeta('拉取失败 / Fetch failed');
@@ -1600,16 +1581,6 @@
         if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
         scheduleFetch(0);
         if (typeof window.__refreshLiqSignal === 'function') window.__refreshLiqSignal();
-      });
-    }
-    if (els.liqHeatmapMode) {
-      els.liqHeatmapMode.addEventListener('change', () => {
-        state.mode = els.liqHeatmapMode.value || 'predicted';
-        state.data = null;
-        state.lastFetchKey = '';
-        if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
-        _draw();
-        scheduleFetch(0);
       });
     }
     if (els.liqHeatmapThreshold) {
@@ -1905,7 +1876,7 @@
       const market = els.market ? els.market.value : 'futures';
       const body = {
         symbol: sym, market,
-        mode: state.mode || 'predicted',
+        mode: 'predicted',
         side,
         peakPrice, peakValue,
         prevPrice, curPrice,

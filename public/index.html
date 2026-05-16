@@ -953,11 +953,6 @@
           <div class="card-header">
             <h2>清算热力图 / Liquidation Heatmap</h2>
             <div class="heatmap-toolbar">
-              <label for="liq-heatmap-mode">模式 / Mode:</label>
-              <select id="liq-heatmap-mode" title="预测性 = 基于K线杠杆估算的潜在清算线（CoinGlass 风格）；已发生 = 真实强平事件累积">
-                <option value="predicted" selected>预测性 / Predicted</option>
-                <option value="realized">已发生 / Realized</option>
-              </select>
               <label for="liq-heatmap-window">窗口 / Window:</label>
               <select id="liq-heatmap-window" title="清算热图回看时间窗">
                 <option value="900000">15 分钟 / 15m</option>
@@ -1005,7 +1000,7 @@
           <div class="pane-body">
             <canvas id="liq-heatmap-canvas"></canvas>
             <div id="liq-heatmap-tooltip"></div>
-            <div id="liq-heatmap-empty">尚无强平事件 / No liquidations yet（liqRecorder 启动后会随强平实时累积）</div>
+            <div id="liq-heatmap-empty">等待数据… / Loading predictive heatmap…</div>
           </div>
         </section>
       </div>

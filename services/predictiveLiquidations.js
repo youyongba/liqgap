@@ -17,10 +17,15 @@
  *      mmr = 维持保证金率 (Maintenance Margin Rate)，BTC 永续约 0.4~0.5%。
  *   5. 把"清算线"从开仓时间一直延续到当前 (cumulative 累加到所有未来时间桶)，
  *      再做时间衰减让远古的仓位不会过度堆积。
+ *   6. **已扫则整批作废 (Sweep-invalidates)**：开仓后**任何一根**未来 K 线
+ *      low ≤ 多头清算价 或 high ≥ 空头清算价，则这批仓位的整段贡献作废
+ *      （包括左侧"被扫之前"的桶）—— 因为既然结局是被扫穿，那条横线就是
+ *      失效信号，画出来反而误导：还活着的清算墙才是未来价格可能停留的支撑/阻力。
+ *      实现：开仓时 lookahead 整段未来极值，被扫则整批 skip，不写入任何桶。
  *
  * 局限 (Limitations)：
  *   - 这是经验估算模型，不是真实持仓；杠杆分布、留仓时间都是假设。
- *   - 不知道仓位什么时候被平掉，简化为"按时间衰减"近似活跃仓位。
+ *   - 简化为"价格首次触线即全数清算"，实际有部分仓位会提前止损 / 平仓。
  *   - 但这跟 CoinGlass 的算法在直觉上一致，输出形态接近。
  */
 
@@ -131,6 +136,34 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
     shortMatrix[i] = new Array(pCount).fill(0);
   }
 
+  // ============================================================================
+  // 预算每个时间桶的 max(high) / min(low)，用于"已扫则整批作废"判定。
+  // 一桶可能跨多根 K 线（例如 24h 窗口下 bucketMs=15m, source=5m → 一桶 3 根），
+  // 取桶内 high 的最大值 / low 的最小值即可代表该桶的极值范围。
+  // ============================================================================
+  const bucketHigh = new Array(tCount).fill(-Infinity);
+  const bucketLow  = new Array(tCount).fill(Infinity);
+  for (const c of candles) {
+    const t = Number(c.openTime);
+    const h = Number(c.high);
+    const l = Number(c.low);
+    if (!Number.isFinite(t) || !Number.isFinite(h) || !Number.isFinite(l)) continue;
+    if (t > toMs) continue;
+    const ti = Math.floor((t - fromMs) / bucketMs);
+    if (ti < 0 || ti >= tCount) continue;
+    if (h > bucketHigh[ti]) bucketHigh[ti] = h;
+    if (l < bucketLow[ti])  bucketLow[ti]  = l;
+  }
+  // 后缀极值：futureMinLow[ti] = min over [ti..tCount-1] of bucketLow
+  //          futureMaxHigh[ti] = max over [ti..tCount-1] of bucketHigh
+  // 这样开仓 K 线只需 O(1) lookahead 就能知道清算价是否会被未来 K 线触到。
+  const futureMinLow  = new Array(tCount + 1).fill(Infinity);
+  const futureMaxHigh = new Array(tCount + 1).fill(-Infinity);
+  for (let ti = tCount - 1; ti >= 0; ti -= 1) {
+    futureMinLow[ti]  = Math.min(bucketLow[ti],  futureMinLow[ti + 1]);
+    futureMaxHigh[ti] = Math.max(bucketHigh[ti], futureMaxHigh[ti + 1]);
+  }
+
   // 衰减系数：weight(t) = exp(-ln2 × (t - t_open) / halfLifeMs)
   // 预先按时间桶差预算好衰减因子表，避免内层循环算 exp。
   const ln2 = Math.log(2);
@@ -140,6 +173,8 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
   let totalLong = 0;
   let totalShort = 0;
   let maxValue = 0;
+  let sweptLong = 0;   // 被价格扫过的多头清算 USDT（仅诊断用）
+  let sweptShort = 0;
 
   for (const c of candles) {
     const open = Number(c.openTime);
@@ -169,37 +204,54 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
       totalLong  += longContrib;
       totalShort += shortContrib;
 
-      // 从 tiStart 一直累加到 tCount-1，每过一个桶 × decay。
-      // 同时把贡献按高斯核扩散到 piLong±spreadBuckets 个相邻价位，
-      // 这样相邻 K 线的清算线在视觉上能连成一条粗带。
+      // 累加策略：
+      //   1) lookahead：开仓后任何未来桶 K 线会触到清算价 → 整批 skip
+      //      (既不画"左侧 = 被扫之前"，也不画"右侧 = 被扫之后"，整条作废)
+      //   2) 否则：从 tiStart 一直累加到 tCount-1，每过一个桶 × decay；
+      //      把贡献按高斯核扩散到 piLong±spreadBuckets 个相邻价位。
+      //
+      // 关键：右侧"被扫之后"如果有别的 K 线开仓在同一价位，那是另一根 K 线
+      // 的独立循环 + 独立 lookahead，不受当前这根被扫的影响 → 自动保留。
+      // 开仓桶 tiStart 自身不参与判定（仓位按 close 开，K 线的 high/low 在
+      // 开仓之前发生，不能算"未来"扫过）。
       if (longContrib > 0) {
-        let w = 1;
-        for (let ti = tiStart; ti < tCount; ti += 1) {
-          for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
-            const pIdx = piLong + s;
-            if (pIdx < 0 || pIdx >= pCount) continue;
-            const sw = spreadWeights[s + spreadBuckets];
-            const cell = longMatrix[ti][pIdx] + longContrib * w * sw;
-            longMatrix[ti][pIdx] = cell;
-            if (cell > maxValue) maxValue = cell;
+        const longSwept = (tiStart + 1 < tCount) && (futureMinLow[tiStart + 1] <= longLiqPrice);
+        if (longSwept) {
+          sweptLong += longContrib;
+        } else {
+          let w = 1;
+          for (let ti = tiStart; ti < tCount; ti += 1) {
+            for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
+              const pIdx = piLong + s;
+              if (pIdx < 0 || pIdx >= pCount) continue;
+              const sw = spreadWeights[s + spreadBuckets];
+              const cell = longMatrix[ti][pIdx] + longContrib * w * sw;
+              longMatrix[ti][pIdx] = cell;
+              if (cell > maxValue) maxValue = cell;
+            }
+            w *= decayPerBucket;
+            if (w < 1e-4) break;
           }
-          w *= decayPerBucket;
-          if (w < 1e-4) break;
         }
       }
       if (shortContrib > 0) {
-        let w = 1;
-        for (let ti = tiStart; ti < tCount; ti += 1) {
-          for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
-            const pIdx = piShort + s;
-            if (pIdx < 0 || pIdx >= pCount) continue;
-            const sw = spreadWeights[s + spreadBuckets];
-            const cell = shortMatrix[ti][pIdx] + shortContrib * w * sw;
-            shortMatrix[ti][pIdx] = cell;
-            if (cell > maxValue) maxValue = cell;
+        const shortSwept = (tiStart + 1 < tCount) && (futureMaxHigh[tiStart + 1] >= shortLiqPrice);
+        if (shortSwept) {
+          sweptShort += shortContrib;
+        } else {
+          let w = 1;
+          for (let ti = tiStart; ti < tCount; ti += 1) {
+            for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
+              const pIdx = piShort + s;
+              if (pIdx < 0 || pIdx >= pCount) continue;
+              const sw = spreadWeights[s + spreadBuckets];
+              const cell = shortMatrix[ti][pIdx] + shortContrib * w * sw;
+              shortMatrix[ti][pIdx] = cell;
+              if (cell > maxValue) maxValue = cell;
+            }
+            w *= decayPerBucket;
+            if (w < 1e-4) break;
           }
-          w *= decayPerBucket;
-          if (w < 1e-4) break;
         }
       }
     }
@@ -239,6 +291,7 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
     longMatrix, shortMatrix,
     maxValue,
     totalLong, totalShort,
+    sweptLong, sweptShort,
     candleCount,
     leverageBuckets: leverages,
     mmr,

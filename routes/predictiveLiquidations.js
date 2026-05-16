@@ -4,8 +4,8 @@
  * GET /api/predictive/liquidations
  *
  * CoinGlass 风格的"预测性"清算热力图数据。
- * 与 /api/liquidations/heatmap (基于真实强平事件) 不同，本接口基于历史
- * K 线 × 杠杆估算反推出"如果价格走到 X 价位，预计会触发的清算量"。
+ * 基于历史 K 线 × 杠杆估算反推出"如果价格走到 X 价位，预计会触发的清算量"，
+ * 并加入"已扫消耗"——价格已穿过的清算线在那一刻起从矩阵剔除。
  * 输出形态接近 CoinGlass Liquidation Heatmap 的"横向亮带"。
  *
  * 查询参数 (Query):
@@ -16,8 +16,6 @@
  *   priceRange  价格范围比例 (auto / 0.005 / 0.01 / 0.02 / 0.05)。默认 auto。
  *   sourceInterval  采样 K 线粒度。默认 1m；可选 1m/5m/15m。粒度越细越准
  *                   但接口越慢；24h 用 5m (288 根) 是性价比最佳。
- *
- * 响应 (Response): 与 liquidations/heatmap 兼容，前端复用同一渲染。
  */
 
 const express = require('express');
