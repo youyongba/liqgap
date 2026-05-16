@@ -1032,14 +1032,31 @@
       const candleTxt = (d.candles && d.candles.length && d.candleInterval)
         ? ` · K线 ${d.candleInterval}×${d.candles.length}`
         : '';
-      // 两个主峰（_draw 里计算并暂存到 state）
+      // 主峰文本（_draw 里同时计算了 row-max 和 row-sum 两组）。
+      //   MAX = 单格最强 = 图上视觉最亮 = tooltip 数值最大 → 警报/信号触发
+      //   SUM = 累计最深 = 该价位时间窗内总累积清算 USDT → 长期堆积参考
+      // 同价位时合并显示，避免噪音；不同价位时两组都列出。
+      // 箭头方向：S↑ = 空头墙在当前价上方；L↓ = 多头墙在当前价下方。
+      const fmtPx = (v) => v >= 1000 ? v.toFixed(0) : v.toFixed(2);
       const peakTxt = (() => {
-        const lp = state._peakLongPi  >= 0 && d.prices ? d.prices[state._peakLongPi]  : null;
-        const sp = state._peakShortPi >= 0 && d.prices ? d.prices[state._peakShortPi] : null;
-        const parts = [];
-        if (Number.isFinite(lp)) parts.push(`L↑ ${lp >= 1000 ? lp.toFixed(0) : lp.toFixed(2)}`);
-        if (Number.isFinite(sp)) parts.push(`S↓ ${sp >= 1000 ? sp.toFixed(0) : sp.toFixed(2)}`);
-        return parts.length ? ` · 主峰 ${parts.join(' / ')}` : '';
+        const maxSp = state._peakShortPi    >= 0 && d.prices ? d.prices[state._peakShortPi]    : null;
+        const maxLp = state._peakLongPi     >= 0 && d.prices ? d.prices[state._peakLongPi]     : null;
+        const sumSp = state._peakShortSumPi >= 0 && d.prices ? d.prices[state._peakShortSumPi] : null;
+        const sumLp = state._peakLongSumPi  >= 0 && d.prices ? d.prices[state._peakLongSumPi]  : null;
+        const out = [];
+        // 空头：MAX + 不同时附 SUM
+        if (Number.isFinite(maxSp)) {
+          let s = `S↑ MAX ${fmtPx(maxSp)}`;
+          if (Number.isFinite(sumSp) && sumSp !== maxSp) s += ` · SUM ${fmtPx(sumSp)}`;
+          out.push(s);
+        }
+        // 多头：MAX + 不同时附 SUM
+        if (Number.isFinite(maxLp)) {
+          let s = `L↓ MAX ${fmtPx(maxLp)}`;
+          if (Number.isFinite(sumLp) && sumLp !== maxLp) s += ` · SUM ${fmtPx(sumLp)}`;
+          out.push(s);
+        }
+        return out.length ? ` · 主峰 ${out.join(' / ')}` : '';
       })();
       meta.textContent =
         `${modeTag} · ${tFmt(d.fromMs)} → ${tFmt(d.toMs)} · 桶 ${(d.bucketMs/60_000).toFixed(0)}m × ${d.priceBucket || '-'} USDT · 范围 ${rangeTxt}${sourceTag} · ${cntLabel} ${cntVal} (多 ${totalLong} · 空 ${totalShort} USDT)${candleTxt}${peakTxt}${thrTxt}`
@@ -1176,72 +1193,103 @@
       // 多空主峰高亮：按金融语义约束方向。
       //   多头清算 = 多头开仓后价格跌穿清算价 → 必在当前价【下方】
       //   空头清算 = 空头开仓后价格涨穿清算价 → 必在当前价【上方】
-      // 沿价位累计（不是单格 max，避免被瞬间峰值带偏）后取各方向 argmax。
+      //
+      // 同时计算两种代表强度，让用户能对比：
+      //   • row-max  = 该价位"最强单格"，等价于图上视觉最亮的横线 / tooltip 数值最大
+      //                lookahead-skip 后 ≈ last-cell ≈ "当前还活着的最强清算墙"
+      //   • row-sum  = 该价位所有时间桶的累计 USDT，反映"清算池长期堆积深度"
+      //
+      // 警报判定和后端信号触发墙都跟 row-max（活墙最适合做反转/触墙判定）；
+      // row-sum 仅做视觉对比，标在图上和 meta 行供参考。
       {
         const Tlen = d.times.length;
         const Plen = d.prices.length;
-        const longSum  = new Array(Plen).fill(0);
-        const shortSum = new Array(Plen).fill(0);
+        const longMaxRow  = new Array(Plen).fill(0);
+        const shortMaxRow = new Array(Plen).fill(0);
+        const longSumRow  = new Array(Plen).fill(0);
+        const shortSumRow = new Array(Plen).fill(0);
         for (let ti = 0; ti < Tlen; ti += 1) {
           const lr = d.longMatrix[ti];
           const sr = d.shortMatrix[ti];
           if (!lr || !sr) continue;
           for (let pi = 0; pi < Plen; pi += 1) {
-            longSum[pi]  += lr[pi]  || 0;
-            shortSum[pi] += sr[pi]  || 0;
+            const lv = lr[pi] || 0;
+            const sv = sr[pi] || 0;
+            if (lv > longMaxRow[pi])  longMaxRow[pi]  = lv;
+            if (sv > shortMaxRow[pi]) shortMaxRow[pi] = sv;
+            longSumRow[pi]  += lv;
+            shortSumRow[pi] += sv;
           }
         }
-        const mid = Number.isFinite(d.midPrice) ? d.midPrice : null;
-        let longArg = -1, longMax = 0;
-        let shortArg = -1, shortMax = 0;
-        for (let pi = 0; pi < Plen; pi += 1) {
-          const price = d.prices[pi];
-          // 多头清算：仅在价格下方（含 ~中价附近）搜
-          if (mid == null || price < mid) {
-            if (longSum[pi] > longMax)  { longMax  = longSum[pi];  longArg  = pi; }
+        // 优先用主图 SSE 推送的最新 K 线 close 作为 mid（更新最高频），
+        // 否则退回 fetch 时刻的 d.midPrice 快照。这样在价格剧烈波动时主峰
+        // 的"上方/下方"边界能跟着价格走，避免出现"S 标到了 mid 下方"的错位。
+        let mid = null;
+        try {
+          if (Array.isArray(lastCandles) && lastCandles.length) {
+            const v = Number(lastCandles[lastCandles.length - 1].close);
+            if (Number.isFinite(v) && v > 0) mid = v;
           }
-          // 空头清算：仅在价格上方搜
-          if (mid == null || price > mid) {
-            if (shortSum[pi] > shortMax) { shortMax = shortSum[pi]; shortArg = pi; }
-          }
-        }
-        // 兜底：如果某方向没有任何信号（比如热图全在一侧），全局取 max
-        if (longArg < 0) {
+        } catch (_) { /* noop */ }
+        if (mid == null && Number.isFinite(d.midPrice)) mid = d.midPrice;
+
+        function _argmaxSplit(rowArr) {
+          let longArg = -1, longMax = 0;
+          let shortArg = -1, shortMax = 0;
           for (let pi = 0; pi < Plen; pi += 1) {
-            if (longSum[pi] > longMax) { longMax = longSum[pi]; longArg = pi; }
+            const v = rowArr[pi];
+            if (!(v > 0)) continue;
+            const price = d.prices[pi];
+            if (mid == null || price < mid) {
+              if (v > longMax)  { longMax  = v;  longArg  = pi; }
+            }
+            if (mid == null || price > mid) {
+              if (v > shortMax) { shortMax = v; shortArg = pi; }
+            }
           }
-        }
-        if (shortArg < 0) {
-          for (let pi = 0; pi < Plen; pi += 1) {
-            if (shortSum[pi] > shortMax) { shortMax = shortSum[pi]; shortArg = pi; }
+          // 兜底：方向全空时全局取 max
+          if (longArg < 0) for (let pi = 0; pi < Plen; pi += 1) {
+            if (rowArr[pi] > longMax) { longMax = rowArr[pi]; longArg = pi; }
           }
+          if (shortArg < 0) for (let pi = 0; pi < Plen; pi += 1) {
+            if (rowArr[pi] > shortMax) { shortMax = rowArr[pi]; shortArg = pi; }
+          }
+          return { longArg, longMax, shortArg, shortMax };
         }
+        const mxPeaks  = _argmaxSplit(longMaxRow);
+        const sumPeaksL = _argmaxSplit(longSumRow);
+        const sumPeaksS = _argmaxSplit(shortSumRow);
+
         const fmtMoneyShort = (v) => v >= 1e9
           ? (v / 1e9).toFixed(2) + 'B'
           : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
           : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : v.toFixed(0);
-        const drawPeak = (pi, totalVal, sideTag) => {
+        const drawPeak = (pi, totalVal, sideTag, opts) => {
           if (pi < 0 || !(totalVal > 0)) return;
           const price = d.prices[pi];
           if (!Number.isFinite(price)) return;
           const yPeak = oy + ph * (1 - (price - d.priceMin) / priceSpan);
           if (yPeak < oy - 0.5 || yPeak > oy + ph + 0.5) return;
+          const isSum = opts && opts.kind === 'sum';
           ctx.save();
           ctx.shadowColor = 'rgba(0,0,0,0.85)';
           ctx.shadowBlur = 4;
-          ctx.strokeStyle = '#ffeb3b';
-          ctx.lineWidth = 2;
+          ctx.strokeStyle = isSum ? '#ff9800' : '#ffeb3b';
+          ctx.lineWidth = isSum ? 1.5 : 2;
+          if (isSum) ctx.setLineDash([6, 4]);
           ctx.beginPath();
           ctx.moveTo(ox, Math.round(yPeak) + 0.5);
           ctx.lineTo(ox + pw, Math.round(yPeak) + 0.5);
           ctx.stroke();
+          ctx.setLineDash([]);
           ctx.shadowBlur = 0;
           ctx.font = 'bold 10px ui-monospace, SFMono-Regular, Menlo, monospace';
           const tagText = `${sideTag} ${priceFmt(price)} · ${fmtMoneyShort(totalVal)}`;
           const tagW = ctx.measureText(tagText).width + 8;
-          const tagX = ox + 4;
+          // SUM 标签放右侧，避免与 MAX 标签重叠
+          const tagX = isSum ? (ox + pw - tagW - 4) : (ox + 4);
           const tagY = yPeak - 8;
-          ctx.fillStyle = 'rgba(255, 235, 59, 0.95)';
+          ctx.fillStyle = isSum ? 'rgba(255, 152, 0, 0.95)' : 'rgba(255, 235, 59, 0.95)';
           ctx.fillRect(tagX, tagY, tagW, 16);
           ctx.fillStyle = '#0b0e16';
           ctx.textAlign = 'left';
@@ -1249,15 +1297,29 @@
           ctx.fillText(tagText, tagX + 4, tagY + 8);
           ctx.restore();
         };
-        // 标签箭头表示"价格触发方向"：
-        //   S↑ = 价格涨到这里触发空头爆仓（在上方）
-        //   L↓ = 价格跌到这里触发多头爆仓（在下方）
-        drawPeak(shortArg, shortMax, 'S↑ MAX');
-        drawPeak(longArg,  longMax,  'L↓ MAX');
-        state._peakLongPi  = longArg;
-        state._peakShortPi = shortArg;
-        state._peakLongVal  = longMax;
-        state._peakShortVal = shortMax;
+        // MAX（实线 · 黄）：用户视觉感受 + 警报 / 信号触发墙
+        // SUM（虚线 · 橙）：累计深度，仅参考；与 MAX 同价位则不画第二条
+        drawPeak(mxPeaks.shortArg, mxPeaks.shortMax, 'S↑ MAX');
+        drawPeak(mxPeaks.longArg,  mxPeaks.longMax,  'L↓ MAX');
+        if (sumPeaksS.shortArg !== mxPeaks.shortArg) {
+          drawPeak(sumPeaksS.shortArg, sumPeaksS.shortMax, 'S↑ SUM', { kind: 'sum' });
+        }
+        if (sumPeaksL.longArg !== mxPeaks.longArg) {
+          drawPeak(sumPeaksL.longArg, sumPeaksL.longMax, 'L↓ SUM', { kind: 'sum' });
+        }
+        // 警报 / 信号 / 跨越判定永远跟 row-max（活墙）
+        state._peakLongPi  = mxPeaks.longArg;
+        state._peakShortPi = mxPeaks.shortArg;
+        state._peakLongVal  = mxPeaks.longMax;
+        state._peakShortVal = mxPeaks.shortMax;
+        // 把 SUM 主峰也存下来，给 meta / tooltip 显示用
+        state._peakLongSumPi  = sumPeaksL.longArg;
+        state._peakShortSumPi = sumPeaksS.shortArg;
+        state._peakLongSumVal  = sumPeaksL.longMax;
+        state._peakShortSumVal = sumPeaksS.shortMax;
+        // 把 row-sum 数组也存下来供 tooltip 显示该价位的累计值
+        state._longSumRow  = longSumRow;
+        state._shortSumRow = shortSumRow;
       }
 
       // 时间刻度
@@ -1399,14 +1461,22 @@
       const p  = d.prices[hit.pi];
       const lv = (d.longMatrix[hit.ti]  || [])[hit.pi] || 0;
       const sv = (d.shortMatrix[hit.ti] || [])[hit.pi] || 0;
+      // 该价位（横向）在整个时间窗内的累计清算 USDT（row-sum）
+      const lvSum = (state._longSumRow  || [])[hit.pi] || 0;
+      const svSum = (state._shortSumRow || [])[hit.pi] || 0;
       const longLab  = '潜在多头清算 / Long liq pot.';
       const shortLab = '潜在空头清算 / Short liq pot.';
+      // 顺序：空头在上、多头在下 —— 与 K 线热图上"空头墙在当前价上方、
+      // 多头墙在当前价下方"的视觉直觉一致。
+      // MAX = 当前格强度（图上视觉亮度）；SUM = 整窗该价位累积深度。
       tooltip.innerHTML =
         `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
         `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
-        `<div>${longLab}: <span style="color:#fde725">${fmtMoney(lv)} USDT</span></div>` +
         `<div>${shortLab}: <span style="color:#5dc863">${fmtMoney(sv)} USDT</span></div>` +
-        `<div style="opacity:0.7;font-size:10px">合计: ${fmtMoney(lv + sv)} USDT</div>`;
+        `<div style="opacity:0.7;font-size:10px;margin-left:8px">└ SUM 累计: ${fmtMoney(svSum)} USDT</div>` +
+        `<div>${longLab}: <span style="color:#fde725">${fmtMoney(lv)} USDT</span></div>` +
+        `<div style="opacity:0.7;font-size:10px;margin-left:8px">└ SUM 累计: ${fmtMoney(lvSum)} USDT</div>` +
+        `<div style="opacity:0.7;font-size:10px;margin-top:2px">合计本格: ${fmtMoney(lv + sv)} USDT</div>`;
       tooltip.style.display = 'block';
       const rect = canvas.parentElement.getBoundingClientRect();
       const ttX = Math.min(rect.width - 230, hit.cx + 10);
@@ -1463,8 +1533,9 @@
               : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : v.toFixed(0);
             if (lv > 0 || sv > 0) {
               items.push('divider');
-              if (lv > 0) items.push({ label: longLab,  value: lv.toFixed(0), display: fmt(lv) + ' USDT' });
+              // 顺序与 tooltip 保持一致：空头在上、多头在下
               if (sv > 0) items.push({ label: shortLab, value: sv.toFixed(0), display: fmt(sv) + ' USDT' });
+              if (lv > 0) items.push({ label: longLab,  value: lv.toFixed(0), display: fmt(lv) + ' USDT' });
               items.push({ label: '合计 / Total',    value: (lv + sv).toFixed(0), display: fmt(lv + sv) + ' USDT' });
             }
           }

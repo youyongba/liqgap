@@ -554,24 +554,31 @@ function _autoSampling(windowMs) {
   return                                          { source: '1h',  bucketMs:   8 * 60 * 60_000 };
 }
 
+// 主峰检测：row-max 策略 —— 每个价位的"最强单格"作为代表强度，取 argmax。
+// 与前端 _draw() 中主峰选择算法一致，保证：
+//   • 信号 conditions 里的 peakLong/peakShort 价位 = 图上视觉最亮的横线
+//   • 飞书卡片的"触发墙"价位 = 用户在热图上看到的标注一致
+// row-sum (旧策略) 会被"持续亮但每格不亮"的横线带偏，跟视觉/tooltip 不符。
 function _findPeaks(heat, midPrice) {
   const Plen = heat.prices.length;
-  const longSum = new Array(Plen).fill(0);
-  const shortSum = new Array(Plen).fill(0);
+  const longMaxRow  = new Array(Plen).fill(0);
+  const shortMaxRow = new Array(Plen).fill(0);
   for (let ti = 0; ti < heat.times.length; ti += 1) {
     const lr = heat.longMatrix[ti], sr = heat.shortMatrix[ti];
     if (!lr || !sr) continue;
     for (let pi = 0; pi < Plen; pi += 1) {
-      longSum[pi]  += lr[pi] || 0;
-      shortSum[pi] += sr[pi] || 0;
+      const lv = lr[pi] || 0;
+      const sv = sr[pi] || 0;
+      if (lv > longMaxRow[pi])  longMaxRow[pi]  = lv;
+      if (sv > shortMaxRow[pi]) shortMaxRow[pi] = sv;
     }
   }
   let longArg = -1, longMax = 0;
   let shortArg = -1, shortMax = 0;
   for (let pi = 0; pi < Plen; pi += 1) {
     const p = heat.prices[pi];
-    if (p < midPrice && longSum[pi]  > longMax)  { longMax  = longSum[pi];  longArg  = pi; }
-    if (p > midPrice && shortSum[pi] > shortMax) { shortMax = shortSum[pi]; shortArg = pi; }
+    if (p < midPrice && longMaxRow[pi]  > longMax)  { longMax  = longMaxRow[pi];  longArg  = pi; }
+    if (p > midPrice && shortMaxRow[pi] > shortMax) { shortMax = shortMaxRow[pi]; shortArg = pi; }
   }
   return {
     peakLong:  longArg  >= 0 ? { price: heat.prices[longArg],  value: longMax  } : null,
