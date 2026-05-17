@@ -85,6 +85,29 @@ const ONE_MIN_MS = 60_000;
 const ONE_HOUR_MS = 3600_000;
 
 // ============================================================================
+// 窗口白名单（与 routes/liqSignal.js 共用同一份 .env 配置）
+// ============================================================================
+// 短窗口 15m/1h 的主峰是噪音；resonance 信号 + autoTrade 都受此闸门保护。
+const _DEFAULT_ALLOWED_WINDOWS = [4 * ONE_HOUR_MS, 24 * ONE_HOUR_MS];
+const TRADE_SIGNAL_ALLOWED_WINDOWS_MS = (() => {
+  const raw = String(process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS || '').trim();
+  if (!raw) return new Set(_DEFAULT_ALLOWED_WINDOWS);
+  const parsed = raw.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  return parsed.length ? new Set(parsed) : new Set(_DEFAULT_ALLOWED_WINDOWS);
+})();
+function _isTradeSignalWindowAllowed(windowMs) {
+  return TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs));
+}
+function _allowedWindowsLabel() {
+  return Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b)
+    .map((ms) => {
+      if (ms >= 24 * ONE_HOUR_MS) return `${ms / (24 * ONE_HOUR_MS)}d`;
+      if (ms >= ONE_HOUR_MS) return `${ms / ONE_HOUR_MS}h`;
+      return `${ms / ONE_MIN_MS}m`;
+    }).join(' / ');
+}
+
+// ============================================================================
 // 可调参数 (env override)
 // ============================================================================
 // --- Tier 1 (HEXA) ---
@@ -199,6 +222,18 @@ router.get('/trade/resonance-signal', async (req, res) => {
     let windowMs = Number(req.query.windowMs);
     if (!Number.isFinite(windowMs) || windowMs < 15 * ONE_MIN_MS) windowMs = 24 * ONE_HOUR_MS;
     if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
+
+    // ---- 窗口闸门（B 方案核心安全闸 · 防止短窗口噪音触发 autoTrade）----
+    // 即便前端被绕过（curl 直调），后端也保证只在白名单窗口里计算/推送/下单
+    if (!_isTradeSignalWindowAllowed(windowMs)) {
+      return res.json({
+        success: true,
+        data: _empty(
+          `Window ${windowMs}ms not in trade-signal allow-list (${_allowedWindowsLabel()})`,
+          { symbol, market, windowMs, windowGated: true, allowedWindowsMs: Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS) }
+        )
+      });
+    }
 
     // ---- 主峰采样 ----
     const auto = _autoSampling(windowMs);

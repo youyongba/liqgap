@@ -202,6 +202,32 @@
     btn.addEventListener('click', () => setAlertEnabled(!_globalAlertEnabled));
   }
 
+  // ============================================================
+  // 交易信号窗口白名单 (Trade Signal Window Allow-list · B 方案)
+  //
+  // 短窗口（15m / 1h）的 L↓/S↑ 主峰是局部噪音，不出"交易信号"：
+  //   • 清算磁极信号卡 (renderLiqSignal)：跳过 fetch，显示灰色提示
+  //   • 双层共振信号卡 (renderResonance) ：跳过 fetch，显示灰色提示
+  //   • 后端 routes/liqSignal.js + routes/resonanceSignal.js 也有同样闸门
+  //     （前后端双保险，curl 直调也无法绕过 → 保护 autoTrade webhook）
+  //   • 清算热图本身 + cross/reclaim 警报不受此闸影响（仍可看 15m 细节）
+  //
+  // 同步说明：这里必须和后端 .env TRADE_SIGNAL_ALLOWED_WINDOWS_MS 保持一致；
+  // 默认 4h + 24h。
+  // ============================================================
+  const TRADE_SIGNAL_ALLOWED_WINDOWS_MS = new Set([
+    4 * 60 * 60_000,
+    24 * 60 * 60_000
+  ]);
+  function isTradeSignalWindowAllowed(windowMs) {
+    return TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs));
+  }
+  function tradeSignalAllowedLabel() {
+    return Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b)
+      .map((ms) => ms >= 86_400_000 ? `${ms / 86_400_000}d` : `${ms / 3_600_000}h`)
+      .join(' / ');
+  }
+
   // 当前周期下两个副图的取数策略
   // (Per-interval policy for sub-chart data fetching.)
   //   - CVD 是从 K 线 takerBuyBase 派生，直接跟主图同步，所以这里的"interval"
@@ -2033,10 +2059,14 @@
     // 两种独立事件 + 两种声音：
     //   • CROSS   — close 价穿过 peak 立即触发（破位事件 · 电子警报声）
     //                调 POST /api/alerts/liquidation-cross with eventType=cross
+    //                ⚠️ 所有窗口（15m/1h/4h/24h）都会触发
     //   • RECLAIM — 价格穿过 peak 后又回到墙的另一侧（sweep + reclaim · 三段上扬音）
     //                long  reclaim = 跌穿 L↓ 又收回墙上方 → 做多机会
     //                short reclaim = 涨穿 S↑ 又回到墙下方 → 做空机会
     //                调 POST /api/alerts/liquidation-cross with eventType=reclaim
+    //                ⭐ 仅在选 4h / 24h 窗口时触发 — 短窗口的局部小 peak 频繁漂移
+    //                   导致 reclaim 假信号过多；4h/24h peak 才有结构性意义。
+    //                   窗口列表见 RECLAIM_ALLOWED_WINDOWS_MS 常量。
     //
     // 关键特性 — 瞬间插针捕获：
     //   reclaim 检测同时用 K 线 high/low + close 轮询，所以即使整个"插针 + 收回"
@@ -2051,6 +2081,7 @@
     //   - 同 side 同事件冷却: cross 5 分钟、reclaim 10 分钟（前后端各一道）
     //
     // peak 价位 / 索引发生显著漂移时（重新计算主峰），自动重置该 side 的状态机。
+    // 用户切换窗口（如 24h → 1h）时也会自动重置 reclaim 状态机，避免跨窗口污染。
     // ============================================================
     // 警报状态、声音、按钮渲染由 IIFE 顶层的全局警报模块统一管理；
     // 这里只把本卡的按钮注册进去即可。
@@ -2060,6 +2091,15 @@
     const RECLAIM_BACK_MIN_PCT   = 0.001;   // 0.1%
     const RECLAIM_WINDOW_MS      = 30 * 60_000;
     const PEAK_DRIFT_RESET_PCT   = 0.0015;  // 0.15% 漂移视为新 peak，重置状态机
+    // 仅以下清算热图窗口启用 reclaim 警报：4h / 24h
+    // 短窗口（15m / 1h）的主峰是噪音级局部高低，reclaim 假信号过多。
+    // 用户若想放宽，把对应毫秒值加进这个 Set 即可（例如加 3_600_000 = 启用 1h）。
+    const RECLAIM_ALLOWED_WINDOWS_MS = new Set([4 * 3600_000, 24 * 3600_000]);
+    function _isReclaimWindowAllowed(windowMs) {
+      return RECLAIM_ALLOWED_WINDOWS_MS.has(Number(windowMs));
+    }
+    // 上次见到的窗口，用来检测用户切换 → 重置 reclaim 状态机
+    let _lastSeenWindowMs = null;
     let _alertPrevPrice = null;
     const _alertLastAt = { long: 0, short: 0 };
     const _reclaimLastAt = { long: 0, short: 0 };
@@ -2199,6 +2239,19 @@
       // cross 警报仍需要 prev 不同于 cur（破位事件本质是 close 价变化）
       const hasPrev = Number.isFinite(prev) && prev !== cur;
 
+      // 窗口切换检测：用户切到不同窗口（如 24h → 1h）→ 重置 reclaim 状态机
+      // 避免上一个窗口的 swept 状态污染下一个窗口的判断
+      const curWindowMs = Number(state.windowMs) || 0;
+      if (_lastSeenWindowMs !== null && _lastSeenWindowMs !== curWindowMs) {
+        _resetReclaim('long');
+        _resetReclaim('short');
+        // eslint-disable-next-line no-console
+        console.log(`[liq-reclaim] window changed ${_lastSeenWindowMs} → ${curWindowMs}, state reset`);
+      }
+      _lastSeenWindowMs = curWindowMs;
+      // reclaim 仅在 4h / 24h 窗口启用（短窗口的 peak 是局部噪音）
+      const reclaimEnabled = _isReclaimWindowAllowed(curWindowMs);
+
       const checkOne = (side, pi, val) => {
         if (pi == null || pi < 0) {
           _resetReclaim(side); // peak 失效，重置状态机
@@ -2212,6 +2265,10 @@
         const peakVal = val || 0;
 
         // ---- 1. Reclaim 状态机（先处理，独立于 cross 警报）----
+        // 短窗口（15m/1h）不启用 reclaim：保证状态机始终 idle，跳过整段
+        if (!reclaimEnabled) {
+          if (_reclaimState[side].phase !== 'idle') _resetReclaim(side);
+        } else {
         const st = _reclaimState[side];
         // peak 显著漂移（重算主峰位置）→ 当前 swept 状态作废
         if (st.trackedPeak != null && peak > 0) {
@@ -2299,6 +2356,7 @@
             }
           }
         }
+        } // end if(reclaimEnabled)
 
         // ---- 2. 原 cross 警报（保留：close 价穿过 peak 立即触发）----
         // cross 仍需要 close 价变化（破位事件 = close 真的穿过 peak）
@@ -4066,12 +4124,17 @@
       renderLiqSignalUnsupported();
       return;
     }
+    const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
+    // ⛔ B 方案安全闸：短窗口不出交易信号 → 跳过 fetch，渲染灰色提示
+    if (!isTradeSignalWindowAllowed(liqWindowMs)) {
+      renderLiqSignalWindowGated(liqWindowMs);
+      return;
+    }
     _liqSignalInFlight = true;
     try {
       const symbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
       const btCapital = Number(document.getElementById('bt-capital')?.value) || 1000;
       const btRisk = Number(document.getElementById('bt-risk')?.value) || 1;
-      const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
       const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
       const params = new URLSearchParams({
         symbol,
@@ -4097,6 +4160,21 @@
     els.liqSignalBanner.textContent = '⚪ 现货市场无杠杆，无清算磁极信号 / Spot has no liquidations';
     els.liqSignalBody.style.display = 'none';
     els.liqSignalMeta.textContent = '';
+  }
+
+  // 窗口闸门：用户在清算热图选了 15m / 1h 时，不出清算磁极信号
+  function renderLiqSignalWindowGated(windowMs) {
+    _lastLiqSignal = null;
+    if (!els.liqSignalCard) return;
+    els.liqSignalBanner.classList.remove('long', 'short');
+    els.liqSignalBanner.classList.add('none');
+    const winLabel = windowMs >= 3_600_000 ? `${windowMs / 3_600_000}h` : `${windowMs / 60_000}m`;
+    els.liqSignalBanner.textContent =
+      `⚪ 本窗口 (${winLabel}) 不出交易信号 — 请切到 ${tradeSignalAllowedLabel()} 查看`;
+    els.liqSignalBody.style.display = 'none';
+    els.liqSignalMeta.textContent =
+      '短窗口主峰为局部噪音 (胜率 ≈ 50%)，已自动屏蔽以避免 autoTrade 被无效信号触发。' +
+      ' / Short-window peaks are noise; trade signals disabled.';
   }
 
   // 复制按钮：把当前清算磁极信号格式化成文本
@@ -4263,6 +4341,20 @@
     els.resonanceMeta.textContent = '';
   }
 
+  // 窗口闸门：用户选 15m / 1h 时，共振信号也不出
+  function renderResonanceWindowGated(windowMs) {
+    _lastResonance = null;
+    if (!els.resonanceCard) return;
+    els.resonanceBanner.classList.remove('long', 'short');
+    els.resonanceBanner.classList.add('none');
+    const winLabel = windowMs >= 3_600_000 ? `${windowMs / 3_600_000}h` : `${windowMs / 60_000}m`;
+    els.resonanceBanner.textContent =
+      `⚪ 本窗口 (${winLabel}) 不出共振信号 — 请切到 ${tradeSignalAllowedLabel()} 查看`;
+    els.resonanceBody.style.display = 'none';
+    els.resonanceMeta.textContent =
+      '共振信号依赖结构性 peak (4h+)，短窗口噪音过多。 / Resonance requires structural peaks.';
+  }
+
   let _resonanceInFlight = false;
   async function refreshResonance() {
     if (_resonanceInFlight) return;
@@ -4271,10 +4363,15 @@
       renderResonanceUnsupported();
       return;
     }
+    const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
+    // ⛔ B 方案安全闸：短窗口跳过 fetch，显示灰色提示
+    if (!isTradeSignalWindowAllowed(liqWindowMs)) {
+      renderResonanceWindowGated(liqWindowMs);
+      return;
+    }
     _resonanceInFlight = true;
     try {
       const symbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
-      const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
       const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
       const params = new URLSearchParams({
         symbol,
@@ -4714,10 +4811,12 @@
       // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆）。
       // 主峰窗口 / 价格范围 = 用户当前在"清算热图"卡片上的选择，确保信号
       // 报告的"触发墙价位"和图上视觉看到的主峰完全一致。
+      // B 方案安全闸：windowMs 不在白名单 → 跳过 fetch，避免后端被无效请求轰炸
       const btCapital = Number(document.getElementById('bt-capital')?.value) || 1000;
       const btRisk = Number(document.getElementById('bt-risk')?.value) || 1;
       const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
       const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
+      const liqWindowAllowed = isTradeSignalWindowAllowed(liqWindowMs);
       const liqSignalParams = new URLSearchParams({
         symbol,
         windowMs: String(liqWindowMs),
@@ -4725,7 +4824,7 @@
         riskPercent: String(btRisk)
       });
       if (liqRange && liqRange !== 'auto') liqSignalParams.set('priceRange', String(liqRange));
-      const liqSignalFetch = market === 'futures'
+      const liqSignalFetch = (market === 'futures' && liqWindowAllowed)
         ? fetchJsonSoft(`/api/trade/liq-signal?${liqSignalParams.toString()}`)
         : Promise.resolve(null);
 
@@ -4765,8 +4864,13 @@
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       if (market === 'futures') {
-        if (liqSignal) renderLiqSignal(liqSignal);
-        else failed.push('liqSignal');
+        if (!liqWindowAllowed) {
+          renderLiqSignalWindowGated(liqWindowMs);
+        } else if (liqSignal) {
+          renderLiqSignal(liqSignal);
+        } else {
+          failed.push('liqSignal');
+        }
       } else {
         renderLiqSignalUnsupported();
       }

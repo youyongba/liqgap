@@ -55,6 +55,32 @@ const ONE_MIN_MS = 60_000;
 const ONE_HOUR_MS = 3600_000;
 
 // ============================================================================
+// 窗口白名单 (Window allow-list · 共享于 liq-signal + resonance-signal)
+// ============================================================================
+// 短窗口 (15m / 1h) 的 L↓/S↑ 主峰是局部高低点噪音，胜率接近随机；
+// 4h / 24h 的 peak 反映多 K 线持仓累积，才有结构意义。
+// 若不限制，autoTrade webhook 会被噪音信号触发，导致账户被洗手续费。
+// 可通过 .env TRADE_SIGNAL_ALLOWED_WINDOWS_MS 调整（逗号分隔毫秒值）。
+const _DEFAULT_ALLOWED_WINDOWS = [4 * ONE_HOUR_MS, 24 * ONE_HOUR_MS];
+const TRADE_SIGNAL_ALLOWED_WINDOWS_MS = (() => {
+  const raw = String(process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS || '').trim();
+  if (!raw) return new Set(_DEFAULT_ALLOWED_WINDOWS);
+  const parsed = raw.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  return parsed.length ? new Set(parsed) : new Set(_DEFAULT_ALLOWED_WINDOWS);
+})();
+function _isTradeSignalWindowAllowed(windowMs) {
+  return TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs));
+}
+function _allowedWindowsLabel() {
+  return Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b)
+    .map((ms) => {
+      if (ms >= 24 * ONE_HOUR_MS) return `${ms / (24 * ONE_HOUR_MS)}d`;
+      if (ms >= ONE_HOUR_MS) return `${ms / ONE_HOUR_MS}h`;
+      return `${ms / ONE_MIN_MS}m`;
+    }).join(' / ');
+}
+
+// ============================================================================
 // 可调参数（env 覆盖）
 // ============================================================================
 const REVERSAL_DIST_PCT = Number(process.env.LIQ_SIGNAL_REVERSAL_DIST_PCT) || 0.003; // 0.3%
@@ -105,6 +131,18 @@ router.get('/trade/liq-signal', async (req, res) => {
     if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
     const riskPercent = Number(req.query.riskPercent) || 1;
     const accountBalance = Number(req.query.accountBalance) || 1000;
+
+    // ---- 窗口闸门（B 方案核心安全闸 · 防止短窗口噪音触发 autoTrade）----
+    // 即便前端被绕过（curl 直调），后端也保证只在白名单窗口里计算/推送/下单
+    if (!_isTradeSignalWindowAllowed(windowMs)) {
+      return res.json({
+        success: true,
+        data: _empty(
+          `Window ${windowMs}ms not in trade-signal allow-list (${_allowedWindowsLabel()})`,
+          { symbol, market, windowMs, windowGated: true, allowedWindowsMs: Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS) }
+        )
+      });
+    }
 
     // ---- 主峰采样策略 ----
     const auto = _autoSampling(windowMs);

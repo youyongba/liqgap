@@ -538,11 +538,27 @@ curl -X POST http://localhost:3003/api/auto-trade/test \
 
 清算热图卡片右上角的 🔔 按钮启用后，前端每 500ms 检查现价与 L↓/S↑ 主峰的关系，触发两种独立警报：
 
-| 事件 | 触发条件 | 声音 | 飞书卡 | 解读 |
-|---|---|---|---|---|
-| **CROSS** | 价格刚穿过 peak | 6 段 880↔1320 Hz 电子警报 | 红/绿（按被清算方向） | 破位事件，仅作风险提醒，未必有交易机会 |
-| **RECLAIM** | 穿越深度 ≥ 0.1% + 回到墙的另一侧 ≥ 0.1% + 时间窗口 ≤ 30 分钟 | 3 段上扬 660→990→1320 Hz 三角波 | long 绿 / short 红（按交易方向） | sweep + reclaim 反转 setup（**高胜率**），主峰假突破被收回 |
-| **RECLAIM · INSTANT-PIN** | 同一根 K 线内"插针 + 收回"都完成（K 线 high/low 已穿越 peak 但 close 已回到墙内） | 同 RECLAIM | 同 RECLAIM（`sweepDurationMs` 通常 < 1s） | 瞬间插针场景 — 大单一次性扫了流动性后立刻收回，K 线收盘后会出现长上影/下影针 |
+| 事件 | 触发条件 | 适用窗口 | 声音 | 飞书卡 | 解读 |
+|---|---|---|---|---|---|
+| **CROSS** | 价格刚穿过 peak | **所有窗口**（15m/1h/4h/24h）| 6 段 880↔1320 Hz 电子警报 | 红/绿（按被清算方向） | 破位事件，仅作风险提醒，未必有交易机会 |
+| **RECLAIM** | 穿越深度 ≥ 0.1% + 回到墙的另一侧 ≥ 0.1% + 时间窗口 ≤ 30 分钟 | **仅 4h / 24h** ⭐ | 3 段上扬 660→990→1320 Hz 三角波 | long 绿 / short 红（按交易方向） | sweep + reclaim 反转 setup（**高胜率**），主峰假突破被收回 |
+| **RECLAIM · INSTANT-PIN** | 同一根 K 线内"插针 + 收回"都完成（K 线 high/low 已穿越 peak 但 close 已回到墙内） | **仅 4h / 24h** ⭐ | 同 RECLAIM | 同 RECLAIM（`sweepDurationMs` 通常 < 1s） | 瞬间插针场景 — 大单一次性扫了流动性后立刻收回，K 线收盘后会出现长上影/下影针 |
+
+**为什么 reclaim 只在 4h / 24h 触发？**
+
+短窗口（15m / 1h）的 L↓ / S↑ 主峰是**局部高低点的噪音级聚集**，价格随便晃几下都能形成"sweep + reclaim"形态，但实际没有结构意义（胜率接近 50%，纯噪音）。4h / 24h 窗口的 peak 反映的是**多 K 线持仓累积**，假突破被收回才有真正的反转含义。
+
+调整方法：如果想放宽到 1h 也启用 reclaim，编辑 `public/app.js` 顶部常量：
+
+```javascript
+const RECLAIM_ALLOWED_WINDOWS_MS = new Set([
+  // 60 * 60_000,        // 启用 1h（默认禁用）
+  4 * 60 * 60_000,        // 4h ✅
+  24 * 60 * 60_000        // 24h ✅
+]);
+```
+
+用户**切换窗口时**（如 24h → 1h）reclaim 状态机会自动重置，避免跨窗口污染（控制台日志会有 `[liq-reclaim] window changed ...` 字样）。
 
 **Reclaim 信号方向解读**：
 - `long reclaim`：价格跌穿 L↓ 多头清算墙后又收回墙上方 → 下方流动性被扫干净 → **做多机会**（绿卡）
@@ -605,6 +621,77 @@ curl -s -X POST http://localhost:3003/api/alerts/liquidation-cross \
 
 # 4. 查看状态
 curl -s http://localhost:3003/api/alerts/liquidation-cross/status | jq
+```
+
+---
+
+## 🛡️ 交易信号窗口闸门 (Trade Signal Window Allow-list · B 方案)
+
+清算磁极信号 / 共振信号 / autoTrade webhook 都受这道闸门保护，**只在 4h / 24h 窗口出信号**。短窗口（15m / 1h）的 L↓/S↑ 主峰是局部噪音（胜率约 50%），如果让 autoTrade 触发，会被无效信号洗手续费。
+
+| 模块 | 闸门位置 | 短窗口行为 |
+|---|---|---|
+| 🧲 清算磁极信号卡 (`GET /api/trade/liq-signal`) | 前端跳过 fetch + 后端返回 NONE | 卡片显示「本窗口不出交易信号」灰色提示 |
+| 🏆 双层共振信号卡 (`GET /api/trade/resonance-signal`) | 前端跳过 fetch + 后端返回 NONE | 同上 |
+| 🤖 autoTrade webhook (LIQ_REVERSAL_*, HEXA_*, TRIO_*) | 跟随上述两个路由 | 不发送，**保护资金** |
+| 🔔 清算热图实时警报 (cross / reclaim) | 仅 reclaim 受影响（cross 全窗口生效） | reclaim 静音，cross 仍响 |
+| 📊 清算热图本身 + 其他副图（CVD/OI/VWAP/订单簿/LVN） | 不受影响 | 仍可看 15m/1h 细节 |
+
+### 防绕过设计
+
+**前后端双保险**，curl 直调也无法绕过：
+
+```routes/liqSignal.js
+if (!_isTradeSignalWindowAllowed(windowMs)) {
+  return res.json({
+    success: true,
+    data: _empty(`Window ${windowMs}ms not in trade-signal allow-list (4h / 24h)`,
+      { ..., windowGated: true, allowedWindowsMs: [14400000, 86400000] })
+  });
+}
+```
+
+### .env 配置
+
+```bash
+# 默认 4h + 24h
+TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000,86400000
+
+# 想再放开 1h：
+# TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000,86400000,3600000
+
+# 仅 24h（最严格，最少假信号）：
+# TRADE_SIGNAL_ALLOWED_WINDOWS_MS=86400000
+```
+
+**注意**：前端 `public/app.js` 顶部的 `TRADE_SIGNAL_ALLOWED_WINDOWS_MS` 常量需要和 .env 保持一致（前端没法直接读 .env，所以是硬编码常量；如果你改了 .env，记得同步改前端常量）。
+
+### 验证（curl）
+
+```bash
+# 短窗口被闸门拦截
+$ curl -s 'http://localhost:3003/api/trade/liq-signal?symbol=BTCUSDT&windowMs=900000' | jq '.data | {signal, reason, gated: .indicatorsSnapshot.windowGated}'
+{
+  "signal": "NONE",
+  "reason": "Window 900000ms not in trade-signal allow-list (4h / 24h)",
+  "gated": true
+}
+
+# 4h 通过闸门进入正常流程
+$ curl -s 'http://localhost:3003/api/trade/liq-signal?symbol=BTCUSDT&windowMs=14400000' | jq '.data | {signal, confidence, gated: .indicatorsSnapshot.windowGated}'
+{
+  "signal": "LIQ_SWEEP_REJECT_LONG",
+  "confidence": 80,
+  "gated": null
+}
+
+# resonance 同样
+$ curl -s 'http://localhost:3003/api/trade/resonance-signal?symbol=BTCUSDT&windowMs=900000' | jq '.data | {tier, signal, gated: .indicatorsSnapshot.windowGated}'
+{
+  "tier": "NONE",
+  "signal": "NONE",
+  "gated": true
+}
 ```
 
 ---
