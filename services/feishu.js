@@ -510,23 +510,40 @@ function formatTs(ts) {
 // 清算穿越卡片 (Liquidation cross alert card)
 // ============================================================================
 /**
- * 当现价穿过预测/已发生清算热图上的主峰价位（L↓ 多头清算墙 或 S↑ 空头清算墙）
- * 时调用此卡片。是高紧急度的实时风险事件。
+ * 当现价与预测/已发生清算热图主峰（L↓ 多头清算墙 / S↑ 空头清算墙）发生
+ * 关键事件时调用此卡片。支持两种事件：
+ *   • cross   — 价格刚穿过 peak（突破/破位事件，颜色随被清算方向）
+ *   • reclaim — 价格穿过 peak 后又回到墙的另一侧（sweep + reclaim 反转事件）
+ *               - long  reclaim → 做多机会，绿色卡
+ *               - short reclaim → 做空机会，红色卡
  *
  * @param {object} payload
  *   symbol, market, mode:'predicted'|'realized',
- *   side:'long'|'short',  // 被清算的方向
- *   peakPrice:number, peakValue:number,  // 主峰价位 / 累计清算量(USDT)
- *   prevPrice:number, curPrice:number,   // 穿越瞬间的前一刻价 / 当前价
- *   crossDirection:'down'|'up',          // 穿越方向（自上而下/自下而上）
+ *   eventType:'cross'|'reclaim',          // 默认 'cross'
+ *   side:'long'|'short',                  // 涉及的清算墙方向
+ *   peakPrice:number, peakValue:number,   // 主峰价位 / 累计清算量(USDT)
+ *   prevPrice:number, curPrice:number,    // 穿越瞬间的前一刻价 / 当前价
+ *   crossDirection:'down'|'up',           // 穿越方向（自上而下/自下而上）
+ *   // 仅 reclaim 携带：
+ *   sweepExtreme?:number,                 // 穿越达到的最深/最高价
+ *   sweepDurationMs?:number,              // 从首次穿越到收回的耗时
+ *   pierceDepthPct?:number,               // 穿越深度（已 abs）
+ *   reclaimDepthPct?:number,              // 收回深度（已 abs）
  *   timestamp:number
  */
 function buildLiquidationCrossCard(payload) {
+  const eventType = payload.eventType === 'reclaim' ? 'reclaim' : 'cross';
+  return eventType === 'reclaim'
+    ? _buildReclaimCard(payload)
+    : _buildCrossCard(payload);
+}
+
+function _buildCrossCard(payload) {
   const sym = String(payload.symbol || 'BTCUSDT').toUpperCase();
   const market = payload.market || 'futures';
   const isLong = payload.side === 'long';
-  // long 清算 = 多头爆仓（价格跌穿） → 红色卡片
-  // short 清算 = 空头爆仓（价格涨穿） → 绿色卡片
+  // cross 事件：long 清算 = 多头爆仓（价格跌穿） → 红色卡片
+  //             short 清算 = 空头爆仓（价格涨穿） → 绿色卡片
   const template = isLong ? 'red' : 'green';
   const sideLabel = isLong
     ? '🔻 多头清算墙击穿 / Long Liq Wall Broken'
@@ -571,6 +588,83 @@ function buildLiquidationCrossCard(payload) {
           {
             tag: 'lark_md',
             content: `触发 / Trigger: **liq-cross alert** · ${formatTs(payload.timestamp || Date.now())}`
+          }
+        ]
+      }
+    ]
+  };
+}
+
+function _buildReclaimCard(payload) {
+  const sym = String(payload.symbol || 'BTCUSDT').toUpperCase();
+  const market = payload.market || 'futures';
+  const isLong = payload.side === 'long';
+  // reclaim 事件颜色按"交易方向"配色：
+  //   long  reclaim → 跌穿 L↓ 又收回 → 做多机会 → 绿色
+  //   short reclaim → 涨穿 S↑ 又收回 → 做空机会 → 红色
+  const template = isLong ? 'green' : 'red';
+  const sideLabel = isLong
+    ? '🟢 多头清算墙假突破收回 / L↓ Sweep + Reclaim → LONG'
+    : '🔴 空头清算墙假突破收回 / S↑ Sweep + Reclaim → SHORT';
+
+  const sign = (n) => (n >= 0 ? '+' : '') + n.toFixed(Math.abs(n) >= 100 ? 2 : 4);
+  const fmtMoney = (v) => v >= 1e9
+    ? (v / 1e9).toFixed(2) + 'B'
+    : v >= 1e6 ? (v / 1e6).toFixed(2) + 'M'
+    : v >= 1e3 ? (v / 1e3).toFixed(2) + 'K' : Number(v).toFixed(0);
+  const fmtPct = (v) => Number.isFinite(v) ? (Math.abs(v) * 100).toFixed(3) + '%' : '-';
+  const fmtDur = (ms) => {
+    if (!Number.isFinite(ms) || ms < 0) return '-';
+    if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+    return `${(ms / 60_000).toFixed(1)}min`;
+  };
+
+  const lines = [];
+  lines.push(`**标的 / Symbol**: ${sym} · ${market === 'spot' ? '现货' : '合约'}`);
+  lines.push(`**模式 / Mode**: ${payload.mode === 'realized' ? '已发生 / Realized' : '预测性 / Predicted'}`);
+  lines.push('---');
+  lines.push(`**清算墙 / Liq Wall**: \`${fmt(payload.peakPrice)}\` (累计 ${fmtMoney(Number(payload.peakValue) || 0)} USDT)`);
+  if (payload.sweepExtreme != null) {
+    const extLabel = isLong ? 'Sweep 最低 / Lowest' : 'Sweep 最高 / Highest';
+    lines.push(`**${extLabel}**: \`${fmt(payload.sweepExtreme)}\``);
+  }
+  if (payload.pierceDepthPct != null) {
+    lines.push(`**穿越深度 / Pierce**: ${fmtPct(payload.pierceDepthPct)}`);
+  }
+  if (payload.reclaimDepthPct != null) {
+    lines.push(`**收回深度 / Reclaim**: ${fmtPct(payload.reclaimDepthPct)}`);
+  }
+  if (payload.sweepDurationMs != null) {
+    lines.push(`**Sweep 持续 / Duration**: ${fmtDur(payload.sweepDurationMs)}`);
+  }
+  lines.push('---');
+  const dPrice = Number(payload.curPrice) - Number(payload.prevPrice);
+  lines.push(`**前价 / Prev**: \`${fmt(payload.prevPrice)}\``);
+  lines.push(`**现价 / Now**: \`${fmt(payload.curPrice)}\``);
+  lines.push(`**变动 / Δ**: ${sign(dPrice)}`);
+  lines.push('---');
+  lines.push(isLong
+    ? '🟢 **做多机会** — 价格下插针扫了下方流动性后被收回，空头力竭。\n' +
+      '建议：在墙上方挂止损，止盈瞄准对侧 S↑ 主峰或 1R / 2R / 3R。\n' +
+      '注意：需 CVD 同步转正 + 反弹有成交量配合；只是"回到墙内"不够。'
+    : '🔴 **做空机会** — 价格上插针扫了上方流动性后被收回，多头力竭。\n' +
+      '建议：在墙下方挂止损，止盈瞄准对侧 L↓ 主峰或 1R / 2R / 3R。\n' +
+      '注意：需 CVD 同步转负 + 回落有成交量配合；只是"回到墙内"不够。');
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: 'plain_text', content: `${sideLabel} · ${sym}` },
+      template
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      {
+        tag: 'note',
+        elements: [
+          {
+            tag: 'lark_md',
+            content: `触发 / Trigger: **liq-reclaim alert** · ${formatTs(payload.timestamp || Date.now())}`
           }
         ]
       }

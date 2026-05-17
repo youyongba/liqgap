@@ -3,17 +3,29 @@
 /**
  * POST /api/alerts/liquidation-cross
  *
- * 前端检测到现价穿越清算热图主峰（L↓ 多头清算墙 / S↑ 空头清算墙）时
- * 触发本接口；后端做服务端二次去重 + 推送飞书 + 写日志。
+ * 前端检测到现价与清算热图主峰（L↓ 多头清算墙 / S↑ 空头清算墙）发生
+ * 关键事件时触发本接口；后端做服务端二次去重 + 推送飞书 + 写日志。
+ *
+ * 支持两种事件 (eventType)：
+ *   • 'cross'   — 价格刚穿过 peak（默认；不传也按 cross 处理，兼容旧客户端）
+ *   • 'reclaim' — 价格穿过 peak 后又回到墙的另一侧（sweep + reclaim），高胜率反转 setup
+ *                 - long  reclaim: 跌穿 L↓ 又收回墙上方 → 做多机会（绿色卡）
+ *                 - short reclaim: 涨穿 S↑ 又回到墙下方 → 做空机会（红色卡）
  *
  * Request body:
  *   {
  *     symbol, market,
  *     mode: 'predicted' | 'realized',
+ *     eventType: 'cross' | 'reclaim',          // 默认 'cross'
  *     side: 'long' | 'short',
  *     peakPrice, peakValue,
  *     prevPrice, curPrice,
  *     crossDirection: 'down' | 'up',
+ *     // 仅 reclaim 时携带：
+ *     sweepExtreme,                            // 穿越达到的最深/最高价
+ *     sweepDurationMs,                         // 从首次穿越到收回的耗时
+ *     pierceDepthPct,                          // (peak - sweepExtreme) / peak（已 abs）
+ *     reclaimDepthPct,                         // (curPrice - peak) / peak（已 abs）
  *     timestamp
  *   }
  *
@@ -26,15 +38,24 @@ const feishu = require('../services/feishu');
 
 const router = express.Router();
 
-// 服务端去重：同一 (symbol, market, side, peakPrice±tolerance) 在 N 分钟内
+// 服务端去重：同一 (symbol, market, eventType, side, peakPrice±tolerance) 在 N 分钟内
 // 只发一次。前端也会去重，但这里再做一道兜底，避免多 tab / 多客户端刷屏。
+// cross 和 reclaim 是不同 eventType，互相独立计冷却。
 const SERVER_COOLDOWN_MS = Number(process.env.LIQ_CROSS_COOLDOWN_MS) || 5 * 60_000;
+const RECLAIM_COOLDOWN_MS = Number(process.env.LIQ_RECLAIM_COOLDOWN_MS) || 10 * 60_000;
 const PRICE_TOLERANCE_PCT = 0.0005; // 主峰价位有 0.05% 抖动算同一价位
 
 const _lastAlertByKey = new Map();
 
+function _normEventType(t) {
+  return t === 'reclaim' ? 'reclaim' : 'cross';
+}
 function _alertKey(b) {
-  return `${String(b.symbol || '').toUpperCase()}|${b.market || 'futures'}|${b.side}`;
+  const evt = _normEventType(b.eventType);
+  return `${String(b.symbol || '').toUpperCase()}|${b.market || 'futures'}|${evt}|${b.side}`;
+}
+function _cooldownFor(eventType) {
+  return _normEventType(eventType) === 'reclaim' ? RECLAIM_COOLDOWN_MS : SERVER_COOLDOWN_MS;
 }
 function _shouldAlert(body) {
   const key = _alertKey(body);
@@ -47,7 +68,8 @@ function _shouldAlert(body) {
   if (!prev) return { ok: true, key, now };
   const samePeak = Math.abs(peak - prev.peak) / prev.peak <= PRICE_TOLERANCE_PCT;
   const elapsed = now - prev.ts;
-  if (samePeak && elapsed < SERVER_COOLDOWN_MS) {
+  const cd = _cooldownFor(body.eventType);
+  if (samePeak && elapsed < cd) {
     return { ok: false, reason: `same peak in cooldown (${Math.round(elapsed / 1000)}s ago)` };
   }
   return { ok: true, key, now };
@@ -72,10 +94,12 @@ router.post('/alerts/liquidation-cross', async (req, res) => {
       return res.json({ success: true, data: { skipped: true, reason: decide.reason } });
     }
 
+    const eventType = _normEventType(b.eventType);
     const payload = {
       symbol: b.symbol,
       market: b.market || 'futures',
       mode: b.mode || 'predicted',
+      eventType,
       side: b.side,
       peakPrice: Number(b.peakPrice),
       peakValue: Number(b.peakValue) || 0,
@@ -84,12 +108,25 @@ router.post('/alerts/liquidation-cross', async (req, res) => {
       crossDirection: b.crossDirection || (Number(b.curPrice) < Number(b.prevPrice) ? 'down' : 'up'),
       timestamp: Number(b.timestamp) || Date.now()
     };
+    if (eventType === 'reclaim') {
+      const ext = Number(b.sweepExtreme);
+      if (Number.isFinite(ext) && ext > 0) payload.sweepExtreme = ext;
+      const dur = Number(b.sweepDurationMs);
+      if (Number.isFinite(dur) && dur >= 0) payload.sweepDurationMs = dur;
+      const pd = Number(b.pierceDepthPct);
+      if (Number.isFinite(pd)) payload.pierceDepthPct = pd;
+      const rd = Number(b.reclaimDepthPct);
+      if (Number.isFinite(rd)) payload.reclaimDepthPct = rd;
+    }
 
     // eslint-disable-next-line no-console
     console.log(
-      `[liq-cross] ALERT ${payload.symbol}/${payload.side} ` +
+      `[liq-cross] ALERT(${eventType}) ${payload.symbol}/${payload.side} ` +
       `peak=${payload.peakPrice} (${payload.peakValue} USDT) ` +
-      `${payload.prevPrice} → ${payload.curPrice} (${payload.crossDirection})`
+      `${payload.prevPrice} → ${payload.curPrice} (${payload.crossDirection})` +
+      (eventType === 'reclaim' && payload.sweepExtreme != null
+        ? ` · ext=${payload.sweepExtreme} dur=${payload.sweepDurationMs || 0}ms`
+        : '')
     );
 
     let feishuResult = null;
@@ -123,7 +160,8 @@ router.get('/alerts/liquidation-cross/status', (_req, res) => {
   res.json({
     success: true,
     data: {
-      cooldownMs: SERVER_COOLDOWN_MS,
+      crossCooldownMs: SERVER_COOLDOWN_MS,
+      reclaimCooldownMs: RECLAIM_COOLDOWN_MS,
       priceTolerancePct: PRICE_TOLERANCE_PCT,
       feishuEnabled: feishu.isEnabled(),
       lastAlerts: out

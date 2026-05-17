@@ -29,6 +29,7 @@ liq-gap/
 │   ├── volumeProfile.js       # GET /api/indicators/volume-profile
 │   ├── slippage.js            # GET /api/indicators/slippage
 │   ├── alerts.js              # GET /api/alerts/liquidity
+│   ├── alertCross.js          # POST /api/alerts/liquidation-cross  (清算热图实时穿越/收回警报)
 │   ├── signal.js              # GET /api/trade/signal  (核心信号)
 │   ├── squeeze.js             # /api/squeeze/{warning,confirmation,heatmap,signal}
 │   ├── backtest.js            # GET /api/backtest/run  (30 天回测)
@@ -114,6 +115,8 @@ npm run dev            # nodemon 热重载
 | GET | `/api/indicators/volume-profile` | 成交量分布、POC、VAH、VAL |
 | GET | `/api/indicators/slippage` | 给定数量市价单滑点模拟 |
 | GET | `/api/alerts/liquidity` | 综合预警（5 项触发器 + 风险分数） |
+| POST | `/api/alerts/liquidation-cross` | 清算热图实时事件（`eventType=cross` 穿越 / `eventType=reclaim` 假突破收回），声音 + 飞书 |
+| GET | `/api/alerts/liquidation-cross/status` | 各 side+event 最近触发时间、冷却参数、飞书启用状态 |
 | GET | `/api/trade/signal` | **核心**：LONG/SHORT/NONE 信号 + 入场/止损/止盈 |
 | GET | `/api/squeeze/warning` | 扎空/扎多预警评分（资金费率 / OI / 持仓比 / Taker） |
 | GET | `/api/squeeze/confirmation` | 价格-OI 背离 / 爆仓主导 / 资金费率回归 |
@@ -528,6 +531,81 @@ curl -X POST http://localhost:3003/api/auto-trade/test \
 - 服务端日志里 `[auto-trade] sent BTCUSDT LIQ_REVERSAL_SHORT short (HTTP 200)` = 成功
 - `[auto-trade] BTCUSDT LIQ_REVERSAL_SHORT failed (HTTP 401)...` = 网络/鉴权失败，按状态码排查
 - `GET /api/auto-trade/status` → `recentCalls[]` 含每次的 `payload` / `status` / `response` / `durationMs` / `error`
+
+---
+
+## 🧲 清算热图实时警报 (Cross / Reclaim Alerts)
+
+清算热图卡片右上角的 🔔 按钮启用后，前端每 500ms 检查现价与 L↓/S↑ 主峰的关系，触发两种独立警报：
+
+| 事件 | 触发条件 | 声音 | 飞书卡 | 解读 |
+|---|---|---|---|---|
+| **CROSS** | 价格刚穿过 peak | 6 段 880↔1320 Hz 电子警报 | 红/绿（按被清算方向） | 破位事件，仅作风险提醒，未必有交易机会 |
+| **RECLAIM** | 穿越深度 ≥ 0.1% + 回到墙的另一侧 ≥ 0.1% + 时间窗口 ≤ 30 分钟 | 3 段上扬 660→990→1320 Hz 三角波 | long 绿 / short 红（按交易方向） | sweep + reclaim 反转 setup（**高胜率**），主峰假突破被收回 |
+| **RECLAIM · INSTANT-PIN** | 同一根 K 线内"插针 + 收回"都完成（K 线 high/low 已穿越 peak 但 close 已回到墙内） | 同 RECLAIM | 同 RECLAIM（`sweepDurationMs` 通常 < 1s） | 瞬间插针场景 — 大单一次性扫了流动性后立刻收回，K 线收盘后会出现长上影/下影针 |
+
+**Reclaim 信号方向解读**：
+- `long reclaim`：价格跌穿 L↓ 多头清算墙后又收回墙上方 → 下方流动性被扫干净 → **做多机会**（绿卡）
+- `short reclaim`：价格涨穿 S↑ 空头清算墙后又回到墙下方 → 上方流动性被扫干净 → **做空机会**（红卡）
+
+**瞬间插针修复**（v2 关键改进）：
+
+早期版本只用 `close` 价做轮询检测，**漏掉了 500ms 间隔之间的瞬间插针** —— 例如同一根 K 线内大单一次性把价格扎到 78800 后立刻收回 79100，两次相邻采样的 close 都没穿越 peak（79000）。
+
+修复后 reclaim 状态机同时使用 **K 线 high/low + close 轮询**：
+- 即使整段 sweep 发生在同一根 K 线内，`lastCandle.low` / `lastCandle.high` 也会反映真实穿越深度
+- 检测到 idle → swept 转换时，**立即**检查 close 是否已经收回，是则**同采样周期触发 INSTANT-RECLAIM**（日志里有 `[liq-reclaim] long INSTANT-RECLAIM same tick` 字样），不必等下一次轮询
+- 飞书卡的 `Sweep 持续 / Duration` 字段会显示 sub-1s（如 `0s` / `420ms`）让你识别这是插针场景
+
+**关键阈值**（在 `public/app.js` 顶部常量里调，刷新浏览器即生效）：
+```javascript
+const RECLAIM_PIERCE_MIN_PCT = 0.001;   // 0.1% 穿越深度（小于此值视为毛刺）
+const RECLAIM_BACK_MIN_PCT   = 0.001;   // 0.1% 回到墙内深度
+const RECLAIM_WINDOW_MS      = 30 * 60_000;  // 30 分钟内 reclaim 才算
+const PEAK_DRIFT_RESET_PCT   = 0.0015;  // peak 重算漂移超过 0.15% → 状态机重置
+```
+
+**服务端冷却**（`.env`）：
+```bash
+LIQ_CROSS_COOLDOWN_MS=300000     # cross 同 side 5 分钟冷却（避免毛刺刷屏）
+LIQ_RECLAIM_COOLDOWN_MS=600000   # reclaim 同 side 10 分钟冷却（反转 setup 间隔大）
+```
+
+**重要使用建议**：
+1. **Reclaim 不是"必中信号"**：它只告诉你流动性被扫了，是否真反转还需要 CVD 同步转向、成交量配合
+2. **CROSS 警报响完不一定要平仓**：可能是真破位（继续走）也可能是假突破被收回（30 min 内可能跟一个 Reclaim 警报）
+3. **看到 RECLAIM 再看 CVD/OI**：CVD 是否同步转向是关键判断点，单纯回到墙内不够
+4. Reclaim 警报和 `liq-signal` 卡里的 `LIQ_SWEEP_REJECT_*` 信号逻辑同源，但 reclaim 是 500ms 实时检测、`SWEEP_REJECT` 是 30s 数据快照检测；两者互为冗余
+
+**冒烟测试**：
+```bash
+# 1. 模拟 CROSS 警报
+curl -s -X POST http://localhost:3003/api/alerts/liquidation-cross \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"BTCUSDT","side":"long","peakPrice":79000,"peakValue":1500000000,
+       "prevPrice":79050,"curPrice":78900,"crossDirection":"down"}' | jq
+
+# 2. 模拟 RECLAIM 警报（long 方向：跌穿 79000 至 78850，又收回到 79100）
+curl -s -X POST http://localhost:3003/api/alerts/liquidation-cross \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"BTCUSDT","side":"long","eventType":"reclaim",
+       "peakPrice":79000,"peakValue":1500000000,
+       "prevPrice":78950,"curPrice":79100,
+       "sweepExtreme":78850,"sweepDurationMs":420000,
+       "pierceDepthPct":0.0019,"reclaimDepthPct":0.00126}' | jq
+
+# 3. 模拟瞬间插针 RECLAIM（short 方向：K 线 high 触 82245 后立即收回 81930，sweep 420ms）
+curl -s -X POST http://localhost:3003/api/alerts/liquidation-cross \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"BTCUSDT","side":"short","eventType":"reclaim",
+       "peakPrice":82000,"peakValue":2000000000,
+       "prevPrice":82010,"curPrice":81930,
+       "sweepExtreme":82245,"sweepDurationMs":420,
+       "pierceDepthPct":0.00298,"reclaimDepthPct":0.00085}' | jq
+
+# 4. 查看状态
+curl -s http://localhost:3003/api/alerts/liquidation-cross/status | jq
+```
 
 ---
 

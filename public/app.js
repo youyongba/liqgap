@@ -128,7 +128,7 @@
     } catch (_) { /* noop */ }
     return _globalAudioCtx;
   }
-  // 6 个 0.18s "嘟"，频率 880↔1320 Hz 交替，模拟电子警报
+  // 6 个 0.18s "嘟"，频率 880↔1320 Hz 交替，模拟电子警报（cross 事件）
   function playAlertSound() {
     const ctx2 = ensureAudioCtx();
     if (!ctx2) return;
@@ -144,6 +144,33 @@
       gain.gain.setValueAtTime(0.0001, t0);
       gain.gain.exponentialRampToValueAtTime(0.85, t0 + 0.01);
       gain.gain.setValueAtTime(0.85, t1 - 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+      osc.connect(gain).connect(ctx2.destination);
+      osc.start(t0);
+      osc.stop(t1 + 0.02);
+    }
+  }
+  // Reclaim (sweep + 收回) 音效：3 段渐强的三角波 660 → 990 → 1320 Hz
+  // 听感与 cross 警报明显不同：温和但有"上升解决感"，提示反转 setup 而非破位事件
+  function playReclaimSound() {
+    const ctx2 = ensureAudioCtx();
+    if (!ctx2) return;
+    try { if (ctx2.state === 'suspended') ctx2.resume(); } catch (_) {}
+    const now = ctx2.currentTime;
+    const notes = [
+      { f: 660,  start: 0.00, dur: 0.22 },
+      { f: 990,  start: 0.18, dur: 0.22 },
+      { f: 1320, start: 0.36, dur: 0.32 }
+    ];
+    for (const n of notes) {
+      const t0 = now + n.start;
+      const t1 = t0 + n.dur;
+      const osc = ctx2.createOscillator();
+      const gain = ctx2.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(n.f, t0);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.7, t0 + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, t1);
       osc.connect(gain).connect(ctx2.destination);
       osc.start(t0);
@@ -2001,18 +2028,50 @@
       .observe(canvas.parentElement);
 
     // ============================================================
-    // 价格穿越警报 (Liquidation cross alert · sound + Feishu)
-    // 当现价穿过主峰横线（L↓ 多头清算墙 / S↑ 空头清算墙）时触发：
-    //   1. 浏览器 Web Audio 警报声（无需外部音频文件）
-    //   2. 调后端 /api/alerts/liquidation-cross 转发飞书
-    //   3. 同一价位 5 分钟内只触发一次（前后端都做去重）
-    // 默认关闭，按钮 toggle 切换；偏好持久化到 localStorage。
+    // 价格穿越警报 (Liquidation cross / reclaim alert · sound + Feishu)
+    //
+    // 两种独立事件 + 两种声音：
+    //   • CROSS   — close 价穿过 peak 立即触发（破位事件 · 电子警报声）
+    //                调 POST /api/alerts/liquidation-cross with eventType=cross
+    //   • RECLAIM — 价格穿过 peak 后又回到墙的另一侧（sweep + reclaim · 三段上扬音）
+    //                long  reclaim = 跌穿 L↓ 又收回墙上方 → 做多机会
+    //                short reclaim = 涨穿 S↑ 又回到墙下方 → 做空机会
+    //                调 POST /api/alerts/liquidation-cross with eventType=reclaim
+    //
+    // 关键特性 — 瞬间插针捕获：
+    //   reclaim 检测同时用 K 线 high/low + close 轮询，所以即使整个"插针 + 收回"
+    //   发生在一根 K 线内（close 价没穿过 peak），只要 K 线 high/low 已经穿了 + 当前
+    //   close 已经回到墙内，就会触发 INSTANT-RECLAIM（同采样周期 idle→swept→reclaim
+    //   一步到位，不必等下一次轮询）。这是修复"500ms 之间错过插针"的关键 bug。
+    //
+    // 配置（balanced 默认 · 都可在 .env 里覆盖前端常量重打包后生效）：
+    //   - 穿越深度阈值: 0.1%（防抖，避免毛刺触发）
+    //   - 回到墙内阈值: 0.1%
+    //   - 穿越窗口: 30 分钟（跨多根 K 线 sweep 的最大间隔；单根 K 线插针不受此限）
+    //   - 同 side 同事件冷却: cross 5 分钟、reclaim 10 分钟（前后端各一道）
+    //
+    // peak 价位 / 索引发生显著漂移时（重新计算主峰），自动重置该 side 的状态机。
     // ============================================================
     // 警报状态、声音、按钮渲染由 IIFE 顶层的全局警报模块统一管理；
     // 这里只把本卡的按钮注册进去即可。
     const ALERT_COOLDOWN_MS = 5 * 60_000;
+    const RECLAIM_COOLDOWN_MS = 10 * 60_000;
+    const RECLAIM_PIERCE_MIN_PCT = 0.001;   // 0.1%
+    const RECLAIM_BACK_MIN_PCT   = 0.001;   // 0.1%
+    const RECLAIM_WINDOW_MS      = 30 * 60_000;
+    const PEAK_DRIFT_RESET_PCT   = 0.0015;  // 0.15% 漂移视为新 peak，重置状态机
     let _alertPrevPrice = null;
     const _alertLastAt = { long: 0, short: 0 };
+    const _reclaimLastAt = { long: 0, short: 0 };
+    // 每个 side 的 reclaim 状态机
+    //   phase: 'idle' | 'swept'
+    //   pierceExt: 'long' = 穿越达到的最低价 · 'short' = 穿越达到的最高价
+    //   pierceAt:  swept 进入时间戳（用于窗口超时）
+    //   trackedPeak: 进入 swept 时锁定的 peak（用来检测 peak 漂移后重置）
+    const _reclaimState = {
+      long:  { phase: 'idle', pierceExt: null, pierceAt: 0, trackedPeak: null },
+      short: { phase: 'idle', pierceExt: null, pierceAt: 0, trackedPeak: null }
+    };
     const _playAlertSound = playAlertSound; // 别名，下方调用代码不变
     registerAlertButton(els.liqHeatmapAlert);
 
@@ -2031,6 +2090,25 @@
       return Number.isFinite(m) && m > 0 ? m : null;
     }
 
+    // 读最新 K 线的完整 OHLC，用于检测"瞬间插针"——单根 K 线内 high/low
+    // 已穿越 peak 但 close 已收回的场景，仅靠 close 价的轮询会漏掉。
+    function _readLatestCandle() {
+      try {
+        if (Array.isArray(lastCandles) && lastCandles.length) {
+          const c = lastCandles[lastCandles.length - 1];
+          const open = Number(c && c.open);
+          const high = Number(c && c.high);
+          const low = Number(c && c.low);
+          const close = Number(c && c.close);
+          const time = Number(c && (c.openTime || c.time)) || 0;
+          if (Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(close)) {
+            return { open, high, low, close, time };
+          }
+        }
+      } catch (_) {}
+      return null;
+    }
+
     async function _triggerAlarm(side, peakPrice, peakValue, prevPrice, curPrice) {
       // eslint-disable-next-line no-console
       console.log(`[liq-cross] cross ${side} @ ${peakPrice} · ${prevPrice} → ${curPrice}`);
@@ -2040,6 +2118,7 @@
       const body = {
         symbol: sym, market,
         mode: 'predicted',
+        eventType: 'cross',
         side,
         peakPrice, peakValue,
         prevPrice, curPrice,
@@ -2058,6 +2137,52 @@
       }
     }
 
+    async function _triggerReclaim(side, peakPrice, peakValue, prevPrice, curPrice, sweepExt, sweepAt) {
+      const pierceDepthPct = peakPrice > 0 ? Math.abs((peakPrice - sweepExt) / peakPrice) : 0;
+      const reclaimDepthPct = peakPrice > 0 ? Math.abs((curPrice - peakPrice) / peakPrice) : 0;
+      const sweepDurationMs = Date.now() - (sweepAt || Date.now());
+      // eslint-disable-next-line no-console
+      console.log(
+        `[liq-cross] RECLAIM ${side} @ peak=${peakPrice} ext=${sweepExt} ` +
+        `cur=${curPrice} pierce=${(pierceDepthPct * 100).toFixed(3)}% ` +
+        `back=${(reclaimDepthPct * 100).toFixed(3)}% dur=${Math.round(sweepDurationMs / 1000)}s`
+      );
+      playReclaimSound();
+      const sym = els.symbol ? els.symbol.value.toUpperCase() : 'BTCUSDT';
+      const market = els.market ? els.market.value : 'futures';
+      const body = {
+        symbol: sym, market,
+        mode: 'predicted',
+        eventType: 'reclaim',
+        side,
+        peakPrice, peakValue,
+        prevPrice, curPrice,
+        crossDirection: curPrice < prevPrice ? 'down' : 'up',
+        sweepExtreme: sweepExt,
+        sweepDurationMs,
+        pierceDepthPct,
+        reclaimDepthPct,
+        timestamp: Date.now()
+      };
+      try {
+        await fetch('/api/alerts/liquidation-cross', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[liq-reclaim] feishu push failed:', err.message);
+      }
+    }
+
+    function _resetReclaim(side) {
+      _reclaimState[side].phase = 'idle';
+      _reclaimState[side].pierceExt = null;
+      _reclaimState[side].pierceAt = 0;
+      _reclaimState[side].trackedPeak = null;
+    }
+
     function _checkCross() {
       if (!isAlertEnabled()) { _alertPrevPrice = _readLatestPrice(); return; }
       const d = state.data;
@@ -2066,18 +2191,123 @@
       if (!Number.isFinite(cur)) return;
       const prev = _alertPrevPrice;
       _alertPrevPrice = cur;
-      if (!Number.isFinite(prev) || prev === cur) return;
+      // 注意：close 价相等（prev === cur）也要继续 reclaim 检测，因为
+      // 同一根 K 线内可能有"插针 + 收回"，即使 close 没变，K 线 high/low 已经穿了。
+      // 仅当 cur 无效时跳过。
+      const candle = _readLatestCandle();
       const now = Date.now();
+      // cross 警报仍需要 prev 不同于 cur（破位事件本质是 close 价变化）
+      const hasPrev = Number.isFinite(prev) && prev !== cur;
 
       const checkOne = (side, pi, val) => {
-        if (pi == null || pi < 0) return;
+        if (pi == null || pi < 0) {
+          _resetReclaim(side); // peak 失效，重置状态机
+          return;
+        }
         const peak = d.prices[pi];
-        if (!Number.isFinite(peak) || peak <= 0) return;
+        if (!Number.isFinite(peak) || peak <= 0) {
+          _resetReclaim(side);
+          return;
+        }
+        const peakVal = val || 0;
+
+        // ---- 1. Reclaim 状态机（先处理，独立于 cross 警报）----
+        const st = _reclaimState[side];
+        // peak 显著漂移（重算主峰位置）→ 当前 swept 状态作废
+        if (st.trackedPeak != null && peak > 0) {
+          const drift = Math.abs(peak - st.trackedPeak) / peak;
+          if (drift > PEAK_DRIFT_RESET_PCT) _resetReclaim(side);
+        }
+        // 超时清空（30 分钟未 reclaim）
+        if (st.phase === 'swept' && now - st.pierceAt > RECLAIM_WINDOW_MS) {
+          _resetReclaim(side);
+        }
+
+        // 触发 reclaim 的统一出口（含冷却检查 + 重置状态）
+        const _fireReclaim = (sideKey, pierceExt, pierceAt, prevPx, curPx) => {
+          if (now - (_reclaimLastAt[sideKey] || 0) >= RECLAIM_COOLDOWN_MS) {
+            _reclaimLastAt[sideKey] = now;
+            _triggerReclaim(sideKey, peak, peakVal, prevPx, curPx, pierceExt, pierceAt);
+          }
+          _resetReclaim(sideKey);
+        };
+
+        if (side === 'long') {
+          // L↓ : 跌穿 peak * (1 - PIERCE_MIN_PCT) 以下；收回 peak * (1 + BACK_MIN_PCT) 以上
+          // 关键修复：综合 K 线 low + prev/cur close → 用真实最低价（捕获瞬间插针）
+          const pierceThreshold = peak * (1 - RECLAIM_PIERCE_MIN_PCT);
+          const reclaimThreshold = peak * (1 + RECLAIM_BACK_MIN_PCT);
+          const candleLow = candle ? candle.low : Infinity;
+          const closeLow = hasPrev ? Math.min(prev, cur) : cur;
+          const effectiveLow = Math.min(candleLow, closeLow);
+
+          if (st.phase === 'idle') {
+            if (Number.isFinite(effectiveLow) && effectiveLow <= pierceThreshold) {
+              st.phase = 'swept';
+              st.pierceExt = effectiveLow;
+              st.pierceAt = now;
+              st.trackedPeak = peak;
+              // eslint-disable-next-line no-console
+              console.log(`[liq-reclaim] long SWEPT peak=${peak} ext=${effectiveLow}`);
+              // ⭐ 同采样周期检测：插针 + 收回都已发生（瞬间插针场景）
+              if (cur >= reclaimThreshold) {
+                // eslint-disable-next-line no-console
+                console.log(`[liq-reclaim] long INSTANT-RECLAIM same tick · cur=${cur} >= ${reclaimThreshold.toFixed(2)}`);
+                _fireReclaim('long', effectiveLow, now, hasPrev ? prev : cur, cur);
+                return;
+              }
+            }
+          } else { // swept
+            if (Number.isFinite(effectiveLow) && effectiveLow < (st.pierceExt != null ? st.pierceExt : Infinity)) {
+              st.pierceExt = effectiveLow; // 继续往下扎，更新最深
+            }
+            if (cur >= reclaimThreshold) {
+              _fireReclaim('long', st.pierceExt, st.pierceAt, hasPrev ? prev : cur, cur);
+              return;
+            }
+          }
+        } else { // short
+          // S↑ : 涨穿 peak * (1 + PIERCE_MIN_PCT) 以上；收回 peak * (1 - BACK_MIN_PCT) 以下
+          const pierceThreshold = peak * (1 + RECLAIM_PIERCE_MIN_PCT);
+          const reclaimThreshold = peak * (1 - RECLAIM_BACK_MIN_PCT);
+          const candleHigh = candle ? candle.high : -Infinity;
+          const closeHigh = hasPrev ? Math.max(prev, cur) : cur;
+          const effectiveHigh = Math.max(candleHigh, closeHigh);
+
+          if (st.phase === 'idle') {
+            if (Number.isFinite(effectiveHigh) && effectiveHigh >= pierceThreshold) {
+              st.phase = 'swept';
+              st.pierceExt = effectiveHigh;
+              st.pierceAt = now;
+              st.trackedPeak = peak;
+              // eslint-disable-next-line no-console
+              console.log(`[liq-reclaim] short SWEPT peak=${peak} ext=${effectiveHigh}`);
+              if (cur <= reclaimThreshold) {
+                // eslint-disable-next-line no-console
+                console.log(`[liq-reclaim] short INSTANT-RECLAIM same tick · cur=${cur} <= ${reclaimThreshold.toFixed(2)}`);
+                _fireReclaim('short', effectiveHigh, now, hasPrev ? prev : cur, cur);
+                return;
+              }
+            }
+          } else { // swept
+            if (Number.isFinite(effectiveHigh) && effectiveHigh > (st.pierceExt != null ? st.pierceExt : -Infinity)) {
+              st.pierceExt = effectiveHigh;
+            }
+            if (cur <= reclaimThreshold) {
+              _fireReclaim('short', st.pierceExt, st.pierceAt, hasPrev ? prev : cur, cur);
+              return;
+            }
+          }
+        }
+
+        // ---- 2. 原 cross 警报（保留：close 价穿过 peak 立即触发）----
+        // cross 仍需要 close 价变化（破位事件 = close 真的穿过 peak）
+        if (!hasPrev) return;
         const crossed = (prev < peak && cur >= peak) || (prev > peak && cur <= peak);
         if (!crossed) return;
         if (now - (_alertLastAt[side] || 0) < ALERT_COOLDOWN_MS) return;
         _alertLastAt[side] = now;
-        _triggerAlarm(side, peak, val || 0, prev, cur);
+        _triggerAlarm(side, peak, peakVal, prev, cur);
       };
       checkOne('long',  state._peakLongPi,  state._peakLongVal);
       checkOne('short', state._peakShortPi, state._peakShortVal);
