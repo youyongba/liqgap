@@ -3166,6 +3166,9 @@
       renderMain._lastPriceLinesHash = priceLinesHash;
     }
 
+    // Volume Profile（POC/VAH/VAL/LVN）独立维护 priceLines，缓存防止反复重建
+    _renderVolumeProfilePriceLines(_lastVolumeProfile);
+
     els.mainMeta.textContent =
       `${summary.symbol} · ${summary.market} · ${summary.interval} · ${summary.count} bars`;
 
@@ -3196,6 +3199,125 @@
     // 用缓存的 hover 位置主动恢复，确保 hover 中的虚线和坐标标签不消失。
     _restoreHoverCrosshairs();
   }
+
+  // ============================================================
+  // 成交量分布 / Volume Profile（POC + VAH + VAL + LVN 价格线）
+  // ============================================================
+  //
+  // 用 lightweight-charts 的 PriceLine 在主 K 线图上标注关键价位：
+  //   - POC      (Point of Control,  金色实线)  · 公允价值 / 价格重力中心
+  //   - VAH/VAL  (Value Area H/L,    紫色虚线)  · 70% 成交分布区上下沿
+  //   - LVN-N    (Low Volume Node,   红色点线)  · 前 3 个最深的真空带中线
+  //                                              价格回测时常作翻转位
+  //
+  // 拉取频率：每 30 秒（K 线 1m 级别下，VP 分布短时间不会显著变化）
+  // 缓存：hash 防止反复 remove/create（lightweight-charts API 调用会清掉 crosshair）
+  //
+  let _lastVolumeProfile = null;
+  let _vpInFlight = false;
+  let _vpPriceLines = [];
+  let _vpLastHash = '';
+  const VP_TOP_LVN_COUNT = 3;            // 只画最深的 N 个 LVN，避免主图太乱
+  const VP_POLL_INTERVAL_MS = 30_000;    // 30s 一次
+  const VP_BUCKETS = 100;                // 桶数（精度）
+  const VP_LIMIT = 500;                  // K 线数量（覆盖窗口）
+
+  async function _fetchVolumeProfile() {
+    if (_vpInFlight) return;
+    const symbol = (els.symbol.value || 'BTCUSDT').trim().toUpperCase();
+    const market = els.market.value;
+    const interval = els.interval.value || '1h';
+    _vpInFlight = true;
+    try {
+      const params = new URLSearchParams({
+        symbol, market, interval,
+        limit: String(VP_LIMIT),
+        buckets: String(VP_BUCKETS),
+        includeBuckets: 'false'   // 我们只用 poc/vah/val/lvnZones，桶明细暂时不需要
+      });
+      const data = await fetchJsonSoft(`/api/indicators/volume-profile?${params.toString()}`);
+      if (data) {
+        _lastVolumeProfile = data;
+        _renderVolumeProfilePriceLines(data);
+      }
+    } finally {
+      _vpInFlight = false;
+    }
+  }
+
+  function _renderVolumeProfilePriceLines(vp) {
+    if (!vp || !candleSeries) return;
+    const lvnZones = Array.isArray(vp.lvnZones) ? vp.lvnZones.slice(0, VP_TOP_LVN_COUNT) : [];
+    // hash 防止反复重建（POC/VAH/VAL/LVN 变化频率很低）
+    const hash = JSON.stringify({
+      p: vp.poc && vp.poc.priceLow,
+      h: vp.vah,
+      l: vp.val,
+      z: lvnZones.map((z) => [+z.priceMid.toFixed(2), +z.depth.toFixed(3)])
+    });
+    if (hash === _vpLastHash) return;
+    _vpLastHash = hash;
+
+    // 清旧
+    for (const pl of _vpPriceLines) {
+      try { candleSeries.removePriceLine(pl); } catch (_) { /* ignore */ }
+    }
+    _vpPriceLines = [];
+
+    // POC（金色实线，最强重力位）
+    if (vp.poc && Number.isFinite(vp.poc.priceLow) && Number.isFinite(vp.poc.priceHigh)) {
+      const pocPrice = (vp.poc.priceLow + vp.poc.priceHigh) / 2;
+      _vpPriceLines.push(candleSeries.createPriceLine({
+        price: pocPrice,
+        color: 'rgba(255, 215, 0, 0.85)',
+        lineStyle: LightweightCharts.LineStyle.Solid,
+        lineWidth: 2,
+        axisLabelVisible: true,
+        title: `POC ${pocPrice.toFixed(2)}`
+      }));
+    }
+    // VAH / VAL（紫色虚线，价值区上下沿）
+    if (Number.isFinite(vp.vah)) {
+      _vpPriceLines.push(candleSeries.createPriceLine({
+        price: vp.vah,
+        color: 'rgba(168, 85, 247, 0.6)',
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        lineWidth: 1,
+        axisLabelVisible: false,
+        title: `VAH ${vp.vah.toFixed(2)}`
+      }));
+    }
+    if (Number.isFinite(vp.val)) {
+      _vpPriceLines.push(candleSeries.createPriceLine({
+        price: vp.val,
+        color: 'rgba(168, 85, 247, 0.6)',
+        lineStyle: LightweightCharts.LineStyle.Dashed,
+        lineWidth: 1,
+        axisLabelVisible: false,
+        title: `VAL ${vp.val.toFixed(2)}`
+      }));
+    }
+    // 前 N 个 LVN（红色点线，按 depth 排序最强的）
+    lvnZones.forEach((z, i) => {
+      if (!Number.isFinite(z.priceMid)) return;
+      const depthPct = (z.depth * 100).toFixed(0);
+      _vpPriceLines.push(candleSeries.createPriceLine({
+        price: z.priceMid,
+        color: 'rgba(248, 113, 113, 0.7)',
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        lineWidth: 1,
+        axisLabelVisible: false,
+        title: `LVN${i + 1} ${z.priceMid.toFixed(2)} (${depthPct}% empty)`
+      }));
+    });
+  }
+
+  // 启动：先 fetch 一次，随后每 30 秒刷新；切换 symbol/market/interval 立即重拉
+  _fetchVolumeProfile();
+  setInterval(_fetchVolumeProfile, VP_POLL_INTERVAL_MS);
+  if (els.symbol)   els.symbol.addEventListener('change', () => { _vpLastHash = ''; _fetchVolumeProfile(); });
+  if (els.market)   els.market.addEventListener('change', () => { _vpLastHash = ''; _fetchVolumeProfile(); });
+  if (els.interval) els.interval.addEventListener('change', () => { _vpLastHash = ''; _fetchVolumeProfile(); });
 
   // ---- OI 副图：把 OI 数据按 K 线 openTime 对齐后渲染 ----
   // (Align OI samples to candle openTimes so OI bar count matches the main
