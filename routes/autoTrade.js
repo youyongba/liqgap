@@ -4,7 +4,7 @@
  * 自动交易 Webhook 状态 / 测试 (Auto-Trade webhook status & test)
  *
  *   GET  /api/auto-trade/status
- *     返回当前 webhook 配置 + 冷却状态 + 最近 10 次调用记录。
+ *     返回当前 webhook 配置 + 冷却状态 + staged 队列 + 复检历史 + 最近调用。
  *
  *   POST /api/auto-trade/test
  *     绕过冷却 / 信号白名单 / 置信度门槛，立即发一条测试 payload，验证 URL+Token。
@@ -13,6 +13,12 @@
  *       symbol?:    string,             // 默认 'BTCUSDT'
  *       label?:     string              // 默认 '<symbol>-AUTO-TRADE-TEST'
  *     }
+ *
+ *   POST /api/auto-trade/reset-staged
+ *     清空二次确认 stage 队列 + 复检历史（运维用，例如改配置后想强制刷新）
+ *
+ *   POST /api/auto-trade/reset-cooldowns
+ *     清空 symbol+direction 冷却计数（运维用）
  */
 
 const express = require('express');
@@ -61,6 +67,16 @@ router.post('/auto-trade/test', async (req, res) => {
       data: { sent: payload, response: err.response && err.response.data }
     });
   }
+});
+
+router.post('/auto-trade/reset-staged', (_req, res) => {
+  autoTrade.resetStaged();
+  res.json({ success: true, data: { cleared: true } });
+});
+
+router.post('/auto-trade/reset-cooldowns', (_req, res) => {
+  autoTrade.resetCooldowns();
+  res.json({ success: true, data: { cleared: true } });
 });
 
 module.exports = router;

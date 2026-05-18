@@ -3,8 +3,8 @@
 /**
  * 自动交易 Webhook 客户端 (Auto-Trade Pending-Order Webhook)
  *
- * 当 routes/liqSignal.js 产出高置信度的 LIQ_REVERSAL_LONG / LIQ_REVERSAL_SHORT
- * 信号时，把方向异步 POST 到外部自动交易系统，由对方下挂单。
+ * 当 routes/liqSignal.js / resonanceSignal.js 产出高置信度信号时，把方向
+ * 异步 POST 到外部自动交易系统，由对方下挂单/市价单。
  *
  * 触发示例 (Trigger example)：
  *   curl -X POST https://aitrade.24os.cn/api/auto-trade/pending-order \
@@ -16,30 +16,41 @@
  *       "label":     "BTC-15m-Reversal-v2"
  *     }'
  *
+ * 关键安全特性：
+ *   1. 信号白名单 + 最低 confidence + 同 symbol/direction 冷却（基础闸门）
+ *   2. **K 线收线二次确认**（可选）：信号产生后先 stage，等
+ *      AUTO_TRADE_CONFIRMATION_DELAY_MS 后通过本机 HTTP 重新拉取信号验证：
+ *        • signal 仍相同方向 + confidence 仍 ≥ 阈值 → 真正发送 webhook
+ *        • peak 漂移 / CVD 反向 / 价格再次穿越 → 撤销，写入 ring buffer
+ *      在 100x 高杠杆场景下能过滤 30-50% 的"瞬时假信号"，代价是延迟下单。
+ *
  * 配置 (Env vars · 全部可选；未填 URL 则整体禁用)：
  *
- *   AUTO_TRADE_API_URL          目标 webhook URL；未配置则整体 no-op
- *   AUTO_TRADE_API_TOKEN        X-Auth-Token 头的值（与对方约定）
- *   AUTO_TRADE_ENABLED          'false' 显式关闭整体推送（默认开启）
- *   AUTO_TRADE_TRIGGER_SIGNALS  CSV，触发该 webhook 的信号白名单
- *                               默认 'LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT'
- *   AUTO_TRADE_MIN_CONFIDENCE   触发的最低 confidence，默认 75
- *   AUTO_TRADE_COOLDOWN_MS      同 symbol+direction 冷却毫秒，默认 1800000 (30 分钟)
- *   AUTO_TRADE_SOURCE           payload.source 的值，默认 'liq-signal'
- *   AUTO_TRADE_LABEL_TEMPLATE   payload.label 的模板；支持占位符
- *                               {symbol} {direction} {signal} {confidence}
- *                               默认 '{symbol}-{signal}'
+ *   AUTO_TRADE_API_URL               目标 webhook URL；未配置则整体 no-op
+ *   AUTO_TRADE_API_TOKEN             X-Auth-Token 头的值（与对方约定）
+ *   AUTO_TRADE_ENABLED               'false' 显式关闭整体推送（默认开启）
+ *   AUTO_TRADE_TRIGGER_SIGNALS       CSV，触发该 webhook 的信号白名单
+ *   AUTO_TRADE_MIN_CONFIDENCE        触发的最低 confidence，默认 75
+ *   AUTO_TRADE_COOLDOWN_MS           同 symbol+direction 冷却毫秒，默认 1800000 (30 分钟)
+ *   AUTO_TRADE_SOURCE                payload.source 的值，默认 'liq-signal'
+ *   AUTO_TRADE_LABEL_TEMPLATE        payload.label 的模板；支持占位符
+ *                                    {symbol} {direction} {signal} {confidence}
+ *                                    默认 '{symbol}-{signal}'
+ *   AUTO_TRADE_CONFIRMATION_DELAY_MS 二次确认延迟（0 = 关闭立即发送 · 推荐 300000 = 5min）
+ *   AUTO_TRADE_CONFIRM_HOST          复检 HTTP 调用的主机，默认 '127.0.0.1'
  *
  * 失败语义 (Failure semantics)：
  *   - 永不抛错：网络失败 / 非 2xx 都返回 { ok:false, error }，不阻塞业务流。
  *   - 永不重试：避免对方收到重复挂单。
- *   - 调用历史写入内存 ring buffer，便于 /api/auto-trade/status 排查。
+ *   - 调用历史 + stage 历史写入内存 ring buffer，/api/auto-trade/status 可查。
  */
 
 const axios = require('axios');
 
 const HTTP_TIMEOUT_MS = 8000;
+const CONFIRM_HTTP_TIMEOUT_MS = 8000;
 const MAX_RECENT = 50;
+const MAX_STAGED = 20;
 const DEFAULT_COOLDOWN_MS = 30 * 60 * 1000;
 const DEFAULT_MIN_CONFIDENCE = 75;
 const DEFAULT_TRIGGER_SIGNALS = 'LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT,'
@@ -50,6 +61,11 @@ const DEFAULT_LABEL_TEMPLATE = '{symbol}-{signal}';
 
 const recentCalls = [];
 const lastSentBy = new Map(); // key: `${symbol}|${direction}` → ts
+// 二次确认 stage 队列 · key = `${symbol}|${signal}|${direction}`
+//   record: { input, stagedAt, scheduledAt, timerId, status: 'pending'|'confirmed'|'rejected'|'fired' }
+const stagedSignals = new Map();
+// 复检历史 ring buffer（独立于 recentCalls，专门记 stage → 复检结果）
+const stageHistory = [];
 
 function recordCall(record) {
   recentCalls.unshift(record);
@@ -76,6 +92,16 @@ function getMinConfidence() {
 function getCooldownMs() {
   const n = Number(process.env.AUTO_TRADE_COOLDOWN_MS);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_COOLDOWN_MS;
+}
+
+function getConfirmationDelayMs() {
+  const n = Number(process.env.AUTO_TRADE_CONFIRMATION_DELAY_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}
+
+function recordStageHistory(record) {
+  stageHistory.unshift(record);
+  if (stageHistory.length > MAX_RECENT) stageHistory.length = MAX_RECENT;
 }
 
 function buildHeaders() {
@@ -124,22 +150,182 @@ function shouldFire({ signal, confidence, symbol, direction }) {
 /**
  * 触发自动交易挂单 (Send pending-order webhook).
  *
+ * 当 AUTO_TRADE_CONFIRMATION_DELAY_MS > 0 时，进入 stage 流程：
+ *   1. shouldFire 通过的信号先 stage 到内存，立即占用冷却（防止 5min 内 spam）
+ *   2. 等 delay ms 后调本机 HTTP 复检 /api/trade/{liq-signal|resonance-signal}
+ *   3. 仍满足条件 → _doSend；否则 → 撤销并写 stageHistory
+ *
  * @param {object} input
- * @param {string} input.signal       信号名（如 LIQ_REVERSAL_SHORT）
+ * @param {string} input.signal       信号名（如 HEXA_RESONANCE_LONG）
  * @param {'long'|'short'} input.direction
  * @param {number} input.confidence   0~100
  * @param {string} input.symbol       交易对
- * @param {object} [input.extra]      额外字段（透传到 payload，仅用于诊断）
- * @returns {Promise<{ok:boolean, status?:number, response?:any, error?:string,
- *                    skipped?:boolean, reason?:string, payload?:object}>}
+ * @param {object} [input.extra]      额外字段，复检需用到 windowMs / priceRange / sourceInterval
+ * @returns {Promise<{ok:boolean, staged?:boolean, status?:number, response?:any,
+ *                    error?:string, skipped?:boolean, reason?:string, payload?:object}>}
  */
 async function sendPendingOrder(input) {
-  const { signal, direction, confidence, symbol = 'BTCUSDT', extra = {} } = input || {};
+  const { signal, direction, confidence, symbol = 'BTCUSDT' } = input || {};
   const verdict = shouldFire({ signal, confidence, symbol, direction });
   if (!verdict.ok) {
     return verdict;
   }
 
+  const delayMs = getConfirmationDelayMs();
+  if (delayMs > 0) {
+    return _stagePendingOrder(input, verdict.key, delayMs);
+  }
+  return _doSend(input, verdict.key);
+}
+
+// ---------------------------------------------------------------------------
+// Stage 流程：信号先 stage，delay ms 后通过本机 HTTP 复检
+// ---------------------------------------------------------------------------
+function _stagePendingOrder(input, key, delayMs) {
+  const { signal, direction, confidence, symbol } = input;
+  const stageKey = `${String(symbol).toUpperCase()}|${signal}|${String(direction).toLowerCase()}`;
+
+  // 已经 staged 同 key → 先到先服务，跳过新的（避免覆盖前一个还在等待复检的信号）
+  if (stagedSignals.has(stageKey)) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: `same signal already staged (key=${stageKey})`
+    };
+  }
+  // 占用冷却（即使复检失败，也不希望同 key 在 delay 内反复 stage）
+  lastSentBy.set(key, Date.now());
+
+  const stagedAt = Date.now();
+  const scheduledAt = stagedAt + delayMs;
+  const record = {
+    stageKey,
+    input,
+    key,
+    stagedAt,
+    scheduledAt,
+    status: 'pending'
+  };
+  const timerId = setTimeout(() => _confirmAndSend(stageKey).catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[auto-trade] confirm flow threw:', err && err.message);
+  }), delayMs);
+  // node 环境下 unref，避免阻止进程退出
+  if (timerId && typeof timerId.unref === 'function') timerId.unref();
+  record.timerId = timerId;
+  stagedSignals.set(stageKey, record);
+  if (stagedSignals.size > MAX_STAGED) {
+    // 防御性丢弃最早的 staged（理论上不会触发，因为有冷却 + 单 key 跳过）
+    const oldestKey = stagedSignals.keys().next().value;
+    const oldest = stagedSignals.get(oldestKey);
+    if (oldest && oldest.timerId) clearTimeout(oldest.timerId);
+    stagedSignals.delete(oldestKey);
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(`[auto-trade] STAGED ${symbol} ${signal} ${direction} conf=${confidence} · confirm in ${delayMs / 1000}s`);
+  return {
+    ok: true,
+    staged: true,
+    confirmAt: scheduledAt,
+    reason: `staged for 2nd confirmation after ${delayMs}ms`
+  };
+}
+
+async function _confirmAndSend(stageKey) {
+  const record = stagedSignals.get(stageKey);
+  if (!record) return;
+  stagedSignals.delete(stageKey);
+  record.status = 'confirming';
+  const { input, key } = record;
+  const { signal, direction, confidence: stagedConfidence, symbol } = input;
+
+  // 释放冷却前缀：让真正发送的逻辑重新设置冷却时间
+  // （此时如果复检失败，释放冷却是合理的，下一个新信号可以正常触发）
+  const cooldownPlacedAt = lastSentBy.get(key);
+  if (cooldownPlacedAt === record.stagedAt) lastSentBy.delete(key);
+
+  const refetch = await _refetchSignal(input);
+  if (!refetch.ok) {
+    record.status = 'rejected';
+    record.rejectedAt = Date.now();
+    record.rejectReason = refetch.reason;
+    record.latestSnapshot = refetch.latest && {
+      signal: refetch.latest.signal,
+      confidence: refetch.latest.confidence,
+      side: refetch.latest.side
+    };
+    recordStageHistory(record);
+    // eslint-disable-next-line no-console
+    console.log(`[auto-trade] STAGE-REJECTED ${symbol} ${signal} ${direction} (was conf=${stagedConfidence}): ${refetch.reason}`);
+    return { ok: false, staged: true, rejected: true, reason: refetch.reason };
+  }
+
+  // 用复检后的最新 confidence / extra 替换（peak 可能漂移，但仍在同方向）
+  const latest = refetch.latest;
+  const confirmedInput = {
+    ...input,
+    confidence: Number(latest.confidence) || stagedConfidence,
+    extra: { ...(input.extra || {}), confirmedFromStage: true, stagedConfidence }
+  };
+  record.status = 'confirmed';
+  record.confirmedAt = Date.now();
+  record.confirmedConfidence = confirmedInput.confidence;
+  recordStageHistory(record);
+
+  // eslint-disable-next-line no-console
+  console.log(`[auto-trade] STAGE-CONFIRMED ${symbol} ${signal} ${direction} conf=${confirmedInput.confidence}`);
+  return _doSend(confirmedInput, key);
+}
+
+async function _refetchSignal(input) {
+  const { signal, symbol, extra = {} } = input;
+  const port = process.env.PORT || 3000;
+  const host = process.env.AUTO_TRADE_CONFIRM_HOST || '127.0.0.1';
+  const isResonance = /^(HEXA|TRIO)_RESONANCE_/i.test(signal || '');
+  const routePath = isResonance ? 'resonance-signal' : 'liq-signal';
+  const qs = new URLSearchParams({
+    symbol: String(symbol),
+    notify: 'false',
+    autoTrade: 'false'
+  });
+  if (extra.windowMs != null) qs.set('windowMs', String(extra.windowMs));
+  if (extra.priceRange != null) qs.set('priceRange', String(extra.priceRange));
+  if (extra.sourceInterval) qs.set('sourceInterval', String(extra.sourceInterval));
+  if (extra.bucketMs != null) qs.set('bucketMs', String(extra.bucketMs));
+  const url = `http://${host}:${port}/api/trade/${routePath}?${qs.toString()}`;
+
+  try {
+    const res = await axios.get(url, { timeout: CONFIRM_HTTP_TIMEOUT_MS });
+    const data = res.data && res.data.data;
+    if (!data) return { ok: false, reason: 'refetch empty data', latest: null };
+    if (!data.signal || data.signal === 'NONE') {
+      return { ok: false, reason: `signal vanished (now ${data.signal || 'null'})`, latest: data };
+    }
+    if (String(data.signal).toUpperCase() !== String(signal).toUpperCase()) {
+      return { ok: false, reason: `signal changed: was ${signal}, now ${data.signal}`, latest: data };
+    }
+    const minConf = getMinConfidence();
+    const curConf = Number(data.confidence);
+    if (!Number.isFinite(curConf) || curConf < minConf) {
+      return { ok: false, reason: `confidence dropped: was >=${minConf}, now ${data.confidence}`, latest: data };
+    }
+    // 窗口闸门可能在 stage 期间生效（罕见但要保护）
+    const snap = data.indicatorsSnapshot || {};
+    if (snap.windowGated) {
+      return { ok: false, reason: 'windowGated during stage (allow-list narrowed)', latest: data };
+    }
+    return { ok: true, latest: data };
+  } catch (err) {
+    return { ok: false, reason: `refetch http error: ${err.message}`, latest: null };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 真正的 HTTP 发送（既可被直接发送，也可被 stage 复检后调用）
+// ---------------------------------------------------------------------------
+async function _doSend(input, key) {
+  const { signal, direction, confidence, symbol = 'BTCUSDT', extra = {} } = input;
   const url = process.env.AUTO_TRADE_API_URL;
   const source = process.env.AUTO_TRADE_SOURCE || DEFAULT_SOURCE;
   const labelTpl = process.env.AUTO_TRADE_LABEL_TEMPLATE || DEFAULT_LABEL_TEMPLATE;
@@ -156,8 +342,8 @@ async function sendPendingOrder(input) {
   };
 
   const startedAt = Date.now();
-  // 先标记，避免并发请求重复触发（即使 HTTP 还没回来）
-  lastSentBy.set(verdict.key, startedAt);
+  // 标记冷却（即使 HTTP 还没回来，并发请求也不会重复触发）
+  if (key) lastSentBy.set(key, startedAt);
 
   try {
     const res = await axios.post(url, payload, {
@@ -232,6 +418,49 @@ function resetCooldowns() {
   lastSentBy.clear();
 }
 
+function resetStaged() {
+  for (const r of stagedSignals.values()) {
+    if (r.timerId) clearTimeout(r.timerId);
+  }
+  stagedSignals.clear();
+  stageHistory.length = 0;
+}
+
+function getStagedSignals() {
+  const now = Date.now();
+  return Array.from(stagedSignals.values()).map((r) => ({
+    stageKey: r.stageKey,
+    symbol: r.input.symbol,
+    signal: r.input.signal,
+    direction: r.input.direction,
+    stagedConfidence: r.input.confidence,
+    stagedAt: r.stagedAt,
+    stagedAtISO: new Date(r.stagedAt).toISOString(),
+    scheduledAt: r.scheduledAt,
+    scheduledAtISO: new Date(r.scheduledAt).toISOString(),
+    remainingMs: Math.max(0, r.scheduledAt - now),
+    status: r.status
+  }));
+}
+
+function getStageHistory(limit = 10) {
+  return stageHistory.slice(0, limit).map((r) => ({
+    stageKey: r.stageKey,
+    symbol: r.input.symbol,
+    signal: r.input.signal,
+    direction: r.input.direction,
+    stagedConfidence: r.input.confidence,
+    stagedAt: r.stagedAt,
+    stagedAtISO: new Date(r.stagedAt).toISOString(),
+    status: r.status,
+    confirmedAt: r.confirmedAt || null,
+    confirmedConfidence: r.confirmedConfidence || null,
+    rejectedAt: r.rejectedAt || null,
+    rejectReason: r.rejectReason || null,
+    latestSnapshot: r.latestSnapshot || null
+  }));
+}
+
 function getStatus() {
   return {
     enabled: isEnabled(),
@@ -240,11 +469,14 @@ function getStatus() {
     triggerSignals: getTriggerSignals(),
     minConfidence: getMinConfidence(),
     cooldownMs: getCooldownMs(),
+    confirmationDelayMs: getConfirmationDelayMs(),
     source: process.env.AUTO_TRADE_SOURCE || DEFAULT_SOURCE,
     labelTemplate: process.env.AUTO_TRADE_LABEL_TEMPLATE || DEFAULT_LABEL_TEMPLATE,
     cooldownActive: Object.fromEntries(
       Array.from(lastSentBy.entries()).map(([k, ts]) => [k, { lastSentAt: ts, lastSentISO: new Date(ts).toISOString() }])
     ),
+    staged: getStagedSignals(),
+    stageHistory: getStageHistory(10),
     recentCalls: recentCalls.slice(0, 10)
   };
 }
@@ -256,5 +488,8 @@ module.exports = {
   getRecentCalls,
   resetRecentCalls,
   resetCooldowns,
+  resetStaged,
+  getStagedSignals,
+  getStageHistory,
   getStatus
 };

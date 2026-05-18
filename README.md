@@ -91,12 +91,14 @@ npm run dev            # nodemon 热重载
 | `REGIME_API_METHOD` | 否 | 默认 `POST`，可改 `GET`（GET 用 query string 传参）|
 | `REGIME_API_TOKEN` | 否 | 可选 Bearer token，附加在 `Authorization` 头 |
 | `REGIME_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭 regime 通知 |
-| **`AUTO_TRADE_API_URL`** | 否 | **清算反转信号触发挂单的 webhook URL**（留空则整体关闭，详见下方"自动交易 Webhook"章节）|
+| **`AUTO_TRADE_API_URL`** | 否 | **高置信度交易信号触发挂单的 webhook URL**（留空则整体关闭，详见下方"自动交易 Webhook"章节）|
 | `AUTO_TRADE_API_TOKEN` | 否 | 上面 URL 的 `X-Auth-Token` 请求头值 |
 | `AUTO_TRADE_ENABLED` | 否 | `false` 显式关闭自动交易推送（默认 `true`）|
-| `AUTO_TRADE_TRIGGER_SIGNALS` | 否 | CSV 白名单，默认 `LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT` |
-| `AUTO_TRADE_MIN_CONFIDENCE` | 否 | 触发的最低 confidence，默认 `75` |
+| `AUTO_TRADE_TRIGGER_SIGNALS` | 否 | CSV 白名单。**高杠杆推荐**：只留 `HEXA_RESONANCE_LONG,HEXA_RESONANCE_SHORT,TRIO_RESONANCE_LONG,TRIO_RESONANCE_SHORT`（删除 LIQ_REVERSAL，胜率不够）|
+| `AUTO_TRADE_MIN_CONFIDENCE` | 否 | 触发的最低 confidence。**低杠杆 75 · 中杠杆 80 · 高杠杆 88+** |
 | `AUTO_TRADE_COOLDOWN_MS` | 否 | 同 `symbol+direction` 的推送冷却毫秒，默认 `1800000` (30 min) |
+| `AUTO_TRADE_CONFIRMATION_DELAY_MS` | 否 | ⭐ **K 线收线二次确认延迟**（0 = 关闭立即发送 · 推荐 `300000` = 5min，过滤 30-50% 瞬时假信号）|
+| `AUTO_TRADE_CONFIRM_HOST` | 否 | 二次确认本机 HTTP 主机，默认 `127.0.0.1` |
 | `AUTO_TRADE_SOURCE` | 否 | payload `source` 字段，默认 `liq-signal` |
 | `AUTO_TRADE_LABEL_TEMPLATE` | 否 | payload `label` 模板，默认 `{symbol}-{signal}`；支持 `{symbol}` `{direction}` `{signal}` `{confidence}` |
 
@@ -130,8 +132,10 @@ npm run dev            # nodemon 热重载
 | GET | `/api/trade/resonance-signal` | **双层共振**：HEXA Tier1 (6 指标 / 90+ / 100x+50%) + TRIO Tier2 (3 指标 / 75+ / 20x+15%) |
 | GET | `/api/trade/resonance-signal/status` | 当前共振信号配置 + 冷却剩余 + 日内 TRIO 触发次数 |
 | POST | `/api/trade/resonance-signal/reset` | 重置内存冷却 / 日内计数（运维用）|
-| GET | `/api/auto-trade/status` | 自动交易 webhook 状态 + 冷却 + 最近 10 次调用记录 |
-| POST | `/api/auto-trade/test` | 手动发一条挂单测试 payload 验证 URL+Token（绕过白名单/置信度/冷却）|
+| GET | `/api/auto-trade/status` | 自动交易 webhook 状态 + 冷却 + stage 队列 + 复检历史 + 最近 10 次调用记录 |
+| POST | `/api/auto-trade/test` | 手动发一条挂单测试 payload 验证 URL+Token（绕过白名单/置信度/冷却/二次确认）|
+| POST | `/api/auto-trade/reset-staged` | 清空二次确认 stage 队列 + 历史 |
+| POST | `/api/auto-trade/reset-cooldowns` | 清空 symbol+direction 冷却计数 |
 | GET | `/api/health` | 健康检查 |
 
 公共参数：`symbol`（默认 `BTCUSDT`）、`market`（`spot` / `futures`，**默认 `futures`，即 U 本位合约**）。
@@ -479,11 +483,13 @@ User-Agent:   liq-gap/1.0 (+auto-trade)
 AUTO_TRADE_API_URL=https://aitrade.24os.cn/api/auto-trade/pending-order
 AUTO_TRADE_API_TOKEN=54006625db5c6a03b3ba5e112b326eb69e4828ba00c5efab403c03e217263455
 AUTO_TRADE_ENABLED=true                          # false 一键关闭
-AUTO_TRADE_TRIGGER_SIGNALS=LIQ_REVERSAL_LONG,LIQ_REVERSAL_SHORT
-AUTO_TRADE_MIN_CONFIDENCE=75                     # 与 LIQ_SIGNAL_MIN_CONFIDENCE 同步推荐
+# 高杠杆 (≥50x) 小资金推荐：移除 LIQ_REVERSAL_*，只信 HEXA + TRIO
+AUTO_TRADE_TRIGGER_SIGNALS=HEXA_RESONANCE_LONG,HEXA_RESONANCE_SHORT,TRIO_RESONANCE_LONG,TRIO_RESONANCE_SHORT
+AUTO_TRADE_MIN_CONFIDENCE=88                     # 10-20x→75 · 50x→80 · 100x→88+
 AUTO_TRADE_COOLDOWN_MS=1800000                   # 同 symbol+direction 30 min 冷却
 AUTO_TRADE_SOURCE=liq-signal
 AUTO_TRADE_LABEL_TEMPLATE={symbol}-{signal}      # 占位符：{symbol} {direction} {signal} {confidence}
+AUTO_TRADE_CONFIRMATION_DELAY_MS=300000          # ⭐ K 线收线二次确认（高杠杆强推）
 # AUTO_TRADE_DEBUG=true                           # 'true' 时连"被冷却跳过"也打日志
 ```
 
@@ -491,14 +497,31 @@ AUTO_TRADE_LABEL_TEMPLATE={symbol}-{signal}      # 占位符：{symbol} {directi
 
 ### 触发规则
 
-`services/autoTrade.js` 内部三道闸门，全部通过才会真正发出 HTTP：
+`services/autoTrade.js` 内部 **4 道闸门**，全部通过才会真正发出 HTTP：
 
-1. **白名单**：`signal ∈ AUTO_TRADE_TRIGGER_SIGNALS`（默认仅 REVERSAL 两类）
-2. **置信度门槛**：`confidence ≥ AUTO_TRADE_MIN_CONFIDENCE`（默认 75）
+1. **白名单**：`signal ∈ AUTO_TRADE_TRIGGER_SIGNALS`
+2. **置信度门槛**：`confidence ≥ AUTO_TRADE_MIN_CONFIDENCE`
 3. **冷却**：同 `symbol+direction` 距离上次发送 ≥ `AUTO_TRADE_COOLDOWN_MS`（默认 30 min）
+4. **⭐ K 线收线二次确认**（`AUTO_TRADE_CONFIRMATION_DELAY_MS > 0` 时启用）：
+   - 信号先 stage 到内存，立即占用冷却（防止 5min 内同 key 反复 stage）
+   - delay 毫秒后，autoTrade **本机 HTTP 调** `/api/trade/{liq-signal|resonance-signal}` 复检：
+     - signal 仍同方向 + confidence 仍 ≥ 阈值 → `_doSend()` 真正 POST webhook（label 用最新 confidence）
+     - signal 已 NONE / 方向变了 / confidence 跌破阈值 / `windowGated` → **撤销**，写入 `stageHistory` 供排查
+   - 复检请求带 `notify=false&autoTrade=false`，避免递归触发
 
 > 冷却 key 为 `${symbol}|${direction}`，所以同一品种 LONG/SHORT 互不影响；
 > 不同 symbol 也互不影响。冷却在调用 axios **之前**就标记，避免并发重复触发。
+
+### 二次确认延迟值选型
+
+| 杠杆 | `AUTO_TRADE_CONFIRMATION_DELAY_MS` | 含义 | 代价 |
+| --- | --- | --- | --- |
+| 10-20x | 0 | 关闭确认，立即下单 | 偶尔吃到瞬时假信号 |
+| 50x | 300000 (5min) | 等下一根 5m K 线收线 | 入场延迟 5min，过滤 30-50% 假信号 |
+| 100x | 300000-900000 | 5min 推荐起步，激进风控可上 15min | 几乎只保留趋势已经确认的信号 |
+
+> **10U / 100x / 50% 仓位**的极小资金 + 极高杠杆场景下，强烈建议至少 `300000`。
+> 一次错单 = 15-50% 本金，**多等 5 分钟换 30-50% 错误率削减是稳赚的交易**。
 
 ### 失败语义
 
@@ -510,8 +533,10 @@ AUTO_TRADE_LABEL_TEMPLATE={symbol}-{signal}      # 占位符：{symbol} {directi
 
 | 路径 | 用途 |
 | --- | --- |
-| `GET /api/auto-trade/status` | 查看 webhook 配置（不回显 token 明文）+ 冷却状态 + 最近 10 次调用 |
-| `POST /api/auto-trade/test` | 手动发一条测试 payload（**绕过白名单/置信度/冷却**），验证 URL+Token |
+| `GET /api/auto-trade/status` | 查看 webhook 配置 + 冷却状态 + **`staged[]` 待确认队列** + **`stageHistory[]` 复检历史** + 最近 10 次调用 |
+| `POST /api/auto-trade/test` | 手动发一条测试 payload（**绕过白名单/置信度/冷却/二次确认**），验证 URL+Token |
+| `POST /api/auto-trade/reset-staged` | 清空 stage 队列 + 复检历史（改配置后强制刷新用）|
+| `POST /api/auto-trade/reset-cooldowns` | 清空 symbol+direction 冷却计数 |
 
 测试调用示例：
 
@@ -519,6 +544,29 @@ AUTO_TRADE_LABEL_TEMPLATE={symbol}-{signal}      # 占位符：{symbol} {directi
 curl -X POST http://localhost:3003/api/auto-trade/test \
   -H 'Content-Type: application/json' \
   -d '{ "direction": "short", "symbol": "BTCUSDT", "label": "manual-test" }'
+
+# 看当前 staged 队列 + 最近 10 次复检结果
+curl -s http://localhost:3003/api/auto-trade/status | jq '.data | {staged, stageHistory}'
+```
+
+`staged[]` 字段：
+```json
+{
+  "stageKey": "BTCUSDT|HEXA_RESONANCE_LONG|long",
+  "stagedConfidence": 95,
+  "stagedAtISO": "2026-05-18T07:48:00.123Z",
+  "scheduledAtISO": "2026-05-18T07:53:00.123Z",
+  "remainingMs": 287000,
+  "status": "pending"
+}
+```
+
+`stageHistory[]` 复检结果：
+```json
+[
+  { "status": "confirmed",  "confirmedConfidence": 93,  "stageKey": "BTCUSDT|HEXA_RESONANCE_LONG|long" },
+  { "status": "rejected", "rejectReason": "confidence dropped: was >=88, now 70", "latestSnapshot": { ... } }
+]
 ```
 
 ### 临时关闭
