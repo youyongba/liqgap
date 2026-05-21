@@ -85,26 +85,49 @@ const ONE_MIN_MS = 60_000;
 const ONE_HOUR_MS = 3600_000;
 
 // ============================================================================
-// 窗口白名单（与 routes/liqSignal.js 共用同一份 .env 配置）
+// 三阶窗口闸门 (与 routes/liqSignal.js 共用同一份 .env 配置)
+//   ① TRADE_SIGNAL_ALLOWED_WINDOWS_MS  full      算信号+飞书+autoTrade webhook
+//   ② TRADE_SIGNAL_NOTIFY_WINDOWS_MS   notifyOnly 算信号+飞书(预警标识)，不发 webhook
+//   ③ 都不在 → windowGated:true 完全屏蔽
 // ============================================================================
-// 短窗口 15m/1h 的主峰是噪音；resonance 信号 + autoTrade 都受此闸门保护。
 const _DEFAULT_ALLOWED_WINDOWS = [4 * ONE_HOUR_MS, 24 * ONE_HOUR_MS];
+const _DEFAULT_NOTIFY_WINDOWS  = [];
 const TRADE_SIGNAL_ALLOWED_WINDOWS_MS = (() => {
   const raw = String(process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS || '').trim();
   if (!raw) return new Set(_DEFAULT_ALLOWED_WINDOWS);
   const parsed = raw.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
   return parsed.length ? new Set(parsed) : new Set(_DEFAULT_ALLOWED_WINDOWS);
 })();
+const TRADE_SIGNAL_NOTIFY_WINDOWS_MS = (() => {
+  const raw = String(process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS || '').trim();
+  if (!raw) return new Set(_DEFAULT_NOTIFY_WINDOWS);
+  const parsed = raw.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  return new Set(parsed);
+})();
 function _isTradeSignalWindowAllowed(windowMs) {
   return TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs));
 }
+function _isNotifyOnlyWindow(windowMs) {
+  if (TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs))) return false;
+  return TRADE_SIGNAL_NOTIFY_WINDOWS_MS.has(Number(windowMs));
+}
+function _fmtWindowMs(ms) {
+  if (ms >= 24 * ONE_HOUR_MS) return `${ms / (24 * ONE_HOUR_MS)}d`;
+  if (ms >= ONE_HOUR_MS) return `${ms / ONE_HOUR_MS}h`;
+  return `${ms / ONE_MIN_MS}m`;
+}
 function _allowedWindowsLabel() {
-  return Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b)
-    .map((ms) => {
-      if (ms >= 24 * ONE_HOUR_MS) return `${ms / (24 * ONE_HOUR_MS)}d`;
-      if (ms >= ONE_HOUR_MS) return `${ms / ONE_HOUR_MS}h`;
-      return `${ms / ONE_MIN_MS}m`;
-    }).join(' / ');
+  return Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b).map(_fmtWindowMs).join(' / ');
+}
+function _allWindowsLabel() {
+  const full = Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b);
+  const notify = Array.from(TRADE_SIGNAL_NOTIFY_WINDOWS_MS)
+    .filter((m) => !TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(m))
+    .sort((a, b) => a - b);
+  const parts = [];
+  if (full.length)   parts.push(`full=${full.map(_fmtWindowMs).join('+')}`);
+  if (notify.length) parts.push(`notify=${notify.map(_fmtWindowMs).join('+')}`);
+  return parts.join(' · ') || 'none';
 }
 
 // ============================================================================
@@ -223,14 +246,22 @@ router.get('/trade/resonance-signal', async (req, res) => {
     if (!Number.isFinite(windowMs) || windowMs < 15 * ONE_MIN_MS) windowMs = 24 * ONE_HOUR_MS;
     if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
 
-    // ---- 窗口闸门（B 方案核心安全闸 · 防止短窗口噪音触发 autoTrade）----
-    // 即便前端被绕过（curl 直调），后端也保证只在白名单窗口里计算/推送/下单
-    if (!_isTradeSignalWindowAllowed(windowMs)) {
+    // ---- 三阶窗口闸门 ----
+    // ① full   = 算信号 + 推飞书 + 触发 autoTrade webhook
+    // ② notify = 算信号 + 推飞书（带预警标识），不触发 webhook
+    // ③ 都不在 → return _empty + windowGated:true
+    const notifyOnly = _isNotifyOnlyWindow(windowMs);
+    const allowFull  = _isTradeSignalWindowAllowed(windowMs);
+    if (!allowFull && !notifyOnly) {
       return res.json({
         success: true,
         data: _empty(
-          `Window ${windowMs}ms not in trade-signal allow-list (${_allowedWindowsLabel()})`,
-          { symbol, market, windowMs, windowGated: true, allowedWindowsMs: Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS) }
+          `Window ${windowMs}ms not in trade-signal allow-list (${_allWindowsLabel()})`,
+          {
+            symbol, market, windowMs, windowGated: true,
+            allowedWindowsMs: Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS),
+            notifyWindowsMs:  Array.from(TRADE_SIGNAL_NOTIFY_WINDOWS_MS)
+          }
         )
       });
     }
@@ -475,14 +506,18 @@ router.get('/trade/resonance-signal', async (req, res) => {
       peakShort: peaks.peakShort,
       triggerPeakPrice: best.peakPrice,
       activeFvg: best.fvg,
+      // 三阶窗口闸门标志：notifyOnly=true 时仅推飞书（带预警标识），不触发 autoTrade
+      notifyOnly,
+      windowMs,
+      windowLabel: _fmtWindowMs(windowMs),
       indicatorsSnapshot: snapshot
     };
 
     _markFired(symbol, tier, best.side);
 
-    // ---- 自动交易 webhook ----
+    // ---- 自动交易 webhook（仅 full 窗口；notifyOnly 窗口跳过）----
     // 用 Tier 区分 label，外部中转服务可按 label 选择不同杠杆/仓位预设
-    if (req.query.notify !== 'false' && req.query.autoTrade !== 'false') {
+    if (!notifyOnly && req.query.notify !== 'false' && req.query.autoTrade !== 'false') {
       const labelTpl = tier === 'HEXA'
         ? (process.env.AUTO_TRADE_TIER1_LABEL || 'HEXA-{leverage}x-{positionPct}pct-{side}')
         : (process.env.AUTO_TRADE_TIER2_LABEL || 'TRIO-{leverage}x-{positionPct}pct-{side}');
@@ -886,7 +921,10 @@ function _parseTpTiers(envStr, fallback) {
 function _buildResonanceCard(d) {
   const isHexa = d.tier === 'HEXA';
   const isLong = d.side === 'long';
-  const template = isHexa ? (isLong ? 'turquoise' : 'orange') : (isLong ? 'green' : 'red');
+  // notifyOnly 窗口（如 1h）用 blue/orange，区别于 full 窗口的高饱和色
+  const template = d.notifyOnly
+    ? (isLong ? 'blue' : 'orange')
+    : (isHexa ? (isLong ? 'turquoise' : 'orange') : (isLong ? 'green' : 'red'));
   const tierBadge = isHexa ? '🏆 HEXA · 顶级共振' : '⭐ TRIO · 日内常规';
   const sideEmoji = isLong ? '🟢 LONG (做多)' : '🔴 SHORT (做空)';
   const fmt = (v, d2 = 2) => v == null ? '-' : Number(v).toFixed(Math.abs(v) >= 1000 ? d2 : 4);
@@ -899,8 +937,14 @@ function _buildResonanceCard(d) {
   const fvgLabel = d.activeFvg ? (d.activeFvg.type === 'bullish' ? '🟩 Bullish FVG' : '🟥 Bearish FVG') : '-';
 
   const lines = [];
+  if (d.notifyOnly) {
+    lines.push(`> ⚠️ **${d.windowLabel || ''} 预警 · 未自动下单** (Notify-only window)`);
+    lines.push(`> 此窗口未列入 \`TRADE_SIGNAL_ALLOWED_WINDOWS_MS\`，仅作早期 setup 提醒，autoTrade webhook 不会触发。`);
+    lines.push('---');
+  }
   lines.push(`**类型 / Tier**: ${tierBadge} · ${sideEmoji}`);
   lines.push(`**置信度 / Confidence**: \`${d.confidence}/100\` · 必要 ${d.hitRequired}/6 · 加分 ${d.hitOptional}/8`);
+  if (d.windowLabel) lines.push(`**窗口 / Window**: \`${d.windowLabel}\``);
   lines.push(`**杠杆 / Leverage**: ${d.leverage}x · 仓位 ${d.positionPct}%`);
   lines.push('---');
   lines.push(`**FVG**: ${fvgLabel}${d.activeFvg ? ` [${fmt(d.activeFvg.lower)} ~ ${fmt(d.activeFvg.upper)}] (filled ${(d.activeFvg.fillRatio * 100).toFixed(1)}%)` : ''}`);
@@ -926,10 +970,12 @@ function _buildResonanceCard(d) {
   const hits = Object.entries(d.conditions || {}).map(([k, v]) => `${v ? '✅' : '❌'} ${k}`);
   if (hits.length) lines.push(`**命中 / Hit**: ${hits.join(' · ')}`);
 
+  const titlePrefix = d.notifyOnly ? '⚠️ 预警 · ' : '';
+  const triggerSuffix = d.notifyOnly ? ' · 仅推送，未下单' : '';
   return {
     config: { wide_screen_mode: true },
     header: {
-      title: { tag: 'plain_text', content: `${tierBadge} · ${d.signal} · ${sym}` },
+      title: { tag: 'plain_text', content: `${titlePrefix}${tierBadge} · ${d.signal} · ${sym}` },
       template
     },
     elements: [
@@ -937,7 +983,7 @@ function _buildResonanceCard(d) {
       {
         tag: 'note',
         elements: [
-          { tag: 'lark_md', content: `触发 / Trigger: **resonance-signal** · ${feishu.fmtCnTime()}` }
+          { tag: 'lark_md', content: `触发 / Trigger: **resonance-signal** · ${feishu.fmtCnTime()}${triggerSuffix}` }
         ]
       }
     ]

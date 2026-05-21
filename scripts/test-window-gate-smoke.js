@@ -2,16 +2,19 @@
 
 /* eslint-disable no-console */
 /**
- * 交易信号窗口闸门（B 方案）冷烟测试
+ * 三阶窗口闸门（Three-tier window gate）冷烟测试
  *
  * 覆盖：
- *   1. /api/trade/liq-signal       windowMs=15m → 返回 NONE + windowGated:true，不调 autoTrade
- *   2. /api/trade/liq-signal       windowMs=1h  → 返回 NONE + windowGated:true
- *   3. /api/trade/liq-signal       windowMs=4h  → 通过闸门进入正常计算流程
- *   4. /api/trade/liq-signal       windowMs=24h → 通过闸门进入正常计算流程
- *   5. /api/trade/resonance-signal windowMs=15m → 返回 NONE + windowGated:true
- *   6. /api/trade/resonance-signal windowMs=24h → 通过闸门
- *   7. TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000 (仅 4h) → 24h 被拒绝
+ *   1. /api/trade/liq-signal       windowMs=15m → NONE + windowGated:true（完全屏蔽）
+ *   2. /api/trade/liq-signal       windowMs=1h  (NOTIFY 未设) → NONE + windowGated:true
+ *   3. /api/trade/liq-signal       windowMs=1h  (NOTIFY=3600000) → 不 gated，data.notifyOnly=true
+ *   4. /api/trade/liq-signal       windowMs=1h  (NOTIFY=3600000) → autoTrade.sendPendingOrder 不被调用
+ *   5. /api/trade/liq-signal       windowMs=4h  → 通过闸门，data.notifyOnly=false
+ *   6. /api/trade/liq-signal       windowMs=24h → 通过闸门，data.notifyOnly=false
+ *   7. /api/trade/resonance-signal windowMs=15m → NONE + windowGated:true
+ *   8. /api/trade/resonance-signal windowMs=1h  (NOTIFY=3600000) → 不 gated，data.notifyOnly=true
+ *   9. /api/trade/resonance-signal windowMs=24h → 通过闸门
+ *  10. TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000 (仅 4h) → 24h 被拒绝
  *
  * 运行：node scripts/test-window-gate-smoke.js
  */
@@ -26,6 +29,8 @@ delete process.env.FEISHU_WEBHOOK_URL;
 delete process.env.FEISHU_WEBHOOK_SECRET;
 delete process.env.AUTO_TRADE_API_URL;
 delete process.env.AUTO_TRADE_AUTH_TOKEN;
+// 关掉 staging 延迟，避免测试要等 5 分钟
+process.env.AUTO_TRADE_CONFIRMATION_DELAY_MS = '0';
 
 let passed = 0, failed = 0;
 function test(name, fn) {
@@ -43,7 +48,23 @@ function test(name, fn) {
   }
 }
 
-// 工具：Mock Binance，避免真访问外网
+// 工具：Mock services/autoTrade，记录所有 sendPendingOrder 调用
+// 返回 spy 数组，每次测试可断言"是否被调用过"
+function _mockAutoTrade() {
+  const autoPath = require.resolve(path.join(__dirname, '..', 'services', 'autoTrade.js'));
+  const calls = [];
+  const fake = {
+    sendPendingOrder: async (payload) => {
+      calls.push(payload);
+      return { ok: true, skipped: false, status: 200 };
+    },
+    isEnabled: () => false,
+    getStatus: () => ({ enabled: false, staged: [] })
+  };
+  require.cache[autoPath] = { id: autoPath, filename: autoPath, loaded: true, exports: fake };
+  return calls;
+}
+
 function _mockBinance() {
   const binancePath = require.resolve(path.join(__dirname, '..', 'services', 'binance.js'));
   const bLivePath = require.resolve(path.join(__dirname, '..', 'services', 'binanceLive.js'));
@@ -120,15 +141,79 @@ test('liq-signal: windowMs=15m → NONE + windowGated:true', async () => {
   }
 });
 
-test('liq-signal: windowMs=1h → NONE + windowGated:true', async () => {
+test('liq-signal: windowMs=1h (NOTIFY 未设) → NONE + windowGated:true', async () => {
   _mockBinance();
   process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  delete process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS;
   const route = _freshRequire('routes/liqSignal.js');
   const { server, port } = await _startServer(route);
   try {
     const r = await _get(port, '/api/trade/liq-signal?symbol=BTCUSDT&windowMs=3600000');
     assert.equal(r.body.data.signal, 'NONE');
     assert.equal(r.body.data.indicatorsSnapshot.windowGated, true);
+  } finally {
+    server.close();
+  }
+});
+
+test('liq-signal: windowMs=1h (NOTIFY=3600000) → 不 gated，正常进入计算流程', async () => {
+  _mockBinance();
+  process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS  = '3600000';
+  const route = _freshRequire('routes/liqSignal.js');
+  const { server, port } = await _startServer(route);
+  try {
+    const r = await _get(port, '/api/trade/liq-signal?symbol=BTCUSDT&windowMs=3600000&notify=false&autoTrade=false');
+    assert.equal(r.status, 200);
+    const snap = r.body.data.indicatorsSnapshot || {};
+    assert.notEqual(snap.windowGated, true,
+      '1h 在 NOTIFY 名单内不应被 windowGated 拦截');
+    // mock 数据未必出信号；但若出信号必须带 notifyOnly:true
+    if (r.body.data.signal && r.body.data.signal !== 'NONE') {
+      assert.equal(r.body.data.notifyOnly, true,
+        `1h 信号 ${r.body.data.signal} 必须带 notifyOnly:true`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
+test('liq-signal: windowMs=1h notifyOnly → autoTrade.sendPendingOrder 不被调用', async () => {
+  _mockBinance();
+  const autoCalls = _mockAutoTrade();
+  process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS  = '3600000';
+  const route = _freshRequire('routes/liqSignal.js');
+  const { server, port } = await _startServer(route);
+  try {
+    await _get(port, '/api/trade/liq-signal?symbol=BTCUSDT&windowMs=3600000');
+    // fire-and-forget：给 100ms 让 .then 回调跑完
+    await new Promise((res) => setTimeout(res, 100));
+    assert.equal(autoCalls.length, 0,
+      `1h notifyOnly 不应触发 autoTrade.sendPendingOrder，实际调用 ${autoCalls.length} 次`);
+  } finally {
+    server.close();
+  }
+});
+
+test('liq-signal: windowMs=4h full → autoTrade.sendPendingOrder 可被调用（若出信号）', async () => {
+  _mockBinance();
+  const autoCalls = _mockAutoTrade();
+  process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS  = '3600000';
+  const route = _freshRequire('routes/liqSignal.js');
+  const { server, port } = await _startServer(route);
+  try {
+    const r = await _get(port, '/api/trade/liq-signal?symbol=BTCUSDT&windowMs=14400000');
+    await new Promise((res) => setTimeout(res, 100));
+    // 4h 在 full 名单：守护逻辑允许 autoTrade（具体是否被 mock 数据触发到信号取决于 mock）
+    // 只验证守护未硬拦：如果信号触发了 autoTrade 必有 ≥1 次调用；如果未出信号 autoCalls=0 也合规
+    if (r.body.data.signal && r.body.data.signal !== 'NONE') {
+      assert.equal(r.body.data.notifyOnly, false,
+        '4h full 信号必须带 notifyOnly:false');
+      assert.ok(autoCalls.length >= 1,
+        '4h full 出信号时 autoTrade 应被调用');
+    }
   } finally {
     server.close();
   }
@@ -178,6 +263,7 @@ test('liq-signal: windowMs=24h → 通过闸门', async () => {
 test('resonance-signal: windowMs=15m → tier=NONE + windowGated:true', async () => {
   _mockBinance();
   process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  delete process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS;
   const route = _freshRequire('routes/resonanceSignal.js');
   const { server, port } = await _startServer(route);
   try {
@@ -194,9 +280,31 @@ test('resonance-signal: windowMs=15m → tier=NONE + windowGated:true', async ()
   }
 });
 
+test('resonance-signal: windowMs=1h (NOTIFY=3600000) → 不 gated', async () => {
+  _mockBinance();
+  process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS  = '3600000';
+  const route = _freshRequire('routes/resonanceSignal.js');
+  const { server, port } = await _startServer(route);
+  try {
+    const r = await _get(port, '/api/trade/resonance-signal?symbol=BTCUSDT&windowMs=3600000&notify=false');
+    assert.equal(r.status, 200);
+    const snap = r.body.data.indicatorsSnapshot || {};
+    assert.notEqual(snap.windowGated, true,
+      '1h 在 NOTIFY 名单内不应被 windowGated 拦截');
+    if (r.body.data.tier && r.body.data.tier !== 'NONE') {
+      assert.equal(r.body.data.notifyOnly, true,
+        `1h resonance ${r.body.data.tier} 必须带 notifyOnly:true`);
+    }
+  } finally {
+    server.close();
+  }
+});
+
 test('resonance-signal: windowMs=24h → 通过闸门', async () => {
   _mockBinance();
   process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000,86400000';
+  process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS  = '3600000';
   const route = _freshRequire('routes/resonanceSignal.js');
   const { server, port } = await _startServer(route);
   try {
@@ -215,6 +323,7 @@ test('resonance-signal: windowMs=24h → 通过闸门', async () => {
 test('自定义白名单 TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000 (仅 4h) → 24h 被拒', async () => {
   _mockBinance();
   process.env.TRADE_SIGNAL_ALLOWED_WINDOWS_MS = '14400000';
+  delete process.env.TRADE_SIGNAL_NOTIFY_WINDOWS_MS;
   const route = _freshRequire('routes/liqSignal.js');
   const { server, port } = await _startServer(route);
   try {

@@ -205,25 +205,43 @@
   // ============================================================
   // 交易信号窗口白名单 (Trade Signal Window Allow-list · B 方案)
   //
-  // 短窗口（15m / 1h）的 L↓/S↑ 主峰是局部噪音，不出"交易信号"：
-  //   • 清算磁极信号卡 (renderLiqSignal)：跳过 fetch，显示灰色提示
-  //   • 双层共振信号卡 (renderResonance) ：跳过 fetch，显示灰色提示
-  //   • 后端 routes/liqSignal.js + routes/resonanceSignal.js 也有同样闸门
-  //     （前后端双保险，curl 直调也无法绕过 → 保护 autoTrade webhook）
-  //   • 清算热图本身 + cross/reclaim 警报不受此闸影响（仍可看 15m 细节）
+  // 三阶窗口闸门 (Three-tier window gate):
+  //   ① FULL    (TRADE_SIGNAL_ALLOWED_WINDOWS_MS) — 算信号 + 飞书 + autoTrade webhook
+  //               默认 4h + 24h；高胜率窗口，敢自动下单
+  //   ② NOTIFY  (TRADE_SIGNAL_NOTIFY_WINDOWS_MS)  — 算信号 + 飞书（带预警标识），不发 webhook
+  //               默认 1h；早期 setup 提醒，人工再决定
+  //   ③ 其它    (15m / 30m 等)                    — 完全屏蔽，前端显示灰色提示
   //
-  // 同步说明：这里必须和后端 .env TRADE_SIGNAL_ALLOWED_WINDOWS_MS 保持一致；
-  // 默认 4h + 24h。
+  // 前后端必须保持一致；后端在 routes/liqSignal.js + routes/resonanceSignal.js
+  // 用相同的两个 .env 变量。改后端后这里也要同步。
   // ============================================================
   const TRADE_SIGNAL_ALLOWED_WINDOWS_MS = new Set([
     4 * 60 * 60_000,
     24 * 60 * 60_000
   ]);
+  const TRADE_SIGNAL_NOTIFY_WINDOWS_MS = new Set([
+    1 * 60 * 60_000
+  ]);
   function isTradeSignalWindowAllowed(windowMs) {
     return TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs));
   }
+  function isTradeSignalNotifyOnlyWindow(windowMs) {
+    // full 优先：同时在两组里时按 full 处理
+    if (TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(Number(windowMs))) return false;
+    return TRADE_SIGNAL_NOTIFY_WINDOWS_MS.has(Number(windowMs));
+  }
+  function isTradeSignalAnyWindow(windowMs) {
+    return isTradeSignalWindowAllowed(windowMs) || isTradeSignalNotifyOnlyWindow(windowMs);
+  }
   function tradeSignalAllowedLabel() {
     return Array.from(TRADE_SIGNAL_ALLOWED_WINDOWS_MS).sort((a, b) => a - b)
+      .map((ms) => ms >= 86_400_000 ? `${ms / 86_400_000}d` : `${ms / 3_600_000}h`)
+      .join(' / ');
+  }
+  function tradeSignalNotifyOnlyLabel() {
+    return Array.from(TRADE_SIGNAL_NOTIFY_WINDOWS_MS)
+      .filter((m) => !TRADE_SIGNAL_ALLOWED_WINDOWS_MS.has(m))
+      .sort((a, b) => a - b)
       .map((ms) => ms >= 86_400_000 ? `${ms / 86_400_000}d` : `${ms / 3_600_000}h`)
       .join(' / ');
   }
@@ -4028,7 +4046,8 @@
 
     if (isActionable) {
       banner.classList.add(label.cls);
-      banner.textContent = `${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100`;
+      const notifyTag = sig.notifyOnly ? `⚠️ ${sig.windowLabel || ''} 预警·未自动下单 — ` : '';
+      banner.textContent = `${notifyTag}${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100`;
       els.liqSignalBody.style.display = '';
     } else {
       banner.classList.add('none');
@@ -4125,8 +4144,8 @@
       return;
     }
     const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
-    // ⛔ B 方案安全闸：短窗口不出交易信号 → 跳过 fetch，渲染灰色提示
-    if (!isTradeSignalWindowAllowed(liqWindowMs)) {
+    // 三阶窗口闸门：full / notify-only 都需要 fetch，只有不在两组才屏蔽
+    if (!isTradeSignalAnyWindow(liqWindowMs)) {
       renderLiqSignalWindowGated(liqWindowMs);
       return;
     }
@@ -4162,15 +4181,18 @@
     els.liqSignalMeta.textContent = '';
   }
 
-  // 窗口闸门：用户在清算热图选了 15m / 1h 时，不出清算磁极信号
+  // 窗口闸门：用户选了不在 allow/notify 任一名单的窗口（如 15m / 30m）→ 不出信号
   function renderLiqSignalWindowGated(windowMs) {
     _lastLiqSignal = null;
     if (!els.liqSignalCard) return;
     els.liqSignalBanner.classList.remove('long', 'short');
     els.liqSignalBanner.classList.add('none');
     const winLabel = windowMs >= 3_600_000 ? `${windowMs / 3_600_000}h` : `${windowMs / 60_000}m`;
-    els.liqSignalBanner.textContent =
-      `⚪ 本窗口 (${winLabel}) 不出交易信号 — 请切到 ${tradeSignalAllowedLabel()} 查看`;
+    const notifyLabel = tradeSignalNotifyOnlyLabel();
+    const hint = notifyLabel
+      ? `请切到 ${tradeSignalAllowedLabel()} (自动下单) 或 ${notifyLabel} (仅预警) 查看`
+      : `请切到 ${tradeSignalAllowedLabel()} 查看`;
+    els.liqSignalBanner.textContent = `⚪ 本窗口 (${winLabel}) 不出交易信号 — ${hint}`;
     els.liqSignalBody.style.display = 'none';
     els.liqSignalMeta.textContent =
       '短窗口主峰为局部噪音 (胜率 ≈ 50%)，已自动屏蔽以避免 autoTrade 被无效信号触发。' +
@@ -4256,7 +4278,8 @@
 
     if (isActionable) {
       banner.classList.add(label.cls);
-      banner.textContent = `${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100 (必要 ${sig.hitRequired}/6 · 加分 ${sig.hitOptional}/8)`;
+      const notifyTag = sig.notifyOnly ? `⚠️ ${sig.windowLabel || ''} 预警·未自动下单 — ` : '';
+      banner.textContent = `${notifyTag}${label.emoji} ${label.text} · 置信度 ${sig.confidence}/100 (必要 ${sig.hitRequired}/6 · 加分 ${sig.hitOptional}/8)`;
       els.resonanceBody.style.display = '';
     } else {
       banner.classList.add('none');
@@ -4341,15 +4364,18 @@
     els.resonanceMeta.textContent = '';
   }
 
-  // 窗口闸门：用户选 15m / 1h 时，共振信号也不出
+  // 窗口闸门：用户选了不在 allow/notify 任一名单的窗口（如 15m / 30m）→ 不出共振信号
   function renderResonanceWindowGated(windowMs) {
     _lastResonance = null;
     if (!els.resonanceCard) return;
     els.resonanceBanner.classList.remove('long', 'short');
     els.resonanceBanner.classList.add('none');
     const winLabel = windowMs >= 3_600_000 ? `${windowMs / 3_600_000}h` : `${windowMs / 60_000}m`;
-    els.resonanceBanner.textContent =
-      `⚪ 本窗口 (${winLabel}) 不出共振信号 — 请切到 ${tradeSignalAllowedLabel()} 查看`;
+    const notifyLabel = tradeSignalNotifyOnlyLabel();
+    const hint = notifyLabel
+      ? `请切到 ${tradeSignalAllowedLabel()} (自动下单) 或 ${notifyLabel} (仅预警) 查看`
+      : `请切到 ${tradeSignalAllowedLabel()} 查看`;
+    els.resonanceBanner.textContent = `⚪ 本窗口 (${winLabel}) 不出共振信号 — ${hint}`;
     els.resonanceBody.style.display = 'none';
     els.resonanceMeta.textContent =
       '共振信号依赖结构性 peak (4h+)，短窗口噪音过多。 / Resonance requires structural peaks.';
@@ -4364,8 +4390,8 @@
       return;
     }
     const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
-    // ⛔ B 方案安全闸：短窗口跳过 fetch，显示灰色提示
-    if (!isTradeSignalWindowAllowed(liqWindowMs)) {
+    // 三阶窗口闸门：full / notify-only 都需要 fetch，只有不在两组才屏蔽
+    if (!isTradeSignalAnyWindow(liqWindowMs)) {
       renderResonanceWindowGated(liqWindowMs);
       return;
     }
@@ -4816,7 +4842,8 @@
       const btRisk = Number(document.getElementById('bt-risk')?.value) || 1;
       const liqWindowMs = Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000);
       const liqRange = (els.liqHeatmapRange && els.liqHeatmapRange.value) || 'auto';
-      const liqWindowAllowed = isTradeSignalWindowAllowed(liqWindowMs);
+      // 三阶窗口：full + notify-only 都需要 fetch；只有完全不在闸门内才跳过
+      const liqWindowAnyAllowed = isTradeSignalAnyWindow(liqWindowMs);
       const liqSignalParams = new URLSearchParams({
         symbol,
         windowMs: String(liqWindowMs),
@@ -4824,7 +4851,7 @@
         riskPercent: String(btRisk)
       });
       if (liqRange && liqRange !== 'auto') liqSignalParams.set('priceRange', String(liqRange));
-      const liqSignalFetch = (market === 'futures' && liqWindowAllowed)
+      const liqSignalFetch = (market === 'futures' && liqWindowAnyAllowed)
         ? fetchJsonSoft(`/api/trade/liq-signal?${liqSignalParams.toString()}`)
         : Promise.resolve(null);
 
@@ -4864,7 +4891,7 @@
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       if (market === 'futures') {
-        if (!liqWindowAllowed) {
+        if (!liqWindowAnyAllowed) {
           renderLiqSignalWindowGated(liqWindowMs);
         } else if (liqSignal) {
           renderLiqSignal(liqSignal);

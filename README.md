@@ -673,74 +673,76 @@ curl -s http://localhost:3003/api/alerts/liquidation-cross/status | jq
 
 ---
 
-## 🛡️ 交易信号窗口闸门 (Trade Signal Window Allow-list · B 方案)
+## 🛡️ 交易信号窗口闸门 (Three-tier Trade Signal Window Gate)
 
-清算磁极信号 / 共振信号 / autoTrade webhook 都受这道闸门保护，**只在 4h / 24h 窗口出信号**。短窗口（15m / 1h）的 L↓/S↑ 主峰是局部噪音（胜率约 50%），如果让 autoTrade 触发，会被无效信号洗手续费。
+清算磁极信号 / 共振信号 / autoTrade webhook 都受这道闸门保护。窗口被分成 **三档**：
 
-| 模块 | 闸门位置 | 短窗口行为 |
-|---|---|---|
-| 🧲 清算磁极信号卡 (`GET /api/trade/liq-signal`) | 前端跳过 fetch + 后端返回 NONE | 卡片显示「本窗口不出交易信号」灰色提示 |
-| 🏆 双层共振信号卡 (`GET /api/trade/resonance-signal`) | 前端跳过 fetch + 后端返回 NONE | 同上 |
-| 🤖 autoTrade webhook (LIQ_REVERSAL_*, HEXA_*, TRIO_*) | 跟随上述两个路由 | 不发送，**保护资金** |
-| 🔔 清算热图实时警报 (cross / reclaim) | 仅 reclaim 受影响（cross 全窗口生效） | reclaim 静音，cross 仍响 |
-| 📊 清算热图本身 + 其他副图（CVD/OI/VWAP/订单簿/LVN） | 不受影响 | 仍可看 15m/1h 细节 |
+| 档位 | 默认窗口 | 算信号 | 推飞书 | autoTrade webhook | 飞书卡样式 |
+|---|---|:---:|:---:|:---:|---|
+| **① Full** `TRADE_SIGNAL_ALLOWED_WINDOWS_MS` | 4h + 24h | ✅ | ✅ | ✅ | 满色 (green/red) |
+| **② Notify-only** `TRADE_SIGNAL_NOTIFY_WINDOWS_MS` | 1h | ✅ | ✅ (带 ⚠️ 预警标识) | ❌ | 柔和色 (blue/orange) |
+| **③ Blocked** 都不在 | 15m + 30m + … | ❌ | ❌ | ❌ | 灰色"本窗口不出信号" |
+
+**为什么分三档**：短窗口（15m）噪音胜率 ~50%，长窗口（4h/24h）胜率 70-78%，中间的 1h 是教科书级的"早期预警"窗口 —— 信号有参考价值但单独自动下单胜率不够。让 1h 只推飞书让你看到"早期 setup"，4h/24h 才真正放 webhook。
+
+### 各模块行为
+
+| 模块 | Full (4h/24h) | Notify-only (1h) | Blocked (15m/30m) |
+|---|---|---|---|
+| 🧲 清算磁极信号卡 (`/api/trade/liq-signal`) | 算信号 + 飞书 + webhook | 算信号 + 飞书（带 ⚠️） | NONE + windowGated:true |
+| 🏆 双层共振信号卡 (`/api/trade/resonance-signal`) | 算信号 + 飞书 + webhook | 算信号 + 飞书（带 ⚠️） | NONE + windowGated:true |
+| 🤖 autoTrade webhook | 触发 | **不触发** | 不触发 |
+| 🔔 清算热图实时 `reclaim` 警报 | 响 | 响 | 静音（cross 仍响）|
+| 📊 清算热图本身 + 其它副图 | 不受影响 | 不受影响 | 不受影响（仍可看 15m 细节）|
 
 ### 防绕过设计
 
-**前后端双保险**，curl 直调也无法绕过：
+**前后端双保险**：
 
-```routes/liqSignal.js
-if (!_isTradeSignalWindowAllowed(windowMs)) {
-  return res.json({
-    success: true,
-    data: _empty(`Window ${windowMs}ms not in trade-signal allow-list (4h / 24h)`,
-      { ..., windowGated: true, allowedWindowsMs: [14400000, 86400000] })
-  });
-}
-```
+- `routes/liqSignal.js` + `routes/resonanceSignal.js`：用 `_isNotifyOnlyWindow` / `_isTradeSignalWindowAllowed` 在 data 上挂 `notifyOnly:true/false` 字段；**autoTrade 守护**写成 `if (!notifyOnly && ...) autoTrade.sendPendingOrder(...)`，curl 直调也跳不过去。
+- `public/app.js`：`TRADE_SIGNAL_ALLOWED_WINDOWS_MS` + `TRADE_SIGNAL_NOTIFY_WINDOWS_MS` 同步硬编码常量；`isTradeSignalAnyWindow()` 决定是否 fetch，`renderLiqSignal()` 在 banner 上加 "⚠️ 1h 预警·未自动下单" 前缀。
+- **飞书卡**：`notifyOnly=true` 时标题加 `⚠️ 预警 · `，卡片顶部加引用块"**未自动下单**"，色调换成 blue/orange 避免误以为是"敢上仓位"的信号。
 
 ### .env 配置
 
 ```bash
-# 默认 4h + 24h
+# 默认：4h + 24h 全开 (Full)
 TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000,86400000
 
-# 想再放开 1h：
-# TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000,86400000,3600000
+# 默认：1h 仅预警 (Notify-only)，不发 webhook
+TRADE_SIGNAL_NOTIFY_WINDOWS_MS=3600000
 
-# 仅 24h（最严格，最少假信号）：
+# 想把 1h 也放开成自动下单：直接挪到 Full 名单（注意：会增加假信号）
+# TRADE_SIGNAL_ALLOWED_WINDOWS_MS=14400000,86400000,3600000
+# TRADE_SIGNAL_NOTIFY_WINDOWS_MS=
+
+# 仅 24h 自动下单 + 4h 仅预警（最保守）：
 # TRADE_SIGNAL_ALLOWED_WINDOWS_MS=86400000
+# TRADE_SIGNAL_NOTIFY_WINDOWS_MS=14400000,3600000
+
+# 完全关 1h 预警（默认行为变回老 B 方案）：
+# TRADE_SIGNAL_NOTIFY_WINDOWS_MS=
 ```
 
-**注意**：前端 `public/app.js` 顶部的 `TRADE_SIGNAL_ALLOWED_WINDOWS_MS` 常量需要和 .env 保持一致（前端没法直接读 .env，所以是硬编码常量；如果你改了 .env，记得同步改前端常量）。
+**同步提醒**：前端 `public/app.js` 顶部的两个常量必须和 .env 保持一致（前端没法读 .env，硬编码）。改 .env 后记得同步前端。
 
 ### 验证（curl）
 
 ```bash
-# 短窗口被闸门拦截
+# ① Full 窗口：4h 进正常流程
+$ curl -s 'http://localhost:3003/api/trade/liq-signal?symbol=BTCUSDT&windowMs=14400000' | jq '.data | {signal, conf: .confidence, notifyOnly, gated: .indicatorsSnapshot.windowGated}'
+{ "signal": "LIQ_SWEEP_REJECT_LONG", "conf": 80, "notifyOnly": false, "gated": null }
+
+# ② Notify-only 窗口：1h 出信号 + notifyOnly:true（不会触发 autoTrade）
+$ curl -s 'http://localhost:3003/api/trade/liq-signal?symbol=BTCUSDT&windowMs=3600000' | jq '.data | {signal, conf: .confidence, notifyOnly, win: .windowLabel}'
+{ "signal": "LIQ_REVERSAL_LONG", "conf": 78, "notifyOnly": true, "win": "1h" }
+
+# ③ Blocked 窗口：15m 被闸门拦截
 $ curl -s 'http://localhost:3003/api/trade/liq-signal?symbol=BTCUSDT&windowMs=900000' | jq '.data | {signal, reason, gated: .indicatorsSnapshot.windowGated}'
-{
-  "signal": "NONE",
-  "reason": "Window 900000ms not in trade-signal allow-list (4h / 24h)",
-  "gated": true
-}
-
-# 4h 通过闸门进入正常流程
-$ curl -s 'http://localhost:3003/api/trade/liq-signal?symbol=BTCUSDT&windowMs=14400000' | jq '.data | {signal, confidence, gated: .indicatorsSnapshot.windowGated}'
-{
-  "signal": "LIQ_SWEEP_REJECT_LONG",
-  "confidence": 80,
-  "gated": null
-}
-
-# resonance 同样
-$ curl -s 'http://localhost:3003/api/trade/resonance-signal?symbol=BTCUSDT&windowMs=900000' | jq '.data | {tier, signal, gated: .indicatorsSnapshot.windowGated}'
-{
-  "tier": "NONE",
-  "signal": "NONE",
-  "gated": true
-}
+{ "signal": "NONE", "reason": "Window 900000ms not in trade-signal allow-list (full=4h+24h · notify=1h)", "gated": true }
 ```
+
+冷烟测试：`node scripts/test-window-gate-smoke.js` (11 用例，覆盖 Full/Notify/Blocked 三档 + autoTrade 守护)
 
 ---
 
