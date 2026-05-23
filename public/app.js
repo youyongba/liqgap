@@ -5148,8 +5148,82 @@
     test: document.getElementById('fs-test'),
     copy: document.getElementById('btn-copy-signal'),
     btnAiAnalyze: document.getElementById('btn-ai-analyze'),
+    atToggle: document.getElementById('at-toggle'),
     status: document.getElementById('fs-status')
   };
+
+  // ============================================================
+  // 自动交易运行时开关 (Auto-Trade Runtime Kill Switch)
+  // ============================================================
+  // 显示当前 enabled 状态 + 一键 toggle；色彩 + 文案双重提示，避免误判。
+  // 30s 轮询一次，避免别的客户端 / curl 切换后本地状态过期。
+  function renderAtToggle(data) {
+    const btn = fsEls.atToggle;
+    if (!btn || !data) return;
+    const { enabled, source, runtimeOverride, urlConfigured } = data;
+    btn.classList.remove('on', 'off', 'warn');
+    if (!urlConfigured) {
+      btn.textContent = '🤖 自动交易未配置 / No URL';
+      btn.classList.add('warn');
+      btn.disabled = true;
+      btn.title = '.env 里 AUTO_TRADE_API_URL 未设置；自动交易整体 no-op';
+      return;
+    }
+    btn.disabled = false;
+    if (enabled) {
+      btn.textContent = '🤖 自动交易 / AutoTrade: ON';
+      btn.classList.add('on');
+    } else {
+      btn.textContent = '🤖 自动交易 / AutoTrade: OFF';
+      btn.classList.add('off');
+    }
+    const overrideTag = runtimeOverride === null ? '跟随 .env' : (runtimeOverride ? '运行时强开' : '运行时强关');
+    btn.title = `点击切换。当前 enabled=${enabled} · source=${source} · ${overrideTag}\n关闭后所有信号只推飞书，绝不发 webhook 自动下单。\n重启后回到 .env 默认行为；要永久关闭请同时设 .env AUTO_TRADE_ENABLED=false`;
+  }
+
+  async function refreshAutoTradeStatus() {
+    if (!fsEls.atToggle) return;
+    try {
+      const r = await fetch('/api/auto-trade/status');
+      const j = await r.json();
+      if (j && j.success) renderAtToggle(j.data);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[at-toggle] refresh failed:', err.message);
+    }
+  }
+
+  async function toggleAutoTrade() {
+    if (!fsEls.atToggle || fsEls.atToggle.disabled) return;
+    const before = fsEls.atToggle.textContent;
+    fsEls.atToggle.disabled = true;
+    fsEls.atToggle.textContent = '🤖 切换中… / Toggling…';
+    try {
+      const r = await fetch('/api/auto-trade/toggle', { method: 'POST' });
+      const j = await r.json();
+      if (j && j.success) {
+        renderAtToggle(j.data);
+        const tip = j.data.enabled
+          ? '已开启自动交易 webhook / AutoTrade enabled ✓'
+          : '已关闭自动交易 webhook / AutoTrade disabled · 仅推飞书';
+        setFsStatus(tip, j.data.enabled ? 'ok' : 'warn');
+      } else {
+        fsEls.atToggle.textContent = before;
+        fsEls.atToggle.disabled = false;
+        setFsStatus('切换失败 / Toggle failed: ' + (j.error || 'unknown'), 'error');
+      }
+    } catch (err) {
+      fsEls.atToggle.textContent = before;
+      fsEls.atToggle.disabled = false;
+      setFsStatus('切换失败 / Toggle failed: ' + err.message, 'error');
+    }
+  }
+
+  if (fsEls.atToggle) {
+    fsEls.atToggle.addEventListener('click', toggleAutoTrade);
+    refreshAutoTradeStatus();
+    setInterval(refreshAutoTradeStatus, 30_000);
+  }
 
   function setFsStatus(text, kind) {
     if (!fsEls.status) return;

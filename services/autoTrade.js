@@ -29,6 +29,9 @@
  *   AUTO_TRADE_API_URL               目标 webhook URL；未配置则整体 no-op
  *   AUTO_TRADE_API_TOKEN             X-Auth-Token 头的值（与对方约定）
  *   AUTO_TRADE_ENABLED               'false' 显式关闭整体推送（默认开启）
+ *                                    ⚠️ 这是启动期 env，重启才生效。
+ *                                    需要"运行时一键开关"请用 setEnabled()
+ *                                    或 POST /api/auto-trade/{enable|disable|toggle}。
  *   AUTO_TRADE_TRIGGER_SIGNALS       CSV，触发该 webhook 的信号白名单
  *   AUTO_TRADE_MIN_CONFIDENCE        触发的最低 confidence，默认 75
  *   AUTO_TRADE_COOLDOWN_MS           同 symbol+direction 冷却毫秒，默认 1800000 (30 分钟)
@@ -72,9 +75,56 @@ function recordCall(record) {
   if (recentCalls.length > MAX_RECENT) recentCalls.length = MAX_RECENT;
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// 运行时开关 (Runtime kill switch)
+// ────────────────────────────────────────────────────────────────────────────
+//   null  → 跟随 .env（默认行为，按 AUTO_TRADE_ENABLED + URL 是否配置）
+//   true  → 运行时强制启用（覆盖 AUTO_TRADE_ENABLED=false；URL 必须配置否则仍发不出）
+//   false → 运行时强制禁用（最高优先级，所有 webhook 立即停发；不影响飞书 / 信号计算）
+//
+// 通过 setEnabled() 切换；REST API：
+//   POST /api/auto-trade/disable           → setEnabled(false)
+//   POST /api/auto-trade/enable            → setEnabled(true)
+//   POST /api/auto-trade/toggle            → 翻转当前 isEnabled()
+//   POST /api/auto-trade/reset-override    → 复位为 null（跟随 .env）
+//
+// 重启后回到 null（内存状态，不持久化）。如果要"重启也保持禁用"请同步设
+// .env AUTO_TRADE_ENABLED=false。
+let _runtimeOverride = null;
+
 function isEnabled() {
+  if (_runtimeOverride === false) return false;
+  if (!process.env.AUTO_TRADE_API_URL) return false;
+  if (_runtimeOverride === true) return true;
   if (process.env.AUTO_TRADE_ENABLED === 'false') return false;
-  return !!process.env.AUTO_TRADE_API_URL;
+  return true;
+}
+
+function setEnabled(value) {
+  if (value === null || typeof value === 'undefined') {
+    _runtimeOverride = null;
+  } else {
+    _runtimeOverride = !!value;
+  }
+  return getEnabledStatus();
+}
+
+function getEnabledStatus() {
+  const envEnabled = process.env.AUTO_TRADE_ENABLED !== 'false';
+  const urlConfigured = !!process.env.AUTO_TRADE_API_URL;
+  let source;
+  if (_runtimeOverride === false) source = 'runtime-disabled';
+  else if (!urlConfigured) source = 'no-url';
+  else if (_runtimeOverride === true) source = 'runtime-enabled';
+  else if (!envEnabled) source = 'env-disabled';
+  else source = 'env-enabled';
+  return {
+    enabled: isEnabled(),
+    runtimeOverride: _runtimeOverride,
+    envEnabled,
+    urlConfigured,
+    source
+  };
 }
 
 function getTriggerSignals() {
@@ -326,6 +376,15 @@ async function _refetchSignal(input) {
 // ---------------------------------------------------------------------------
 async function _doSend(input, key) {
   const { signal, direction, confidence, symbol = 'BTCUSDT', extra = {} } = input;
+  // 再次检查运行时开关 —— stage 队列里的信号在 delay 期间用户可能 disable
+  // 这里是最后一道防线，确保 disable 后绝对不会有 webhook 漏发
+  if (!isEnabled()) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: 'auto-trade disabled before send (runtime override or env)'
+    };
+  }
   const url = process.env.AUTO_TRADE_API_URL;
   const source = process.env.AUTO_TRADE_SOURCE || DEFAULT_SOURCE;
   const labelTpl = process.env.AUTO_TRADE_LABEL_TEMPLATE || DEFAULT_LABEL_TEMPLATE;
@@ -462,8 +521,13 @@ function getStageHistory(limit = 10) {
 }
 
 function getStatus() {
+  const enabledStatus = getEnabledStatus();
   return {
-    enabled: isEnabled(),
+    enabled: enabledStatus.enabled,
+    runtimeOverride: enabledStatus.runtimeOverride,
+    envEnabled: enabledStatus.envEnabled,
+    urlConfigured: enabledStatus.urlConfigured,
+    enabledSource: enabledStatus.source,
     url: process.env.AUTO_TRADE_API_URL || null,
     tokenConfigured: !!process.env.AUTO_TRADE_API_TOKEN,
     triggerSignals: getTriggerSignals(),
@@ -483,6 +547,8 @@ function getStatus() {
 
 module.exports = {
   isEnabled,
+  setEnabled,
+  getEnabledStatus,
   shouldFire,
   sendPendingOrder,
   getRecentCalls,

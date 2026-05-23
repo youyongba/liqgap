@@ -132,8 +132,12 @@ npm run dev            # nodemon 热重载
 | GET | `/api/trade/resonance-signal` | **双层共振**：HEXA Tier1 (6 指标 / 90+ / 100x+50%) + TRIO Tier2 (3 指标 / 75+ / 20x+15%) |
 | GET | `/api/trade/resonance-signal/status` | 当前共振信号配置 + 冷却剩余 + 日内 TRIO 触发次数 |
 | POST | `/api/trade/resonance-signal/reset` | 重置内存冷却 / 日内计数（运维用）|
-| GET | `/api/auto-trade/status` | 自动交易 webhook 状态 + 冷却 + stage 队列 + 复检历史 + 最近 10 次调用记录 |
-| POST | `/api/auto-trade/test` | 手动发一条挂单测试 payload 验证 URL+Token（绕过白名单/置信度/冷却/二次确认）|
+| GET | `/api/auto-trade/status` | 自动交易 webhook 状态 + 运行时开关 + 冷却 + stage 队列 + 复检历史 + 最近 10 次调用记录 |
+| POST | `/api/auto-trade/test` | 手动发一条挂单测试 payload 验证 URL+Token（绕过白名单/置信度/冷却/二次确认；**仍受运行时开关约束**）|
+| POST | `/api/auto-trade/disable` | **运行时一键关闭** webhook（最高优先级，所有信号只推飞书）|
+| POST | `/api/auto-trade/enable` | **运行时一键开启** webhook（覆盖 `.env AUTO_TRADE_ENABLED=false`）|
+| POST | `/api/auto-trade/toggle` | 翻转 enabled 状态 |
+| POST | `/api/auto-trade/reset-override` | 清除运行时覆盖，回到 `.env` 默认行为 |
 | POST | `/api/auto-trade/reset-staged` | 清空二次确认 stage 队列 + 历史 |
 | POST | `/api/auto-trade/reset-cooldowns` | 清空 symbol+direction 冷却计数 |
 | GET | `/api/health` | 健康检查 |
@@ -571,8 +575,34 @@ curl -s http://localhost:3003/api/auto-trade/status | jq '.data | {staged, stage
 
 ### 临时关闭
 
-- 单次请求级：在前端调用 `/api/trade/liq-signal` 时加 `&autoTrade=false`，或加 `&notify=false`（同时也会跳过飞书）
-- 进程级：`.env` 里 `AUTO_TRADE_ENABLED=false`，重启服务
+| 粒度 | 方式 | 何时用 |
+|---|---|---|
+| **运行时一键** | 前端右上角 `🤖 自动交易 ON/OFF` 按钮 ⟂ `POST /api/auto-trade/disable` | **最常用**：临时停下来观察行情 / 调参 / 出差不想自动交易 |
+| 单次请求级 | URL 加 `&autoTrade=false`（仅跳 webhook）/ `&notify=false`（跳飞书+webhook） | 测试某个 symbol 时一次性绕过 |
+| 进程级 | `.env AUTO_TRADE_ENABLED=false` + 重启 | 长期不用、想从 .env 层面默认关 |
+
+**运行时开关的优先级**（高 → 低）：
+1. `POST /api/auto-trade/disable` 设的 `_runtimeOverride=false` → 永远禁
+2. `AUTO_TRADE_API_URL` 未配置 → 永远禁（no-op）
+3. `POST /api/auto-trade/enable` 设的 `_runtimeOverride=true` → 强开（即使 .env 设了 false）
+4. `.env AUTO_TRADE_ENABLED=false` → 禁
+5. 否则 → 开
+
+运行时开关存在内存里，重启后回到 .env 默认。要"重启也保持关"请同时设 `.env AUTO_TRADE_ENABLED=false`。
+
+```bash
+# 查当前状态（含 enabled / runtimeOverride / source）
+curl -s http://localhost:3003/api/auto-trade/status | jq '.data | {enabled, runtimeOverride, envEnabled, urlConfigured, enabledSource}'
+
+# 一键关 → 所有信号只推飞书，绝不发 webhook
+curl -X POST http://localhost:3003/api/auto-trade/disable
+
+# 一键开
+curl -X POST http://localhost:3003/api/auto-trade/enable
+
+# 回到 .env 默认行为
+curl -X POST http://localhost:3003/api/auto-trade/reset-override
+```
 
 ### 排查
 

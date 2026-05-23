@@ -632,6 +632,25 @@
       #fs-status.error { color: var(--accent-down); }
       #fs-status.warn { color: var(--accent-yellow); }
 
+      /* 自动交易开关：绿(开) / 红(关) / 灰(未配置) */
+      #at-toggle.on {
+        background: rgba(38, 166, 154, 0.18);
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      #at-toggle.off {
+        background: rgba(239, 83, 80, 0.18);
+        border-color: var(--accent-down);
+        color: var(--accent-down);
+      }
+      #at-toggle.warn {
+        background: rgba(255, 167, 38, 0.12);
+        border-color: var(--accent-yellow, #ffa726);
+        color: var(--accent-yellow, #ffa726);
+        cursor: not-allowed;
+        opacity: 0.7;
+      }
+
       ::-webkit-scrollbar { width: 8px; height: 8px; }
       ::-webkit-scrollbar-thumb {
         background: var(--bg-2);
@@ -1080,6 +1099,11 @@
           <button id="fs-test" type="button" class="ghost" title="发送一条测试消息验证 webhook">测试 webhook / Test</button>
           <button id="btn-copy-signal" type="button" class="ghost" title="复制当前交易信号信息">一键复制 / Copy</button>
           <button id="btn-ai-analyze" type="button" class="ghost" title="发送数据进行 AI 分析">AI 分析 / AI Analyze</button>
+          <!-- 自动交易运行时开关 (Auto-Trade Runtime Kill Switch) -->
+          <button id="at-toggle" type="button"
+                  title="切换是否发送 webhook 自动下单。关闭后所有信号只推飞书，不下单。重启后回到 .env 默认行为。">
+            🤖 自动交易 / AutoTrade: …
+          </button>
           <span id="fs-status" class="meta">飞书状态加载中… / Loading…</span>
         </div>
 
