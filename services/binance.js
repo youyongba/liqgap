@@ -25,6 +25,8 @@ const axios = require('axios');
 
 const SPOT_BASE_URL = 'https://api.binance.com';
 const FUTURES_BASE_URL = 'https://fapi.binance.com';
+// 币本位合约 (COIN-M Futures)，持仓量聚合时用到 (BTCUSD_PERP 等)
+const COINM_BASE_URL = 'https://dapi.binance.com';
 
 const DEFAULT_TIMEOUT_MS = 15000;
 
@@ -64,7 +66,9 @@ const DEFAULT_COOLDOWN_MS = 30_000;
 const MAX_COOLDOWN_MS = 5 * 60 * 1000;
 
 function _market(url) {
-  return /\/fapi\//.test(url) ? 'futures' : 'spot';
+  // U 本位 (/fapi/) 与币本位 (/dapi/) 都归到 futures 限流桶，
+  // 避免币本位请求误用 spot 的冷却计时
+  return /\/(fapi|dapi)\//.test(url) ? 'futures' : 'spot';
 }
 
 function _isCoolingDown(market) {
@@ -255,6 +259,31 @@ const BinanceService = {
       period,
       limit: safeLimit
     });
+  },
+
+  /**
+   * 获取币本位合约持仓量历史 (Fetch COIN-M Futures Open Interest history)
+   *
+   * Binance docs: GET https://dapi.binance.com/futures/data/openInterestHist
+   *   参数用 pair + contractType（不是 symbol）：
+   *     pair         交易对，如 'BTCUSD'
+   *     contractType PERPETUAL / CURRENT_QUARTER / NEXT_QUARTER / ALL
+   *   period 仅支持 5m/15m/30m/1h/2h/4h/6h/12h/1d，limit 最大 500
+   *
+   * 返回原始数组 (Returns raw array)：
+   *   [{ pair, contractType, sumOpenInterest, sumOpenInterestValue, timestamp }, ...]
+   *   其中 sumOpenInterest = 张数 (contracts，BTCUSD 每张 100 USD)，
+   *        sumOpenInterestValue = 币数 (in base coin, e.g. BTC)
+   */
+  async getCoinMOpenInterestHist(pair, contractType = 'PERPETUAL', period = '1h', limit = 200) {
+    const url = `${COINM_BASE_URL}/futures/data/openInterestHist`;
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 500));
+    return get(url, {
+      pair: String(pair).toUpperCase(),
+      contractType,
+      period,
+      limit: safeLimit
+    });
   }
 };
 
@@ -262,5 +291,6 @@ module.exports = {
   BinanceService,
   SPOT_BASE_URL,
   FUTURES_BASE_URL,
+  COINM_BASE_URL,
   getRateLimitState
 };

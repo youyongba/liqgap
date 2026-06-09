@@ -111,6 +111,7 @@ npm run dev            # nodemon 热重载
 | Method | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/klines` | K 线 + VWAP + MFI（可选 FVG / 流动性空白） |
+| GET | `/api/openInterest` | 持仓量历史；`aggregate=binance` 合并 USDT-M + USDC-M + 币本位 COIN-M 三类合约（对齐 Coinglass 币安口径）|
 | GET | `/api/orderbook/indicators` | 价差 / 深度差 / 深度比 / 有效价差 |
 | GET | `/api/trade/indicators` | deltaSeries / cvdSeries / footprintTable |
 | GET | `/api/indicators/illiquidity` | Amihud ILLIQ 时间序列 |

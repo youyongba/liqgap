@@ -3638,6 +3638,12 @@
   // 互为缺失时用 close 价互算兜底。
   let _lastOiResp = null;
   let _oiUnit = 'usd'; // 'usd' | 'coin'
+  // 统计范围：true = 合并三类合约 (USDT-M + USDC-M + COIN-M)，对齐 Coinglass 币安口径
+  //           false = 仅当前 USDT 合约（单一来源）
+  let _oiAggregate = true;
+  function oiAggregateParam() {
+    return _oiAggregate ? '&aggregate=binance' : '';
+  }
 
   // 取单条 OI 样本在当前口径下的数值；互为缺失时用 close 价互算兜底。
   function _oiSampleValue(sample, close) {
@@ -3718,6 +3724,37 @@
       oiUnitBtn.addEventListener('click', () => {
         setOiUnit(_oiUnit === 'usd' ? 'coin' : 'usd');
       });
+    }
+  }
+
+  // OI 范围切换 (合并三类合约 ⟷ 单一 USDT)：需要重新请求后端
+  async function setOiScope(aggregate) {
+    _oiAggregate = !!aggregate;
+    const btn = document.getElementById('oi-scope-toggle');
+    if (btn) {
+      btn.textContent = _oiAggregate ? '合并' : '单一';
+      btn.title = _oiAggregate
+        ? '当前：合并 USDT-M + USDC-M + 币本位 COIN-M 三类合约（对齐 Coinglass 币安口径）。点击切到单一 USDT。'
+        : '当前：仅当前 USDT 合约（单一来源）。点击切到合并三类合约。';
+    }
+    try {
+      const symbol = (els.symbol.value || 'BTCUSDT').trim().toUpperCase();
+      const market = els.market.value;
+      const interval = els.interval.value || '1h';
+      const resp = await fetchJsonSoft(
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200${oiAggregateParam()}`
+      );
+      if (resp) renderOpenInterest(resp, lastCandles);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[oi-scope] refetch failed:', err.message);
+    }
+  }
+
+  {
+    const oiScopeBtn = document.getElementById('oi-scope-toggle');
+    if (oiScopeBtn) {
+      oiScopeBtn.addEventListener('click', () => setOiScope(!_oiAggregate));
     }
   }
 
@@ -4878,7 +4915,7 @@
         : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
       // OI 仅合约支持；现货时直接传 spot，后端会回 supported:false，前端清空
       const oiFetch = fetchJsonSoft(
-        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200`
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200${oiAggregateParam()}`
       );
       // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆）。
       // 主峰窗口 / 价格范围 = 用户当前在"清算热图"卡片上的选择，确保信号
