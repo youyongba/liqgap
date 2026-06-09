@@ -829,6 +829,23 @@
         color: var(--fg-0);
         background: var(--bg-1);
       }
+      /* OI 口径切换按钮 (USD / Coin)：与持仓量副图同色系（橙黄）*/
+      .oi-unit-btn {
+        flex: 0 0 auto;
+        padding: 3px 8px;
+        font-size: 11px;
+        line-height: 1;
+        min-width: 40px;
+        background: rgba(251, 191, 36, 0.12);
+        color: #fbbf24;
+        border: 1px solid rgba(251, 191, 36, 0.5);
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .oi-unit-btn:hover {
+        background: rgba(251, 191, 36, 0.22);
+      }
       .fs-btn.active {
         color: var(--accent-yellow);
         border-color: var(--accent-yellow);
@@ -1055,6 +1072,8 @@
           <div class="sub-pane" data-pane="oi" id="sub-pane-oi">
             <div class="sub-pane-header">
               <h3 id="oi-title">持仓量 / Open Interest（仅合约）</h3>
+              <button class="oi-unit-btn" id="oi-unit-toggle" type="button"
+                      title="切换持仓量口径：USD 名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选同样的单位。">USD</button>
               <button class="min-btn" type="button" data-min-target="sub-pane-oi" title="最小化 / Minimize">⊟</button>
               <button class="fs-btn" type="button" data-fs-target="sub-pane-oi" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>

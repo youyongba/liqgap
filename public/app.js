@@ -3631,9 +3631,29 @@
   //
   // 当 OI 接口 period 与 K 线 interval 不一致（例如选了 1m K 线，OI 最小 5m）
   // 时，每根 K 线取「该 K 线区间内最后一条 OI 样本」，缺失则向前继承上一个值。
-  // value 优先用 sumOpenInterestValue（USDT 名义额，可跨币种比较），缺失退化为
-  // sumOpenInterest * close。
+  //
+  // 口径（unit）可切换，对照 Coinglass 时选同样单位：
+  //   'usd'  → sumOpenInterestValue（USD 名义价值 = 币数 × 价格，跟随价格起伏）
+  //   'coin' → sumOpenInterest（币数 BTC，纯仓位量，不含价格因素）
+  // 互为缺失时用 close 价互算兜底。
   let _lastOiResp = null;
+  let _oiUnit = 'usd'; // 'usd' | 'coin'
+
+  // 取单条 OI 样本在当前口径下的数值；互为缺失时用 close 价互算兜底。
+  function _oiSampleValue(sample, close) {
+    const usd = Number(sample.openInterestValue);
+    const coin = Number(sample.openInterest);
+    if (_oiUnit === 'coin') {
+      if (Number.isFinite(coin) && coin > 0) return coin;
+      if (Number.isFinite(usd) && usd > 0 && Number.isFinite(close) && close > 0) return usd / close;
+      return NaN;
+    }
+    // 默认 USD 名义价值
+    if (Number.isFinite(usd) && usd > 0) return usd;
+    if (Number.isFinite(coin) && coin > 0 && Number.isFinite(close) && close > 0) return coin * close;
+    return NaN;
+  }
+
   function renderOpenInterest(resp, candles) {
     _lastOiResp = resp || _lastOiResp;
     if (!resp) return;
@@ -3662,9 +3682,7 @@
         oiIdx += 1;
       }
       if (lastSample) {
-        const v = Number.isFinite(lastSample.openInterestValue) && lastSample.openInterestValue > 0
-          ? lastSample.openInterestValue
-          : Number(lastSample.openInterest) * Number(c.close);
+        const v = _oiSampleValue(lastSample, Number(c.close));
         if (Number.isFinite(v) && v > 0) {
           points.push({ time: toLwSeconds(c.openTime), value: v });
         }
@@ -3673,6 +3691,34 @@
     _smartUpdateSeries(oiSeries, points);
     // OI 副图永远跟随主图，不再 fitContent —— 否则 OI 数据后到时会把主图也拉跑
     syncSubChartsToMain();
+  }
+
+  // OI 口径切换 (USD ⟷ Coin)：更新状态、按钮文案、标题，并用缓存数据立即重绘
+  function setOiUnit(unit) {
+    _oiUnit = unit === 'coin' ? 'coin' : 'usd';
+    const btn = document.getElementById('oi-unit-toggle');
+    if (btn) {
+      btn.textContent = _oiUnit === 'coin' ? 'Coin' : 'USD';
+      btn.title = _oiUnit === 'coin'
+        ? '当前：Coin 币数(BTC)。点击切回 USD 名义价值。对照 Coinglass 时选同样单位。'
+        : '当前：USD 名义价值。点击切到 Coin 币数(BTC)。对照 Coinglass 时选同样单位。';
+    }
+    const title = document.getElementById('oi-title');
+    if (title) {
+      title.textContent = _oiUnit === 'coin'
+        ? '持仓量 / Open Interest · 币数 BTC（仅合约）'
+        : '持仓量 / Open Interest · USD 价值（仅合约）';
+    }
+    if (_lastOiResp) renderOpenInterest(_lastOiResp, lastCandles);
+  }
+
+  {
+    const oiUnitBtn = document.getElementById('oi-unit-toggle');
+    if (oiUnitBtn) {
+      oiUnitBtn.addEventListener('click', () => {
+        setOiUnit(_oiUnit === 'usd' ? 'coin' : 'usd');
+      });
+    }
   }
 
   // ---- CVD 副图：从 K 线 takerBuyBase 派生 (Derive CVD from K-line takerBuyBase) ----
