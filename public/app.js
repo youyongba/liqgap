@@ -273,7 +273,7 @@
     const itvLab = intervalLabel(itv);
     const market = els.market ? els.market.value : 'futures';
     if (els.volTitle) els.volTitle.textContent = `成交量 / Volume · ${itvLab}`;
-    if (els.cvdTitle) els.cvdTitle.textContent = `累积主动差 / CVD · ${itvLab}`;
+    if (els.cvdTitle) els.cvdTitle.textContent = `累积主动差 / CVD · ${itvLab} · ${_cvdAggregate ? '合并' : '单一'}`;
     if (els.obTitle)  els.obTitle.textContent  = `订单簿深度图 / Order Book Depth · 前 ${obDepthForInterval(itv)} 档`;
     if (els.oiTitle) {
       if (market !== 'futures') {
@@ -3498,9 +3498,9 @@
     }));
     _smartUpdateSeries(volumeSeries, volumeData);
 
-    // CVD 副图与主图 K 线同源派生，随 interval 自动切换
-    // (Derive CVD from the same candles so it auto-aligns with the chosen interval.)
-    renderCvdFromCandles(candles);
+    // CVD 副图：合并模式用后端多合约 delta，单一模式与主图 K 线同源派生
+    // (Merged: backend multi-contract delta; Single: derive from same candles.)
+    refreshCvdDisplay(candles);
 
     // OI 副图：主图 K 线变化后用最近一次 OI 响应重新按 openTime 对齐
     // (Realign cached OI samples to the new candle grid.)
@@ -3660,6 +3660,12 @@
     return _oiAggregate ? '&aggregate=binance' : '';
   }
 
+  // CVD 统计范围：true = 合并三类合约 (USDT-M + USDC-M + COIN-M) 主动买卖差相加
+  //              false = 仅当前 USDT 合约（与主图 K 线实时同源）
+  // 合并模式由 poll 拉 /api/cvd 得到每根 delta，缓存在 _lastCvdMerged。
+  let _cvdAggregate = true;
+  let _lastCvdMerged = null;
+
   // 取单条 OI 样本在当前口径下的数值；互为缺失时用 close 价互算兜底。
   function _oiSampleValue(sample, close) {
     const usd = Number(sample.openInterestValue);
@@ -3798,6 +3804,53 @@
     }
   }
 
+  // CVD 范围切换 (合并三类合约 ⟷ 单一 USDT)
+  async function setCvdScope(aggregate) {
+    _cvdAggregate = !!aggregate;
+    const btn = document.getElementById('cvd-scope-toggle');
+    if (btn) {
+      btn.textContent = _cvdAggregate ? '合并' : '单一';
+      btn.title = _cvdAggregate
+        ? '当前：合并 USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差（对齐 Coinglass 币安口径，按 poll 周期刷新）。点击切到单一 USDT。'
+        : '当前：仅当前 USDT 合约（与主图 K 线实时同源、更即时）。点击切到合并三类合约。';
+    }
+    refreshSubTitles();
+    if (!_cvdAggregate) {
+      // 切回单一：丢弃合并缓存，立即用主图 K 线重绘
+      _lastCvdMerged = null;
+      refreshCvdDisplay(lastCandles);
+      return;
+    }
+    // 切到合并：立即拉一次，避免等到下个 poll 周期
+    try {
+      const symbol = (els.symbol.value || 'BTCUSDT').trim().toUpperCase();
+      const market = els.market.value;
+      const interval = els.interval.value || '1h';
+      if (market !== 'futures') {
+        // 现货无合并意义，回退单一
+        _lastCvdMerged = null;
+        refreshCvdDisplay(lastCandles);
+        return;
+      }
+      const resp = await fetchJsonSoft(
+        `/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=200&aggregate=binance`
+      );
+      _lastCvdMerged = (resp && resp.supported && Array.isArray(resp.data)) ? resp.data : null;
+      refreshCvdDisplay(lastCandles);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn('[cvd-scope] refetch failed:', err.message);
+      refreshCvdDisplay(lastCandles);
+    }
+  }
+
+  {
+    const cvdScopeBtn = document.getElementById('cvd-scope-toggle');
+    if (cvdScopeBtn) {
+      cvdScopeBtn.addEventListener('click', () => setCvdScope(!_cvdAggregate));
+    }
+  }
+
   // OI 显示模式切换 (K 线 ⟷ 面积)：纯前端，切 series 可见性即可，无需重新请求
   function setOiMode(mode) {
     _oiMode = mode === 'area' ? 'area' : 'candle';
@@ -3825,6 +3878,37 @@
   // 这样 CVD 副图就能和主图 K 线时间轴严格对齐，并随 interval 切换。
   // (Derive bar delta = 2*takerBuyBase - volume so the resulting CVD curve
   //  shares the exact bar grid with the main chart for the chosen interval.)
+  // CVD 渲染分发：合并模式优先用后端缓存的多合约 delta；缓存未到位时
+  // 回退到单合约（主图 K 线派生），保证副图任何时候都不空白。
+  function refreshCvdDisplay(candles) {
+    if (_cvdAggregate && Array.isArray(_lastCvdMerged) && _lastCvdMerged.length) {
+      renderCvdMerged(_lastCvdMerged);
+    } else {
+      renderCvdFromCandles(candles);
+    }
+  }
+
+  // 用后端返回的每根 delta 累加成 CVD 曲线（口径：币数 BTC，跨合约可加）
+  function renderCvdMerged(series) {
+    const points = [];
+    let cum = 0;
+    let lastTs = -Infinity;
+    for (const d of series || []) {
+      const delta = Number(d.delta);
+      if (!Number.isFinite(delta)) continue;
+      cum += delta;
+      const ts = toLwSeconds(d.openTime);
+      if (ts > lastTs) {
+        points.push({ time: ts, value: cum });
+        lastTs = ts;
+      } else if (points.length) {
+        points[points.length - 1].value = cum;
+      }
+    }
+    _smartUpdateSeries(cvdSeries, points);
+    syncSubChartsToMain();
+  }
+
   function renderCvdFromCandles(candles) {
     const points = [];
     let cum = 0;
@@ -4977,6 +5061,10 @@
       const oiFetch = fetchJsonSoft(
         `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200${oiAggregateParam()}`
       );
+      // CVD 合并模式：仅合约 + 开关打开时拉多合约 delta；否则前端用主图 K 线派生
+      const cvdFetch = (market === 'futures' && _cvdAggregate)
+        ? fetchJsonSoft(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=200&aggregate=binance`)
+        : Promise.resolve(null);
       // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆）。
       // 主峰窗口 / 价格范围 = 用户当前在"清算热图"卡片上的选择，确保信号
       // 报告的"触发墙价位"和图上视觉看到的主峰完全一致。
@@ -4998,13 +5086,14 @@
         ? fetchJsonSoft(`/api/trade/liq-signal?${liqSignalParams.toString()}`)
         : Promise.resolve(null);
 
-      const [kData, obData, oiData, signal, alerts, liqSignal] = await Promise.all([
+      const [kData, obData, oiData, signal, alerts, liqSignal, cvdData] = await Promise.all([
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=200&market=${market}&detectPatterns=true`),
         obFetch,
         oiFetch,
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
         fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`),
-        liqSignalFetch
+        liqSignalFetch,
+        cvdFetch
       ]);
 
       const failed = [];
@@ -5031,6 +5120,15 @@
       // OI：拿到响应就用最新 lastCandles 对齐渲染；失败不阻塞，标 partial
       if (oiData) renderOpenInterest(oiData, lastCandles);
       else failed.push('openInterest');
+      // CVD 合并模式：更新多合约 delta 缓存并重绘（失败保留旧缓存，不空白）
+      if (_cvdAggregate) {
+        if (cvdData && cvdData.supported && Array.isArray(cvdData.data)) {
+          _lastCvdMerged = cvdData.data;
+        } else if (cvdData === null && market === 'futures') {
+          failed.push('cvd');
+        }
+        refreshCvdDisplay(lastCandles);
+      }
       if (signal) renderSignal(signal); else failed.push('signal');
       if (alerts) renderAlerts(alerts); else failed.push('alerts');
       if (market === 'futures') {
@@ -5239,8 +5337,9 @@
     toggleMinimize(target, btn);
   });
   els.symbol.addEventListener('change', () => {
-    // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
+    // 换 symbol 时也要清空 OI / CVD 合并缓存，下一次 poll 才会拉新值
     _lastOiResp = null;
+    _lastCvdMerged = null;
     _smartUpdateSeries(oiSeries, []);
     _smartUpdateSeries(oiCandleSeries, []);
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
@@ -5254,8 +5353,9 @@
   els.market.addEventListener('change', () => {
     enforceIntervalMarketCompat('market');
     refreshSubTitles();
-    // 切到现货时立刻清空 OI 旧数据，避免显示"上一个 symbol/market"的曲线
+    // 切到现货时立刻清空 OI / CVD 合并旧数据，避免显示"上一个 symbol/market"的曲线
     _lastOiResp = null;
+    _lastCvdMerged = null;
     _smartUpdateSeries(oiSeries, []);
     _smartUpdateSeries(oiCandleSeries, []);
     setObBaselineWindow(_obBaselineState.windowMs);
@@ -5268,6 +5368,8 @@
   els.interval.addEventListener('change', () => {
     enforceIntervalMarketCompat('interval');
     refreshSubTitles();
+    // 换周期后旧的合并 CVD delta（按旧 interval 的 openTime）失效，先清缓存
+    _lastCvdMerged = null;
     markChartsNeedFit();
     poll();
     restartSSE();

@@ -262,6 +262,28 @@ const BinanceService = {
   },
 
   /**
+   * 获取币本位合约 K 线 (Fetch COIN-M Futures klines)
+   *
+   * Binance docs: GET https://dapi.binance.com/dapi/v1/klines
+   *   symbol 用永续/交割合约符号，如 'BTCUSD_PERP'
+   *
+   * ⚠️ 字段顺序与 U 本位不同 (COIN-M kline array layout)：
+   *   [0]openTime [1]o [2]h [3]l [4]c
+   *   [5]volume(张数/contracts) [6]closeTime
+   *   [7]baseAssetVolume(币数 BTC) [8]numberOfTrades
+   *   [9]takerBuyVolume(张数) [10]takerBuyBaseAssetVolume(币数 BTC) [11]ignore
+   */
+  async getCoinMKlines(symbol, interval = '1h', limit = 200) {
+    const url = `${COINM_BASE_URL}/dapi/v1/klines`;
+    const safeLimit = Math.max(1, Math.min(Number(limit) || 200, 1500));
+    return get(url, {
+      symbol: String(symbol).toUpperCase(),
+      interval,
+      limit: safeLimit
+    });
+  },
+
+  /**
    * 获取币本位合约持仓量历史 (Fetch COIN-M Futures Open Interest history)
    *
    * Binance docs: GET https://dapi.binance.com/futures/data/openInterestHist
