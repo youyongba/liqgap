@@ -413,9 +413,25 @@
     rightPriceScale: { borderColor: '#1f2837' },
     localization: lwLocalization
   });
+  // CVD 纵轴 / 十字线数值格式化：带符号的紧凑缩写（K/M/B），避免出现
+  // -2,611,409,630.31 这种又长又难读的整额。负值也正确缩写。
+  // (Signed compact formatter so the CVD axis reads -2.61B instead of a
+  //  full 13-digit number; handles negatives which the built-in 'volume'
+  //  formatter does not.)
+  function _cvdCompact(n) {
+    if (!Number.isFinite(n)) return '';
+    const sign = n < 0 ? '-' : '';
+    const abs = Math.abs(n);
+    if (abs >= 1e9) return `${sign}${(abs / 1e9).toFixed(2)}B`;
+    if (abs >= 1e6) return `${sign}${(abs / 1e6).toFixed(2)}M`;
+    if (abs >= 1e3) return `${sign}${(abs / 1e3).toFixed(2)}K`;
+    if (abs >= 1) return `${sign}${abs.toFixed(2)}`;
+    return `${sign}${abs.toFixed(4)}`;
+  }
   const cvdSeries = cvdChart.addLineSeries({
     color: '#4ade80',
-    lineWidth: 2
+    lineWidth: 2,
+    priceFormat: { type: 'custom', formatter: _cvdCompact, minMove: 0.01 }
   });
 
   // ---- 副图：持仓量曲线 (Open Interest chart, futures only) ----
