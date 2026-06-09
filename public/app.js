@@ -3666,7 +3666,8 @@
   let _cvdAggregate = true;
   let _lastCvdMerged = null;
   // CVD 口径：'coin' = 币数(BTC)；'usd' = 报价额/名义价值（对照 Coinglass 选 USD）
-  let _cvdUnit = 'coin';
+  // 默认 USD，与持仓量 OI 口径保持一致、对齐 Coinglass 币安聚合口径
+  let _cvdUnit = 'usd';
 
   // 取单条 OI 样本在当前口径下的数值；互为缺失时用 close 价互算兜底。
   function _oiSampleValue(sample, close) {
