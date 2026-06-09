@@ -447,6 +447,19 @@
     lineWidth: 2,
     priceFormat: { type: 'volume' }
   });
+  // 持仓量 K 线：用相邻周期合成 OHLC（open=上一周期 OI，close=本周期 OI）
+  //   close ≥ open → 绿（增仓）；close < open → 红（减仓）
+  // 与面积图共用同一价格刻度，通过 visible 切换显示，默认显示 K 线。
+  const oiCandleSeries = oiChart.addCandlestickSeries({
+    upColor: '#22c55e',
+    downColor: '#ef4444',
+    borderUpColor: '#22c55e',
+    borderDownColor: '#ef4444',
+    wickUpColor: '#22c55e',
+    wickDownColor: '#ef4444',
+    priceFormat: { type: 'volume' }
+  });
+  oiSeries.applyOptions({ visible: false }); // 默认 K 线模式，面积图隐藏
 
   // 窗口尺寸变化重排 (Resize handlers) -------------------------------------
   function fitCharts() {
@@ -3641,6 +3654,8 @@
   // 统计范围：true = 合并三类合约 (USDT-M + USDC-M + COIN-M)，对齐 Coinglass 币安口径
   //           false = 仅当前 USDT 合约（单一来源）
   let _oiAggregate = true;
+  // 显示模式：'candle' = 合成 K 线（绿增红减）；'area' = 面积曲线
+  let _oiMode = 'candle';
   function oiAggregateParam() {
     return _oiAggregate ? '&aggregate=binance' : '';
   }
@@ -3665,12 +3680,14 @@
     if (!resp) return;
     if (!resp.supported) {
       _smartUpdateSeries(oiSeries, []);
+      _smartUpdateSeries(oiCandleSeries, []);
       return;
     }
     const oi = (resp.data || []).slice().sort((a, b) => a.openTime - b.openTime);
     const cands = Array.isArray(candles) && candles.length ? candles : lastCandles;
     if (!oi.length || !cands.length) {
       _smartUpdateSeries(oiSeries, []);
+      _smartUpdateSeries(oiCandleSeries, []);
       return;
     }
     const points = [];
@@ -3694,9 +3711,32 @@
         }
       }
     }
+    // 合成 K 线：open = 上一周期 OI，close = 本周期 OI；无 intra-period 高低，
+    // 故 high/low 取 open/close 的极值（实体即"持仓量变化"，绿增红减）。
+    const candlePoints = [];
+    for (let i = 0; i < points.length; i += 1) {
+      const close = points[i].value;
+      const open = i > 0 ? points[i - 1].value : close;
+      candlePoints.push({
+        time: points[i].time,
+        open,
+        high: Math.max(open, close),
+        low: Math.min(open, close),
+        close
+      });
+    }
     _smartUpdateSeries(oiSeries, points);
+    _smartUpdateSeries(oiCandleSeries, candlePoints);
+    _applyOiMode();
     // OI 副图永远跟随主图，不再 fitContent —— 否则 OI 数据后到时会把主图也拉跑
     syncSubChartsToMain();
+  }
+
+  // 按当前显示模式切换面积 / K 线两条 series 的可见性
+  function _applyOiMode() {
+    const candle = _oiMode === 'candle';
+    if (oiCandleSeries) oiCandleSeries.applyOptions({ visible: candle });
+    if (oiSeries) oiSeries.applyOptions({ visible: !candle });
   }
 
   // OI 口径切换 (USD ⟷ Coin)：更新状态、按钮文案、标题，并用缓存数据立即重绘
@@ -3755,6 +3795,26 @@
     const oiScopeBtn = document.getElementById('oi-scope-toggle');
     if (oiScopeBtn) {
       oiScopeBtn.addEventListener('click', () => setOiScope(!_oiAggregate));
+    }
+  }
+
+  // OI 显示模式切换 (K 线 ⟷ 面积)：纯前端，切 series 可见性即可，无需重新请求
+  function setOiMode(mode) {
+    _oiMode = mode === 'area' ? 'area' : 'candle';
+    const btn = document.getElementById('oi-mode-toggle');
+    if (btn) {
+      btn.textContent = _oiMode === 'candle' ? 'K线' : '面积';
+      btn.title = _oiMode === 'candle'
+        ? '当前：合成持仓量 K 线（绿=增仓 close≥open，红=减仓 close<open）。点击切到面积曲线。'
+        : '当前：面积曲线。点击切到合成 K 线（绿增红减）。';
+    }
+    _applyOiMode();
+  }
+
+  {
+    const oiModeBtn = document.getElementById('oi-mode-toggle');
+    if (oiModeBtn) {
+      oiModeBtn.addEventListener('click', () => setOiMode(_oiMode === 'candle' ? 'area' : 'candle'));
     }
   }
 
@@ -5182,6 +5242,7 @@
     // 换 symbol 时也要清空 OI 缓存，下一次 poll 才会拉新值
     _lastOiResp = null;
     _smartUpdateSeries(oiSeries, []);
+    _smartUpdateSeries(oiCandleSeries, []);
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
@@ -5196,6 +5257,7 @@
     // 切到现货时立刻清空 OI 旧数据，避免显示"上一个 symbol/market"的曲线
     _lastOiResp = null;
     _smartUpdateSeries(oiSeries, []);
+    _smartUpdateSeries(oiCandleSeries, []);
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
     if (liqHeatmap) liqHeatmap.onSymbolMarketChange();
