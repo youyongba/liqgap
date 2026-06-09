@@ -112,7 +112,7 @@ npm run dev            # nodemon 热重载
 | --- | --- | --- |
 | GET | `/api/klines` | K 线 + VWAP + MFI（可选 FVG / 流动性空白） |
 | GET | `/api/openInterest` | 持仓量历史；`aggregate=binance` 合并 USDT-M + USDC-M + 币本位 COIN-M 三类合约（对齐 Coinglass 币安口径）|
-| GET | `/api/cvd` | CVD 每根 delta 序列（币数 BTC 口径）；`aggregate=binance` 合并 USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差（对齐 Coinglass 币安口径），前端累加成曲线 |
+| GET | `/api/cvd` | CVD 每根 delta 序列，含 `delta`(币数 BTC) + `deltaUsd`(报价额≈USD) 两种口径；`aggregate=binance` 合并 USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差（对齐 Coinglass 币安口径），前端累加成曲线 |
 | GET | `/api/orderbook/indicators` | 价差 / 深度差 / 深度比 / 有效价差 |
 | GET | `/api/trade/indicators` | deltaSeries / cvdSeries / footprintTable |
 | GET | `/api/indicators/illiquidity` | Amihud ILLIQ 时间序列 |
@@ -192,7 +192,7 @@ positionSize = riskAmount / |entry - stopLoss|
 - 顶部控制栏：交易对 / 现货-合约切换 / 周期 / 手动刷新 / 自动刷新（10s）
 - 左侧主图：K 线 + VWAP 线 + FVG 价格线 + FVG/Void 标记
 - 右下副图：成交量直方图、CVD 累积曲线、持仓量、订单簿水平条形深度图
-  - **CVD 副图「合并 / 单一」切换**：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径，按 10s poll 刷新）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）
+  - **CVD 副图「合并 / 单一 + Coin / USD」切换**：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径，按 10s poll 刷新）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）。口径 Coin = 币数(BTC)，USD = 报价额/名义价值（对照 Coinglass 选 USD）
   - **持仓量副图「合并 / 单一 + USD / Coin + K线 / 面积」切换**：合并三类合约、口径、合成 K 线（绿增红减）三组开关
 - 右侧信号面板：LONG/SHORT/NONE 标签、入场/止损/止盈、仓位、条件评估、5 项流动性预警、指标快照
 

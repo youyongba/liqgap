@@ -273,7 +273,7 @@
     const itvLab = intervalLabel(itv);
     const market = els.market ? els.market.value : 'futures';
     if (els.volTitle) els.volTitle.textContent = `成交量 / Volume · ${itvLab}`;
-    if (els.cvdTitle) els.cvdTitle.textContent = `累积主动差 / CVD · ${itvLab} · ${_cvdAggregate ? '合并' : '单一'}`;
+    if (els.cvdTitle) els.cvdTitle.textContent = `累积主动差 / CVD · ${itvLab} · ${_cvdAggregate ? '合并' : '单一'} · ${_cvdUnit === 'usd' ? 'USD' : 'Coin'}`;
     if (els.obTitle)  els.obTitle.textContent  = `订单簿深度图 / Order Book Depth · 前 ${obDepthForInterval(itv)} 档`;
     if (els.oiTitle) {
       if (market !== 'futures') {
@@ -3665,6 +3665,8 @@
   // 合并模式由 poll 拉 /api/cvd 得到每根 delta，缓存在 _lastCvdMerged。
   let _cvdAggregate = true;
   let _lastCvdMerged = null;
+  // CVD 口径：'coin' = 币数(BTC)；'usd' = 报价额/名义价值（对照 Coinglass 选 USD）
+  let _cvdUnit = 'coin';
 
   // 取单条 OI 样本在当前口径下的数值；互为缺失时用 close 价互算兜底。
   function _oiSampleValue(sample, close) {
@@ -3851,6 +3853,27 @@
     }
   }
 
+  // CVD 口径切换 (Coin 币数 ⟷ USD 报价额)：纯前端，两种口径数据都在手，重绘即可
+  function setCvdUnit(unit) {
+    _cvdUnit = unit === 'usd' ? 'usd' : 'coin';
+    const btn = document.getElementById('cvd-unit-toggle');
+    if (btn) {
+      btn.textContent = _cvdUnit === 'usd' ? 'USD' : 'Coin';
+      btn.title = _cvdUnit === 'usd'
+        ? '当前：USD 报价额/名义价值（对照 Coinglass 选 USD）。点击切到 Coin 币数(BTC)。'
+        : '当前：Coin 币数(BTC)。点击切到 USD 报价额/名义价值。对照 Coinglass 时选 USD。';
+    }
+    refreshSubTitles();
+    refreshCvdDisplay(lastCandles);
+  }
+
+  {
+    const cvdUnitBtn = document.getElementById('cvd-unit-toggle');
+    if (cvdUnitBtn) {
+      cvdUnitBtn.addEventListener('click', () => setCvdUnit(_cvdUnit === 'coin' ? 'usd' : 'coin'));
+    }
+  }
+
   // OI 显示模式切换 (K 线 ⟷ 面积)：纯前端，切 series 可见性即可，无需重新请求
   function setOiMode(mode) {
     _oiMode = mode === 'area' ? 'area' : 'candle';
@@ -3888,13 +3911,13 @@
     }
   }
 
-  // 用后端返回的每根 delta 累加成 CVD 曲线（口径：币数 BTC，跨合约可加）
+  // 用后端返回的每根 delta 累加成 CVD 曲线；口径随 _cvdUnit 取 delta 或 deltaUsd
   function renderCvdMerged(series) {
     const points = [];
     let cum = 0;
     let lastTs = -Infinity;
     for (const d of series || []) {
-      const delta = Number(d.delta);
+      const delta = _cvdUnit === 'usd' ? Number(d.deltaUsd) : Number(d.delta);
       if (!Number.isFinite(delta)) continue;
       cum += delta;
       const ts = toLwSeconds(d.openTime);
@@ -3914,10 +3937,18 @@
     let cum = 0;
     let lastTs = -Infinity;
     for (const c of candles || []) {
-      const tb = Number(c.takerBuyBase);
-      const v = Number(c.volume);
-      if (!Number.isFinite(tb) || !Number.isFinite(v)) continue;
-      const delta = 2 * tb - v;
+      let delta;
+      if (_cvdUnit === 'usd') {
+        const tbQ = Number(c.takerBuyQuote);
+        const qv = Number(c.quoteVolume);
+        if (!Number.isFinite(tbQ) || !Number.isFinite(qv)) continue;
+        delta = 2 * tbQ - qv;
+      } else {
+        const tb = Number(c.takerBuyBase);
+        const v = Number(c.volume);
+        if (!Number.isFinite(tb) || !Number.isFinite(v)) continue;
+        delta = 2 * tb - v;
+      }
       cum += delta;
       const ts = toLwSeconds(c.openTime);
       if (ts > lastTs) {

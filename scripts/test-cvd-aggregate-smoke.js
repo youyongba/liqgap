@@ -80,21 +80,22 @@ function _get(port, p) {
   });
 }
 
-// U 本位 kline 行：[openTime, o,h,l,c, baseVol(idx5), closeTime, quoteVol, n, takerBuyBase(idx9), ...]
-const fk = (ts, baseVol, takerBuyBase) =>
-  [ts, '0', '0', '0', '0', String(baseVol), ts + 1, '0', 0, String(takerBuyBase), '0', '0'];
-// 币本位 kline 行：[openTime, o,h,l,c, contracts, closeTime, baseAssetVol(idx7), n, takerBuyVol, takerBuyBaseAssetVol(idx10), ...]
-const dk = (ts, baseAssetVol, takerBuyBaseAssetVol) =>
-  [ts, '0', '0', '0', '0', '0', ts + 1, String(baseAssetVol), 0, '0', String(takerBuyBaseAssetVol), '0'];
+// U 本位 kline 行：[openTime, o,h,l,c, baseVol(idx5), closeTime, quoteVol(idx7), n, takerBuyBase(idx9), takerBuyQuote(idx10), ...]
+const fk = (ts, baseVol, takerBuyBase, quoteVol = 0, takerBuyQuote = 0) =>
+  [ts, '0', '0', '0', '0', String(baseVol), ts + 1, String(quoteVol), 0, String(takerBuyBase), String(takerBuyQuote), '0'];
+// 币本位 kline 行：[openTime, o,h,l,c, contracts(idx5), closeTime, baseAssetVol(idx7), n, takerBuyVol(idx9), takerBuyBaseAssetVol(idx10), ...]
+const dk = (ts, baseAssetVol, takerBuyBaseAssetVol, contracts = 0, takerBuyContracts = 0) =>
+  [ts, '0', '0', '0', '0', String(contracts), ts + 1, String(baseAssetVol), 0, String(takerBuyContracts), String(takerBuyBaseAssetVol), '0'];
 
 async function run() {
   // ==========================================================================
-  await test('1. 三源齐全 → 每根 delta 正确相加', async () => {
+  await test('1. 三源齐全 → 每根 delta(币) 与 deltaUsd 正确相加', async () => {
     _mockBinance({
-      // delta = 2*tbB - baseVol
-      usdt:  [fk(1000, 100, 70), fk(2000, 100, 40)], // delta: 40, -20
-      usdc:  [fk(1000, 10, 8),   fk(2000, 10, 3)],   // delta: 6, -4
-      coinm: [dk(1000, 4, 3),    dk(2000, 4, 1)]     // delta: 2, -2
+      // coin delta = 2*tbB - baseVol ; usd delta = 2*tbQuote - quoteVol
+      usdt:  [fk(1000, 100, 70, 1000, 700), fk(2000, 100, 40, 1000, 400)], // coin:40,-20 usd:400,-200
+      usdc:  [fk(1000, 10, 8, 100, 80),     fk(2000, 10, 3, 100, 30)],     // coin:6,-4  usd:60,-40
+      // COIN-M: coin delta = 2*tbBaseAsset - baseAssetVol ; usd = 100×(2*tbContracts - contracts)
+      coinm: [dk(1000, 4, 3, 50, 35),       dk(2000, 4, 1, 50, 15)]        // coin:2,-2  usd:100×(70-50)=2000, 100×(30-50)=-2000
     });
     const route = _freshRoute();
     const { server, port } = await _startServer(route);
@@ -104,10 +105,12 @@ async function run() {
       assert.equal(j.data.aggregated, true);
       const pts = j.data.data;
       assert.equal(pts.length, 2, `应有 2 个合并点，实际 ${pts.length}`);
-      // ts=1000: 40 + 6 + 2 = 48 ; ts=2000: -20 + -4 + -2 = -26
-      assert.equal(pts[0].openTime, 1000);
-      assert.equal(pts[0].delta, 48, `ts1000 合计错: ${pts[0].delta}`);
-      assert.equal(pts[1].delta, -26, `ts2000 合计错: ${pts[1].delta}`);
+      // coin: ts=1000 → 40+6+2=48 ; ts=2000 → -20-4-2=-26
+      assert.equal(pts[0].delta, 48, `ts1000 coin 合计错: ${pts[0].delta}`);
+      assert.equal(pts[1].delta, -26, `ts2000 coin 合计错: ${pts[1].delta}`);
+      // usd: ts=1000 → 400+60+2000=2460 ; ts=2000 → -200-40-2000=-2240
+      assert.equal(pts[0].deltaUsd, 2460, `ts1000 usd 合计错: ${pts[0].deltaUsd}`);
+      assert.equal(pts[1].deltaUsd, -2240, `ts2000 usd 合计错: ${pts[1].deltaUsd}`);
       assert.ok(j.data.sources.every((s) => s.ok && s.count === 2));
     } finally { server.close(); }
   });

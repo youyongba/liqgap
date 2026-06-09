@@ -9,8 +9,9 @@
  * K 线的 delta**（增量），由前端累加成曲线 —— 这样无论窗口从哪根开始，
  * 累计基准都一致，且能和主图 K 线时间轴严格对齐。
  *
- * 每根 delta 统一用**币数 (base asset, e.g. BTC)** 口径，便于跨合约相加：
- *   delta = 2 × takerBuyBase - baseVolume
+ * 每根同时给两种口径，便于前端 coin/USD 切换且都能跨合约相加：
+ *   delta    (币数 base asset, e.g. BTC) = 2 × takerBuyBase - baseVolume
+ *   deltaUsd (USD 名义价值/报价额)        = 2 × takerBuyQuote - quoteVolume
  *
  * 查询参数 (Query):
  *   symbol      默认 BTCUSDT
@@ -20,11 +21,12 @@
  *   aggregate   binance/1/true → 合并 USDT-M + USDC-M + 币本位 COIN-M 永续
  *
  * 响应 (Response):
- *   { supported, symbol, market, interval, aggregated, sources?, data:[{openTime, delta}] }
+ *   { supported, symbol, market, interval, aggregated, sources?, data:[{openTime, delta, deltaUsd}] }
  *
  * 说明：
- *   - U 本位 (fapi) K 线：takerBuyBase=idx9, baseVolume=idx5
- *   - 币本位 (dapi) K 线：takerBuyBaseAssetVolume=idx10, baseAssetVolume=idx7（币数 BTC）
+ *   - U 本位 (fapi) K 线：takerBuyBase=idx9, baseVolume=idx5；takerBuyQuote=idx10, quoteVolume=idx7
+ *   - 币本位 (dapi) K 线：takerBuyBaseAssetVolume=idx10, baseAssetVolume=idx7（币数 BTC）；
+ *       USD 口径用张数换算：deltaUsd = 每张USD × (2×takerBuyVol(idx9) - volume(idx5))
  *   - 任一源失败只记录、不影响其余源（graceful degrade）。
  */
 
@@ -41,34 +43,55 @@ function parseBaseAsset(symbol) {
   return s;
 }
 
-// U 本位 (fapi) K 线 → 每根 {openTime, delta(币数)}
+// 币本位每张合约 USD 面值（BTC=100，其余=10）
+function coinmContractUsd(base) {
+  return base === 'BTC' ? 100 : 10;
+}
+
+// U 本位 (fapi) K 线 → 每根 {openTime, delta(币数), deltaUsd(报价额≈USD)}
 function _deltasFapi(rows) {
   return (Array.isArray(rows) ? rows : []).map((r) => {
     const baseVol = Number(r[5]);
+    const quoteVol = Number(r[7]);
     const takerBuyBase = Number(r[9]);
-    return { openTime: Number(r[0]), delta: 2 * takerBuyBase - baseVol };
+    const takerBuyQuote = Number(r[10]);
+    return {
+      openTime: Number(r[0]),
+      delta: 2 * takerBuyBase - baseVol,
+      deltaUsd: 2 * takerBuyQuote - quoteVol
+    };
   }).filter((p) => Number.isFinite(p.openTime) && Number.isFinite(p.delta));
 }
 
-// 币本位 (dapi) K 线 → 每根 {openTime, delta(币数 BTC)}
-function _deltasDapi(rows) {
+// 币本位 (dapi) K 线 → 每根 {openTime, delta(币数 BTC), deltaUsd(用张数×每张USD换算)}
+function _deltasDapi(rows, base) {
+  const contractUsd = coinmContractUsd(base);
   return (Array.isArray(rows) ? rows : []).map((r) => {
     const baseVol = Number(r[7]);            // baseAssetVolume (BTC)
     const takerBuyBase = Number(r[10]);      // takerBuyBaseAssetVolume (BTC)
-    return { openTime: Number(r[0]), delta: 2 * takerBuyBase - baseVol };
+    const volContracts = Number(r[5]);       // volume (张数)
+    const takerBuyContracts = Number(r[9]);  // takerBuyVolume (张数)
+    return {
+      openTime: Number(r[0]),
+      delta: 2 * takerBuyBase - baseVol,
+      deltaUsd: contractUsd * (2 * takerBuyContracts - volContracts)
+    };
   }).filter((p) => Number.isFinite(p.openTime) && Number.isFinite(p.delta));
 }
 
-// 按 openTime 求和多个源的 delta（缺某根 bar 的源按 0 计入，不前向填充）
+// 按 openTime 求和多个源的 delta / deltaUsd（缺某根 bar 的源按 0 计入，不前向填充）
 function _mergeDeltas(sources) {
   const map = new Map();
   for (const s of sources) {
     for (const p of s.points) {
-      map.set(p.openTime, (map.get(p.openTime) || 0) + p.delta);
+      const cur = map.get(p.openTime) || { delta: 0, deltaUsd: 0 };
+      cur.delta += Number.isFinite(p.delta) ? p.delta : 0;
+      cur.deltaUsd += Number.isFinite(p.deltaUsd) ? p.deltaUsd : 0;
+      map.set(p.openTime, cur);
     }
   }
   return Array.from(map.entries())
-    .map(([openTime, delta]) => ({ openTime, delta }))
+    .map(([openTime, v]) => ({ openTime, delta: v.delta, deltaUsd: v.deltaUsd }))
     .sort((a, b) => a.openTime - b.openTime);
 }
 
@@ -114,7 +137,7 @@ router.get('/cvd', async (req, res) => {
 
     const usdtPts = usdtRes.status === 'fulfilled' ? _deltasFapi(usdtRes.value) : [];
     const usdcPts = usdcRes.status === 'fulfilled' ? _deltasFapi(usdcRes.value) : [];
-    const coinmPts = coinmRes.status === 'fulfilled' ? _deltasDapi(coinmRes.value) : [];
+    const coinmPts = coinmRes.status === 'fulfilled' ? _deltasDapi(coinmRes.value, base) : [];
 
     const sources = [
       { label: `${base}USDT (USDT-M)`, points: usdtPts, ok: usdtRes.status === 'fulfilled', count: usdtPts.length },
