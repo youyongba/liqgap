@@ -244,30 +244,27 @@
       }
       #sub-charts {
         display: grid;
-        grid-template-columns: repeat(4, 1fr);
+        grid-template-columns: repeat(3, 1fr);
         gap: 12px;
       }
       /* 显式 grid placement —— 关键修复：避免任一 sub-pane 全屏(position:fixed)
-       * 时，剩余 3 个 pane 触发 grid auto-placement 而错位；退出后无法回到原列。
+       * 时，剩余 pane 触发 grid auto-placement 而错位；退出后无法回到原列。
        * CSS Grid 规范：absolute/fixed item 会从 grid 中移除，其他 item 重新自动排列。
        * 给每个 sub-pane 显式锁定 grid-column / grid-row，全屏时其他 pane 完全不动。 */
       #sub-charts > .sub-pane:nth-child(1) { grid-column: 1; grid-row: 1; }
       #sub-charts > .sub-pane:nth-child(2) { grid-column: 2; grid-row: 1; }
       #sub-charts > .sub-pane:nth-child(3) { grid-column: 3; grid-row: 1; }
-      #sub-charts > .sub-pane:nth-child(4) { grid-column: 4; grid-row: 1; }
       @media (max-width: 1500px) {
         #sub-charts { grid-template-columns: repeat(2, 1fr); }
         #sub-charts > .sub-pane:nth-child(1) { grid-column: 1; grid-row: 1; }
         #sub-charts > .sub-pane:nth-child(2) { grid-column: 2; grid-row: 1; }
         #sub-charts > .sub-pane:nth-child(3) { grid-column: 1; grid-row: 2; }
-        #sub-charts > .sub-pane:nth-child(4) { grid-column: 2; grid-row: 2; }
       }
       @media (max-width: 900px) {
         #sub-charts { grid-template-columns: 1fr; }
         #sub-charts > .sub-pane:nth-child(1) { grid-column: 1; grid-row: 1; }
         #sub-charts > .sub-pane:nth-child(2) { grid-column: 1; grid-row: 2; }
         #sub-charts > .sub-pane:nth-child(3) { grid-column: 1; grid-row: 3; }
-        #sub-charts > .sub-pane:nth-child(4) { grid-column: 1; grid-row: 4; }
       }
       .sub-pane {
         background: var(--bg-2);
@@ -308,8 +305,9 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 8px;
+        gap: 6px;
         margin-bottom: 4px;
+        flex-wrap: wrap;
       }
       .sub-pane-header h3 {
         margin: 0;
@@ -1063,29 +1061,21 @@
           </div>
           <div class="sub-pane" data-pane="cvd" id="sub-pane-cvd">
             <div class="sub-pane-header">
-              <h3 id="cvd-title">累积主动差 / CVD</h3>
+              <h3 id="cvd-title">CVD(左) + 持仓量(右) / CVD + OI</h3>
               <button class="oi-unit-btn" id="cvd-scope-toggle" type="button"
-                      title="切换统计范围：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）。">合并</button>
+                      title="CVD 统计范围：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）。">CVD合并</button>
               <button class="oi-unit-btn" id="cvd-unit-toggle" type="button"
-                      title="切换 CVD 口径：USD 报价额/名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选 USD。">USD</button>
+                      title="CVD 口径：USD 报价额/名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选 USD。">CVD·USD</button>
+              <button class="oi-unit-btn" id="oi-mode-toggle" type="button"
+                      title="OI 显示：K线 = 合成持仓量 K 线（绿=增仓 close≥open，红=减仓 close<open）；面积 = 平滑曲线。">OI·K线</button>
+              <button class="oi-unit-btn" id="oi-scope-toggle" type="button"
+                      title="OI 统计范围：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约相加（对齐 Coinglass 币安口径）；单一 = 仅当前 USDT 合约。">OI合并</button>
+              <button class="oi-unit-btn" id="oi-unit-toggle" type="button"
+                      title="OI 口径：USD 名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选同样的单位。">OI·USD</button>
               <button class="min-btn" type="button" data-min-target="sub-pane-cvd" title="最小化 / Minimize">⊟</button>
               <button class="fs-btn" type="button" data-fs-target="sub-pane-cvd" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
             <div class="pane-body" id="cvd-pane"></div>
-          </div>
-          <div class="sub-pane" data-pane="oi" id="sub-pane-oi">
-            <div class="sub-pane-header">
-              <h3 id="oi-title">持仓量 / Open Interest（仅合约）</h3>
-              <button class="oi-unit-btn" id="oi-mode-toggle" type="button"
-                      title="切换显示：K线 = 合成持仓量 K 线（绿=增仓 close≥open，红=减仓 close<open）；面积 = 平滑曲线。">K线</button>
-              <button class="oi-unit-btn" id="oi-scope-toggle" type="button"
-                      title="切换统计范围：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约相加（对齐 Coinglass 币安口径）；单一 = 仅当前 USDT 合约。">合并</button>
-              <button class="oi-unit-btn" id="oi-unit-toggle" type="button"
-                      title="切换持仓量口径：USD 名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选同样的单位。">USD</button>
-              <button class="min-btn" type="button" data-min-target="sub-pane-oi" title="最小化 / Minimize">⊟</button>
-              <button class="fs-btn" type="button" data-fs-target="sub-pane-oi" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
-            </div>
-            <div class="pane-body" id="oi-pane"></div>
           </div>
           <div class="sub-pane" data-pane="ob" id="sub-pane-ob">
             <div class="sub-pane-header">
