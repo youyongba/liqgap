@@ -5,7 +5,7 @@
  * 自动交易运行时开关 (Auto-Trade Runtime Kill Switch) 冷烟测试
  *
  * 覆盖：
- *   1. 默认状态：URL 配置 + AUTO_TRADE_ENABLED 未显式 false → isEnabled()=true
+ *   1. 默认关闭(opt-in)：URL 配置 + AUTO_TRADE_ENABLED 未显式 true → isEnabled()=false
  *   2. .env AUTO_TRADE_ENABLED=false → isEnabled()=false (env-disabled)
  *   3. runtime override = true → 覆盖 env-disabled (runtime-enabled)
  *   4. runtime override = false → 最高优先级，全部禁 (runtime-disabled)
@@ -105,13 +105,22 @@ function _request(port, method, path, body) {
 // ============================================================================
 // 1-7. services/autoTrade.js 单元行为
 // ============================================================================
-test('1. 默认：URL 配置 + AUTO_TRADE_ENABLED 未显式 false → enabled=true', () => {
+test('1. 默认关闭(opt-in)：URL 配置 + AUTO_TRADE_ENABLED 未显式 true → enabled=false', () => {
   process.env.AUTO_TRADE_API_URL = 'http://fake.example/webhook';
   delete process.env.AUTO_TRADE_ENABLED;
   const at = _freshRequire('services/autoTrade');
   const st = at.getEnabledStatus();
-  assert.equal(st.enabled, true);
+  assert.equal(st.enabled, false, '缺省应关闭，需显式 =true 才开');
   assert.equal(st.runtimeOverride, null);
+  assert.equal(st.source, 'env-disabled');
+});
+
+test('1b. 显式 AUTO_TRADE_ENABLED=true + URL 配置 → enabled=true (env-enabled)', () => {
+  process.env.AUTO_TRADE_API_URL = 'http://fake.example/webhook';
+  process.env.AUTO_TRADE_ENABLED = 'true';
+  const at = _freshRequire('services/autoTrade');
+  const st = at.getEnabledStatus();
+  assert.equal(st.enabled, true);
   assert.equal(st.source, 'env-enabled');
 });
 
@@ -173,9 +182,9 @@ test('6. sendPendingOrder 在 disable 状态下 → ok:false, skipped:true, 不�
   assert.equal(axiosCalls.length, 0, 'axios.post 不应被调用');
 });
 
-test('7. setEnabled(null) 复位 → 回到 .env 行为', () => {
+test('7. setEnabled(null) 复位 → 回到 .env 行为 (env=true 时复位为开)', () => {
   process.env.AUTO_TRADE_API_URL = 'http://fake.example/webhook';
-  delete process.env.AUTO_TRADE_ENABLED;
+  process.env.AUTO_TRADE_ENABLED = 'true';
   const at = _freshRequire('services/autoTrade');
   at.setEnabled(false);
   assert.equal(at.isEnabled(), false);
@@ -257,7 +266,7 @@ test('9b. POST /auto-trade/enable → 返回 enabled:true', async () => {
   }
 });
 
-test('9c. POST /auto-trade/toggle → 翻转状态两次回到原值', async () => {
+test('9c. POST /auto-trade/toggle → 翻转状态两次回到原值（默认关闭起步）', async () => {
   process.env.AUTO_TRADE_API_URL = 'http://fake.example/webhook';
   delete process.env.AUTO_TRADE_ENABLED;
   _mockAxios();
@@ -266,27 +275,27 @@ test('9c. POST /auto-trade/toggle → 翻转状态两次回到原值', async () 
   const { server, port } = await _startServer(route);
   try {
     const r1 = await _request(port, 'POST', '/api/auto-trade/toggle');
-    assert.equal(r1.body.data.enabled, false, '从 ON toggle 到 OFF');
+    assert.equal(r1.body.data.enabled, true, '从默认 OFF toggle 到 ON');
     const r2 = await _request(port, 'POST', '/api/auto-trade/toggle');
-    assert.equal(r2.body.data.enabled, true, '从 OFF 再 toggle 回 ON');
+    assert.equal(r2.body.data.enabled, false, '从 ON 再 toggle 回 OFF');
   } finally {
     server.close();
   }
 });
 
-test('9d. POST /auto-trade/reset-override → runtimeOverride 回 null', async () => {
+test('9d. POST /auto-trade/reset-override → runtimeOverride 回 null（跟随 .env）', async () => {
+  // 注：本文件 async 测试并发共享 process.env，故这里不断言具体 env 值，
+  // 只验证 reset 后 runtimeOverride=null 且 source 回到 env-* 系列（不再 runtime-*）。
   process.env.AUTO_TRADE_API_URL = 'http://fake.example/webhook';
-  delete process.env.AUTO_TRADE_ENABLED;
   _mockAxios();
   const at = _freshRequire('services/autoTrade');
-  at.setEnabled(false);
+  at.setEnabled(false); // 先制造一个 runtime override
   const route = _freshRequire('routes/autoTrade');
   const { server, port } = await _startServer(route);
   try {
     const r = await _request(port, 'POST', '/api/auto-trade/reset-override');
     assert.equal(r.body.data.runtimeOverride, null);
-    assert.equal(r.body.data.enabled, true, '复位后回到 env-enabled');
-    assert.equal(r.body.data.source, 'env-enabled');
+    assert.ok(/^env-/.test(r.body.data.source), `复位后应跟随 env，实际 source=${r.body.data.source}`);
   } finally {
     server.close();
   }

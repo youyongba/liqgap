@@ -93,7 +93,7 @@ npm run dev            # nodemon 热重载
 | `REGIME_NOTIFY_ENABLED` | 否 | `false` 表示完全关闭 regime 通知 |
 | **`AUTO_TRADE_API_URL`** | 否 | **高置信度交易信号触发挂单的 webhook URL**（留空则整体关闭，详见下方"自动交易 Webhook"章节）|
 | `AUTO_TRADE_API_TOKEN` | 否 | 上面 URL 的 `X-Auth-Token` 请求头值 |
-| `AUTO_TRADE_ENABLED` | 否 | `false` 显式关闭自动交易推送（默认 `true`）|
+| `AUTO_TRADE_ENABLED` | 否 | ⚠️ **默认关闭(opt-in)**：仅当显式 `=true` 且配置了 URL 才会自动下单；缺省/其它值一律关闭 |
 | `AUTO_TRADE_TRIGGER_SIGNALS` | 否 | CSV 白名单。**高杠杆推荐**：只留 `HEXA_RESONANCE_LONG,HEXA_RESONANCE_SHORT,TRIO_RESONANCE_LONG,TRIO_RESONANCE_SHORT`（删除 LIQ_REVERSAL，胜率不够）|
 | `AUTO_TRADE_MIN_CONFIDENCE` | 否 | 触发的最低 confidence。**低杠杆 75 · 中杠杆 80 · 高杠杆 88+** |
 | `AUTO_TRADE_COOLDOWN_MS` | 否 | 同 `symbol+direction` 的推送冷却毫秒，默认 `1800000` (30 min) |
@@ -490,7 +490,7 @@ User-Agent:   liq-gap/1.0 (+auto-trade)
 ```bash
 AUTO_TRADE_API_URL=https://aitrade.24os.cn/api/auto-trade/pending-order
 AUTO_TRADE_API_TOKEN=54006625db5c6a03b3ba5e112b326eb69e4828ba00c5efab403c03e217263455
-AUTO_TRADE_ENABLED=true                          # false 一键关闭
+AUTO_TRADE_ENABLED=false                         # ⚠️ 默认关闭(opt-in)；改成 true 才自动下单
 # 高杠杆 (≥50x) 小资金推荐：移除 LIQ_REVERSAL_*，只信 HEXA + TRIO
 AUTO_TRADE_TRIGGER_SIGNALS=HEXA_RESONANCE_LONG,HEXA_RESONANCE_SHORT,TRIO_RESONANCE_LONG,TRIO_RESONANCE_SHORT
 AUTO_TRADE_MIN_CONFIDENCE=88                     # 10-20x→75 · 50x→80 · 100x→88+

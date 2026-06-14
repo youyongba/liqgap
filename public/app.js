@@ -2859,23 +2859,43 @@
   // (Soft fetch: returns null on failure and stashes the reason on
   //  fetchJsonSoft.lastErrors so the status bar can display it.)
   fetchJsonSoft.lastErrors = {};
+  // 单次软请求超时（毫秒）。超过即 abort，避免请求挂死到网关 504 才返回
+  // HTML 错误页（那会让 r.json() 抛 "Unexpected token '<'" 这种难懂的报错）。
+  const SOFT_FETCH_TIMEOUT_MS = 15000;
   async function fetchJsonSoft(url) {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), SOFT_FETCH_TIMEOUT_MS) : null;
     try {
-      const r = await fetch(url);
-      const j = await r.json();
-      if (!j.success) {
+      const r = await fetch(url, ctrl ? { signal: ctrl.signal } : undefined);
+      // 先看响应是不是 JSON：网关超时 / 502 / 504 常返回 HTML 错误页，
+      // 直接 r.json() 会抛 "Unexpected token '<'"。这里给出更可读的提示。
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('json')) {
+        const msg = `HTTP ${r.status} 非 JSON 响应（可能超时/网关错误，稍后自动重试）`;
         // eslint-disable-next-line no-console
-        console.warn('soft-fetch failed:', url, j.error);
-        fetchJsonSoft.lastErrors[url] = j.error || 'unknown';
+        console.warn('soft-fetch non-json:', url, msg);
+        fetchJsonSoft.lastErrors[url] = msg;
+        return null;
+      }
+      const j = await r.json();
+      if (!j || !j.success) {
+        // eslint-disable-next-line no-console
+        console.warn('soft-fetch failed:', url, j && j.error);
+        fetchJsonSoft.lastErrors[url] = (j && j.error) || `HTTP ${r.status}`;
         return null;
       }
       delete fetchJsonSoft.lastErrors[url];
       return j.data;
     } catch (err) {
+      const msg = err && err.name === 'AbortError'
+        ? `请求超时 (>${SOFT_FETCH_TIMEOUT_MS / 1000}s，已中止，稍后自动重试)`
+        : (err && err.message) || 'fetch error';
       // eslint-disable-next-line no-console
-      console.warn('soft-fetch threw:', url, err.message);
-      fetchJsonSoft.lastErrors[url] = err.message;
+      console.warn('soft-fetch threw:', url, msg);
+      fetchJsonSoft.lastErrors[url] = msg;
       return null;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 

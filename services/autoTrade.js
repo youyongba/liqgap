@@ -28,8 +28,9 @@
  *
  *   AUTO_TRADE_API_URL               目标 webhook URL；未配置则整体 no-op
  *   AUTO_TRADE_API_TOKEN             X-Auth-Token 头的值（与对方约定）
- *   AUTO_TRADE_ENABLED               'false' 显式关闭整体推送（默认开启）
- *                                    ⚠️ 这是启动期 env，重启才生效。
+ *   AUTO_TRADE_ENABLED               ⚠️ 默认关闭(opt-in)：必须显式 ='true'
+ *                                    才会自动下单；缺省 / 任何其它值都视为关闭。
+ *                                    这是启动期 env，重启才生效。
  *                                    需要"运行时一键开关"请用 setEnabled()
  *                                    或 POST /api/auto-trade/{enable|disable|toggle}。
  *   AUTO_TRADE_TRIGGER_SIGNALS       CSV，触发该 webhook 的信号白名单
@@ -78,8 +79,9 @@ function recordCall(record) {
 // ────────────────────────────────────────────────────────────────────────────
 // 运行时开关 (Runtime kill switch)
 // ────────────────────────────────────────────────────────────────────────────
-//   null  → 跟随 .env（默认行为，按 AUTO_TRADE_ENABLED + URL 是否配置）
-//   true  → 运行时强制启用（覆盖 AUTO_TRADE_ENABLED=false；URL 必须配置否则仍发不出）
+//   null  → 跟随 .env（默认行为）。⚠️ 默认关闭(opt-in)：必须显式
+//           AUTO_TRADE_ENABLED=true 且配置了 URL 才会自动下单。
+//   true  → 运行时强制启用（覆盖 .env；URL 必须配置否则仍发不出）
 //   false → 运行时强制禁用（最高优先级，所有 webhook 立即停发；不影响飞书 / 信号计算）
 //
 // 通过 setEnabled() 切换；REST API：
@@ -88,16 +90,17 @@ function recordCall(record) {
 //   POST /api/auto-trade/toggle            → 翻转当前 isEnabled()
 //   POST /api/auto-trade/reset-override    → 复位为 null（跟随 .env）
 //
-// 重启后回到 null（内存状态，不持久化）。如果要"重启也保持禁用"请同步设
-// .env AUTO_TRADE_ENABLED=false。
+// 重启后回到 null（内存状态，不持久化）→ 即默认关闭。要"重启也默认开启"
+// 需显式设 .env AUTO_TRADE_ENABLED=true。
 let _runtimeOverride = null;
 
+// ⚠️ 默认关闭 (opt-in)：未显式 AUTO_TRADE_ENABLED=true 时不会自动下单，
+// 即使配置了 URL。避免"忘了关"导致误触发真实交易。运行时可用面板开关临时打开。
 function isEnabled() {
   if (_runtimeOverride === false) return false;
   if (!process.env.AUTO_TRADE_API_URL) return false;
   if (_runtimeOverride === true) return true;
-  if (process.env.AUTO_TRADE_ENABLED === 'false') return false;
-  return true;
+  return process.env.AUTO_TRADE_ENABLED === 'true';
 }
 
 function setEnabled(value) {
@@ -110,7 +113,7 @@ function setEnabled(value) {
 }
 
 function getEnabledStatus() {
-  const envEnabled = process.env.AUTO_TRADE_ENABLED !== 'false';
+  const envEnabled = process.env.AUTO_TRADE_ENABLED === 'true';
   const urlConfigured = !!process.env.AUTO_TRADE_API_URL;
   let source;
   if (_runtimeOverride === false) source = 'runtime-disabled';
@@ -174,7 +177,7 @@ function renderLabel(template, vars) {
 
 function shouldFire({ signal, confidence, symbol, direction }) {
   if (!isEnabled()) {
-    return { ok: false, skipped: true, reason: 'AUTO_TRADE_API_URL not set or AUTO_TRADE_ENABLED=false' };
+    return { ok: false, skipped: true, reason: 'auto-trade disabled (默认关闭：需 AUTO_TRADE_ENABLED=true 且配置 URL，或运行时开启)' };
   }
   if (!signal || !direction) {
     return { ok: false, skipped: true, reason: 'missing signal or direction' };
