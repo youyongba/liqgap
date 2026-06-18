@@ -1067,11 +1067,11 @@
               <button class="oi-unit-btn" id="cvd-unit-toggle" type="button"
                       title="CVD 口径：USD 报价额/名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选 USD。">CVD·USD</button>
               <button class="oi-unit-btn" id="oi-mode-toggle" type="button"
-                      title="OI 显示：K线 = 合成持仓量 K 线（绿=增仓 close≥open，红=减仓 close<open）；面积 = 平滑曲线。">OI·K线</button>
+                      title="OI 显示：K线 = 持仓量增减（绿=增仓/红=减仓，按币数·仓位量，价格无关，真实反映加减仓）；面积 = 持仓量规模曲线。">OI·K线</button>
               <button class="oi-unit-btn" id="oi-scope-toggle" type="button"
                       title="OI 统计范围：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约相加（对齐 Coinglass 币安口径）；单一 = 仅当前 USDT 合约。">OI合并</button>
               <button class="oi-unit-btn" id="oi-unit-toggle" type="button"
-                      title="OI 口径：USD 名义价值 ⟷ Coin 币数(BTC)。对照 Coinglass 时选同样的单位。">OI·USD</button>
+                      title="OI 口径：USD 名义价值 ⟷ Coin 币数(BTC)。⚠️ 只作用于「面积」模式；K 线增减仓始终按币数(仓位量)判断，不受价格涨跌干扰。">OI·USD</button>
               <button class="min-btn" type="button" data-min-target="sub-pane-cvd" title="最小化 / Minimize">⊟</button>
               <button class="fs-btn" type="button" data-fs-target="sub-pane-cvd" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>

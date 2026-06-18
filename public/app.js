@@ -3716,6 +3716,18 @@
     return NaN;
   }
 
+  // 取单条 OI 样本的「币数 / 仓位量」（合约数，价格无关）。
+  // ⚠️ K 线"增仓/减仓"必须用这个，而不是 USD 名义价值：
+  //    USD 名义 = 币数 × 价格，价格大跌时即使空头在加仓(币数↑)，USD 名义也可能↓，
+  //    会把"增仓"画成红色"减仓" —— 这正是用户反馈的问题根源。
+  function _oiCoinValue(sample, close) {
+    const coin = Number(sample.openInterest);
+    if (Number.isFinite(coin) && coin > 0) return coin;
+    const usd = Number(sample.openInterestValue);
+    if (Number.isFinite(usd) && usd > 0 && Number.isFinite(close) && close > 0) return usd / close;
+    return NaN;
+  }
+
   function renderOpenInterest(resp, candles) {
     _lastOiResp = resp || _lastOiResp;
     if (!resp) return;
@@ -3731,7 +3743,8 @@
       _smartUpdateSeries(oiCandleSeries, []);
       return;
     }
-    const points = [];
+    const points = [];      // 面积曲线：按 _oiUnit 口径（USD 名义 / 币数）
+    const coinPoints = [];  // K 线专用：始终币数(仓位量)，价格无关 → 增减仓判断才正确
     let oiIdx = 0;
     let lastSample = null;
     for (let i = 0; i < cands.length; i += 1) {
@@ -3746,28 +3759,39 @@
         oiIdx += 1;
       }
       if (lastSample) {
-        const v = _oiSampleValue(lastSample, Number(c.close));
-        if (Number.isFinite(v) && v > 0) {
-          points.push({ time: toLwSeconds(c.openTime), value: v });
-        }
+        const cl = Number(c.close);
+        const t = toLwSeconds(c.openTime);
+        const v = _oiSampleValue(lastSample, cl);
+        if (Number.isFinite(v) && v > 0) points.push({ time: t, value: v });
+        const coinV = _oiCoinValue(lastSample, cl);
+        if (Number.isFinite(coinV) && coinV > 0) coinPoints.push({ time: t, value: coinV });
       }
     }
-    // 合成 K 线：open = 上一周期 OI，close = 本周期 OI；无 intra-period 高低，
-    // 故 high/low 取 open/close 的极值（实体即"持仓量变化"，绿增红减）。
+    // 合成 K 线：open = 上一周期持仓量，close = 本周期持仓量；用「币数(仓位量)」，
+    // 故 close ≥ open = 绿（真·增仓），close < open = 红（真·减仓），不受价格涨跌干扰。
+    // （之前用 USD 名义价值，价格大跌时会把"空头加仓"误画成"减仓"。）
     const candlePoints = [];
-    for (let i = 0; i < points.length; i += 1) {
-      const close = points[i].value;
-      const open = i > 0 ? points[i - 1].value : close;
+    for (let i = 0; i < coinPoints.length; i += 1) {
+      const close = coinPoints[i].value;
+      const open = i > 0 ? coinPoints[i - 1].value : close;
       candlePoints.push({
-        time: points[i].time,
+        time: coinPoints[i].time,
         open,
         high: Math.max(open, close),
         low: Math.min(open, close),
         close
       });
     }
-    _smartUpdateSeries(oiSeries, points);
-    _smartUpdateSeries(oiCandleSeries, candlePoints);
+    // 只给当前模式的 series 灌数据，另一条清空。
+    // 原因：K 线用币数(可能 ~9万 BTC)，面积可能用 USD(~90亿)，量级差极大。
+    // 两条都在右轴上，若同时有数据会互相污染自动缩放（把 K 线压成贴边直线）。
+    if (_oiMode === 'candle') {
+      _smartUpdateSeries(oiCandleSeries, candlePoints);
+      _smartUpdateSeries(oiSeries, []);
+    } else {
+      _smartUpdateSeries(oiSeries, points);
+      _smartUpdateSeries(oiCandleSeries, []);
+    }
     _applyOiMode();
     // OI 副图永远跟随主图，不再 fitContent —— 否则 OI 数据后到时会把主图也拉跑
     syncSubChartsToMain();
@@ -3787,8 +3811,8 @@
     if (btn) {
       btn.textContent = _oiUnit === 'coin' ? 'OI·Coin' : 'OI·USD';
       btn.title = _oiUnit === 'coin'
-        ? '当前：Coin 币数(BTC)。点击切回 USD 名义价值。对照 Coinglass 时选同样单位。'
-        : '当前：USD 名义价值。点击切到 Coin 币数(BTC)。对照 Coinglass 时选同样单位。';
+        ? '当前：Coin 币数(BTC)。点击切回 USD 名义价值。⚠️ 此口径只作用于「面积」模式；K 线增减仓始终按币数(仓位量)判断。'
+        : '当前：USD 名义价值。点击切到 Coin 币数(BTC)。⚠️ 此口径只作用于「面积」模式；K 线增减仓始终按币数(仓位量)判断。';
     }
     const title = document.getElementById('oi-title');
     if (title) {
@@ -3914,10 +3938,12 @@
     if (btn) {
       btn.textContent = _oiMode === 'candle' ? 'OI·K线' : 'OI·面积';
       btn.title = _oiMode === 'candle'
-        ? '当前：合成持仓量 K 线（绿=增仓 close≥open，红=减仓 close<open）。点击切到面积曲线。'
-        : '当前：面积曲线。点击切到合成 K 线（绿增红减）。';
+        ? '当前：持仓量增减 K 线（绿=增仓 / 红=减仓，按币数·仓位量，价格无关）。点击切到面积曲线。'
+        : '当前：持仓量规模面积曲线（按上方 USD/Coin 口径）。点击切回增减 K 线。';
     }
-    _applyOiMode();
+    // 切模式后要给新激活的 series 灌数据（另一条是空的），用缓存重绘
+    if (_lastOiResp) renderOpenInterest(_lastOiResp, lastCandles);
+    else _applyOiMode();
   }
 
   {
