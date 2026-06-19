@@ -3454,8 +3454,11 @@
 
     // 在主 K 线上绘制 FVG / 流动性空白的标记
     // (Markers for FVGs and liquidity voids on the candle series.)
+    // 500 根 K 线下 FVG 较多：箭头标记放宽到最近 60 个，区间上下沿放宽到最近 8 个。
+    const FVG_MARKER_CAP = 60;   // FVG 箭头标记最多显示数量
+    const FVG_ZONE_CAP = 8;      // FVG 区间上下沿（价格线）最多显示数量
     const markers = [];
-    for (const f of fvgs.slice(-15)) {
+    for (const f of fvgs.slice(-FVG_MARKER_CAP)) {
       const ts = toLwSeconds(f.startTime);
       markers.push({
         time: ts,
@@ -3489,8 +3492,8 @@
     //  candlestick series. lightweight-charts standalone build has no
     //  native rectangle API, so we approximate with price lines.)
     // 同样缓存：FVG 没变就不 remove + 重 create（这两个 API 也清 hover state）。
-    const fvgTop3 = fvgs.slice(-3);
-    const priceLinesHash = JSON.stringify(fvgTop3.map((f) => ({
+    const fvgZones = fvgs.slice(-FVG_ZONE_CAP);
+    const priceLinesHash = JSON.stringify(fvgZones.map((f) => ({
       u: f.upper, l: f.lower, t: f.type
     })));
     if (renderMain._lastPriceLinesHash !== priceLinesHash) {
@@ -3498,7 +3501,7 @@
       for (const pl of renderMain._priceLines) candleSeries.removePriceLine(pl);
     }
     const priceLines = [];
-      for (const f of fvgTop3) {
+      for (const f of fvgZones) {
       priceLines.push(candleSeries.createPriceLine({
         price: f.upper,
         color: f.type === 'bullish' ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)',
