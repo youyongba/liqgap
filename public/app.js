@@ -290,6 +290,9 @@
   }
 
   const POLL_INTERVAL_MS = 10000;
+  // 主图 / 副图（OI、CVD）统一拉取的 K 线根数。
+  // 后端上限：klines/stream 1500、CVD 1000、OI 历史 500（币安接口限制）。
+  const KLINE_LIMIT = 500;
   let pollTimer = null;
 
   // ===== 东八区时间统一格式化 (Beijing-time formatters · UTC+8) =====
@@ -3847,7 +3850,7 @@
       const market = els.market.value;
       const interval = els.interval.value || '1h';
       const resp = await fetchJsonSoft(
-        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200${oiAggregateParam()}`
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}${oiAggregateParam()}`
       );
       if (resp) renderOpenInterest(resp, lastCandles);
     } catch (err) {
@@ -3892,7 +3895,7 @@
         return;
       }
       const resp = await fetchJsonSoft(
-        `/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=200&aggregate=binance`
+        `/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}&aggregate=binance`
       );
       _lastCvdMerged = (resp && resp.supported && Array.isArray(resp.data)) ? resp.data : null;
       refreshCvdDisplay(lastCandles);
@@ -4859,7 +4862,7 @@
       symbol,
       market,
       interval,
-      limit: '200',
+      limit: String(KLINE_LIMIT),
       depth: String(depth),
       aggLimit: '200'
     });
@@ -5149,11 +5152,11 @@
         : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
       // OI 仅合约支持；现货时直接传 spot，后端会回 supported:false，前端清空
       const oiFetch = fetchJsonSoft(
-        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=200${oiAggregateParam()}`
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}${oiAggregateParam()}`
       );
       // CVD 合并模式：仅合约 + 开关打开时拉多合约 delta；否则前端用主图 K 线派生
       const cvdFetch = (market === 'futures' && _cvdAggregate)
-        ? fetchJsonSoft(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=200&aggregate=binance`)
+        ? fetchJsonSoft(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}&aggregate=binance`)
         : Promise.resolve(null);
       // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆）。
       // 主峰窗口 / 价格范围 = 用户当前在"清算热图"卡片上的选择，确保信号
@@ -5177,7 +5180,7 @@
         : Promise.resolve(null);
 
       const [kData, obData, oiData, signal, alerts, liqSignal, cvdData] = await Promise.all([
-        fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=200&market=${market}&detectPatterns=true`),
+        fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${KLINE_LIMIT}&market=${market}&detectPatterns=true`),
         obFetch,
         oiFetch,
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
