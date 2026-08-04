@@ -31,6 +31,8 @@ const express = require('express');
 // 这里用 alias 保持下游代码无需更名。
 // (Live dashboards prefer the WS-cache facade; signature matches REST exactly.)
 const { BinanceLive: BinanceService } = require('../services/binanceLive');
+// 历史翻页（endTime）直连 REST（WS 缓存只有最近窗口，没有更早历史）
+const { BinanceService: BinanceRest } = require('../services/binance');
 const {
   normalizeKlines,
   computeVWAP,
@@ -51,8 +53,13 @@ router.get('/klines', async (req, res) => {
     // 默认合约 (default to futures per project spec)
     const market = req.query.market === 'spot' ? 'spot' : 'futures';
     const detectPatterns = String(req.query.detectPatterns) === 'true';
+    // endTime（毫秒）：只取该时刻之前的历史 K 线（前端向左拖拽动态加载）。
+    // WS 缓存只保留最近窗口，历史翻页必须直连 REST。
+    const endTime = Number(req.query.endTime) || 0;
 
-    const raw = await BinanceService.getKlines(symbol, interval, limit, market);
+    const raw = endTime > 0
+      ? await BinanceRest.getKlines(symbol, interval, limit, market, endTime)
+      : await BinanceService.getKlines(symbol, interval, limit, market);
     const candles = normalizeKlines(raw);
     const vwap = computeVWAP(candles);
     const mfi = computeMFI(candles, 14);
@@ -82,7 +89,8 @@ router.get('/klines', async (req, res) => {
       //   - regime 仅在 **1h** K 线上触发（用户需求：当一小时 K 线出现 long/short FVG）。
       //   - 通过 ?notify=false 显式关闭所有 FVG 派发（前端 fetch 时可用）。
       //   - fire-and-forget，不阻塞响应。
-      if (req.query.notify !== 'false') {
+      // 历史翻页请求（endTime）不推送：那些 FVG 是旧的，不是"新出现"
+      if (req.query.notify !== 'false' && !endTime) {
         const latestPrice = decorated.length ? decorated[decorated.length - 1].close : null;
         const picked = feishu.pickNewFvgs(symbol, market, result.fvgs);
 

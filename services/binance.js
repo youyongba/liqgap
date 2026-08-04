@@ -184,13 +184,16 @@ const BinanceService = {
    *   [ openTime, open, high, low, close, volume, closeTime,
    *     quoteAssetVolume, numberOfTrades, takerBuyBase, takerBuyQuote, ignore ]
    */
-  async getKlines(symbol, interval = '1h', limit = 100, marketType = 'spot') {
+  async getKlines(symbol, interval = '1h', limit = 100, marketType = 'spot', endTime = 0) {
     const url = resolveBaseUrl(marketType) + resolveKlinePath(marketType);
-    return get(url, {
+    const params = {
       symbol: String(symbol).toUpperCase(),
       interval,
       limit
-    });
+    };
+    // endTime（毫秒）：只取该时刻之前的 K 线，用于向前翻页加载历史
+    if (Number(endTime) > 0) params.endTime = Number(endTime);
+    return get(url, params);
   },
 
   /**

@@ -289,9 +289,14 @@
   }
 
   const POLL_INTERVAL_MS = 10000;
-  // 主图 / 副图（OI、CVD）统一拉取的 K 线根数。
-  // 后端上限：klines/stream 1500、CVD 1000、OI 历史 500（币安接口限制）。
-  const KLINE_LIMIT = 500;
+  // 主图初始 K 线根数（更早历史通过向左拖拽动态加载，见 histState）。
+  const KLINE_LIMIT = 200;
+  // 每次向左拖拽翻页加载的历史根数
+  const HIST_CHUNK = 200;
+  // 历史缓冲上限（约 25 页），防止无限拖拽内存膨胀
+  const HIST_MAX_BARS = 5000;
+  // 副图 OI / CVD 单次拉取根数（OI 币安接口上限 500，无翻页历史）
+  const SUBCHART_LIMIT = 500;
   let pollTimer = null;
 
   // ===== 东八区时间统一格式化 (Beijing-time formatters · UTC+8) =====
@@ -3427,12 +3432,126 @@
     _seriesPrev.set(series, { firstTime: newFirstTime, len: newLen });
   }
 
-  function renderMain(klinesData) {
-    const { candles, fvgs = [], liquidityVoids = [], summary } = klinesData;
-    if (!candles.length) return;
-    lastCandles = candles;
+  // ============================================================
+  // 历史 K 线动态加载 (drag-to-load older candles)
+  // ============================================================
+  // 主图初始只有 KLINE_LIMIT(200) 根；用户向左拖拽越过最早一根时，
+  // 自动向后端翻页拉取更早的 HIST_CHUNK 根（带 endTime，直连 REST），
+  // 前置拼接到 histState.candles。renderMain 每次渲染都把
+  // 历史缓冲 + 实时窗口合并后再画，FVG 也在合并后的全量 K 线上动态识别。
+  const histState = {
+    key: '',        // symbol|market|interval —— 变了自动清空缓冲
+    candles: [],    // 已加载的更早历史（升序，严格早于实时窗口）
+    loading: false,
+    noMore: false   // 交易所返回空 → 拉到头了
+  };
 
-    const mapped = candles.map((c) => ({
+  function _histKey() {
+    const symbol = (els.symbol.value || 'BTCUSDT').trim().toUpperCase();
+    return `${symbol}|${els.market.value}|${els.interval.value}`;
+  }
+
+  function _histReset() {
+    histState.key = _histKey();
+    histState.candles = [];
+    histState.loading = false;
+    histState.noMore = false;
+  }
+
+  // 合并历史缓冲与实时窗口（边界按 openTime 去重，历史只保留严格更早的部分）
+  function _mergeWithHistory(candles) {
+    const key = _histKey();
+    if (key !== histState.key) _histReset();
+    if (!histState.candles.length || !candles.length) return candles;
+    const firstLive = Number(candles[0].openTime);
+    const older = histState.candles.filter((c) => Number(c.openTime) < firstLive);
+    return older.length ? older.concat(candles) : candles;
+  }
+
+  // FVG 三根 K 线缺口识别（与后端 detectFVGs 同一算法）。
+  // 放到前端做是为了在"历史缓冲 + 实时窗口"合并后的全量 K 线上动态识别 ——
+  // 拖拽加载更早历史后，旧区间的上涨/下跌 FVG 也会即时补上。
+  function detectFVGsClient(candles) {
+    const gaps = [];
+    for (let i = 0; i < candles.length - 2; i += 1) {
+      const c1 = candles[i];
+      const c3 = candles[i + 2];
+      if (c1.high < c3.low) {
+        gaps.push({
+          type: 'bullish', lower: c1.high, upper: c3.low,
+          startTime: c1.openTime, endTime: c3.closeTime, index: i + 1
+        });
+      } else if (c1.low > c3.high) {
+        gaps.push({
+          type: 'bearish', lower: c3.high, upper: c1.low,
+          startTime: c1.openTime, endTime: c3.closeTime, index: i + 1
+        });
+      }
+    }
+    return gaps;
+  }
+
+  async function loadOlderCandles() {
+    if (histState.loading || histState.noMore) return;
+    if (!lastCandles.length) return;
+    if (histState.candles.length >= HIST_MAX_BARS) return;
+    const key = _histKey();
+    if (key !== histState.key) _histReset();
+    histState.loading = true;
+    try {
+      const symbol = (els.symbol.value || 'BTCUSDT').trim().toUpperCase();
+      const market = els.market.value;
+      const interval = els.interval.value;
+      const oldest = Number((histState.candles[0] || lastCandles[0]).openTime);
+      if (!Number.isFinite(oldest) || oldest <= 0) return;
+      const resp = await fetchJsonSoft(
+        `/api/klines?symbol=${symbol}&interval=${interval}&limit=${HIST_CHUNK}` +
+        `&market=${market}&endTime=${oldest - 1}&detectPatterns=false&notify=false`
+      );
+      // 拉取期间用户切换了 symbol/market/interval → 丢弃本次结果
+      if (key !== _histKey()) return;
+      // 网络/网关失败：不标记 noMore，等下次拖拽重试
+      if (!resp || !Array.isArray(resp.candles)) return;
+      const older = resp.candles
+        .filter((c) => Number(c.openTime) < oldest)
+        .sort((a, b) => a.openTime - b.openTime);
+      if (!older.length) {
+        // 真拿到了响应但没有更早数据 → 上市之初，拉到头了
+        histState.noMore = true;
+        return;
+      }
+      histState.candles = older.concat(histState.candles);
+      // 用最近一次主图数据立即重绘（renderMain 内部会做历史合并）；
+      // 先记住可视时间范围，setData 全量重置后恢复，避免视图跳动。
+      if (renderMain._lastArgs) {
+        const vr = mainChart.timeScale().getVisibleRange();
+        renderMain(renderMain._lastArgs);
+        if (vr) {
+          try { mainChart.timeScale().setVisibleRange(vr); } catch (_) { /* noop */ }
+          syncSubChartsToMain();
+        }
+      }
+    } finally {
+      histState.loading = false;
+    }
+  }
+
+  // 向左拖拽越过最早一根（logical index < -1，出现左侧空白）→ 翻页加载
+  mainChart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+    if (!r || r.from >= -1) return;
+    loadOlderCandles();
+  });
+
+  function renderMain(klinesData) {
+    const { candles, liquidityVoids = [], summary } = klinesData;
+    if (!candles.length) return;
+    // 记住最近一次数据源，供历史翻页加载后立即重绘（loadOlderCandles）
+    renderMain._lastArgs = klinesData;
+    // 历史缓冲 + 实时窗口合并（拖拽加载的更早 K 线在前）
+    const merged = _mergeWithHistory(candles);
+    lastCandles = merged;
+
+    const mapped = merged.map((c) => ({
       time: toLwSeconds(c.openTime),
       open: c.open,
       high: c.high,
@@ -3441,15 +3560,13 @@
     }));
     _smartUpdateSeries(candleSeries, mapped);
 
-    // VWAP 兜底：SSE 推送的 candle 没有 vwap 字段（hub 缓存的是 raw kline），
-    // 这里若任何一根 candle 缺 vwap 就本地累积计算一次，并回写到 candle 上，
-    // 让 tooltip 里的"VWAP"行也能显示。避免出现"刷新后 VWAP 一闪即消失"。
-    // (Re-derive VWAP locally when candles arrive from the SSE stream — the
-    //  server-side hub caches raw klines without VWAP enrichment.)
-    if (candles.some((c) => !Number.isFinite(c.vwap))) {
+    // VWAP 兜底：SSE 推送的 candle 没有 vwap 字段（hub 缓存的是 raw kline）；
+    // 加载了历史后各分页的 vwap 是各自窗口累积的、边界会跳变 ——
+    // 两种情况都在本地对合并后的全量 K 线重新累积计算一次，保证曲线连续。
+    if (histState.candles.length || merged.some((c) => !Number.isFinite(c.vwap))) {
       let cumPV = 0;
       let cumVol = 0;
-      for (const c of candles) {
+      for (const c of merged) {
         const tp = (Number(c.high) + Number(c.low) + Number(c.close)) / 3;
         const v = Number(c.volume) || 0;
         cumPV += tp * v;
@@ -3457,14 +3574,19 @@
         c.vwap = cumVol > 0 ? cumPV / cumVol : tp;
       }
     }
-    const vwapPoints = candles
+    const vwapPoints = merged
       .map((c) => ({ time: toLwSeconds(c.openTime), value: c.vwap }))
       .filter((p) => p.value !== null && Number.isFinite(p.value));
     _smartUpdateSeries(vwapSeries, vwapPoints);
 
+    // FVG 动态识别：不用后端窗口内的结果，而是对"已加载的全部 K 线"
+    // （历史缓冲 + 实时窗口）前端实时检测 —— 拖拽加载更早历史后，
+    // 旧区间的上涨/下跌 FVG 会即时补上（与后端 detectFVGs 同一算法）。
+    const fvgs = detectFVGsClient(merged);
+
     // 在主 K 线上绘制 FVG / 流动性空白的标记
     // (Markers for FVGs and liquidity voids on the candle series.)
-    // 500 根 K 线下 FVG 较多：箭头标记放宽到最近 60 个，区间上下沿放宽到最近 8 个。
+    // 历史动态加载后 FVG 会很多：箭头标记最多 60 个、区间上下沿最多 8 个（都取最近的）。
     const FVG_MARKER_CAP = 60;   // FVG 箭头标记最多显示数量
     const FVG_ZONE_CAP = 8;      // FVG 区间上下沿（价格线）最多显示数量
     const markers = [];
@@ -3537,9 +3659,9 @@
     _renderVolumeProfilePriceLines(_lastVolumeProfile);
 
     els.mainMeta.textContent =
-      `${summary.symbol} · ${summary.market} · ${summary.interval} · ${summary.count} bars`;
+      `${summary.symbol} · ${summary.market} · ${summary.interval} · ${merged.length} bars`;
 
-    const volumeData = candles.map((c) => ({
+    const volumeData = merged.map((c) => ({
       time: toLwSeconds(c.openTime),
       value: c.volume,
       color: c.close >= c.open ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)'
@@ -3548,11 +3670,11 @@
 
     // CVD 副图：合并模式用后端多合约 delta，单一模式与主图 K 线同源派生
     // (Merged: backend multi-contract delta; Single: derive from same candles.)
-    refreshCvdDisplay(candles);
+    refreshCvdDisplay(merged);
 
     // OI 副图：主图 K 线变化后用最近一次 OI 响应重新按 openTime 对齐
     // (Realign cached OI samples to the new candle grid.)
-    if (_lastOiResp) renderOpenInterest(_lastOiResp, candles);
+    if (_lastOiResp) renderOpenInterest(_lastOiResp, merged);
 
     // 只在首次渲染或用户主动重置时 fitContent，避免实时刷新打断用户拖动
     // 主图 fit 后立即把所有副图拉到主图当前可见范围（联动同步）
@@ -3863,7 +3985,7 @@
       const market = els.market.value;
       const interval = els.interval.value || '1h';
       const resp = await fetchJsonSoft(
-        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}${oiAggregateParam()}`
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}${oiAggregateParam()}`
       );
       if (resp) renderOpenInterest(resp, lastCandles);
     } catch (err) {
@@ -3908,7 +4030,7 @@
         return;
       }
       const resp = await fetchJsonSoft(
-        `/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}&aggregate=binance`
+        `/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}&aggregate=binance`
       );
       _lastCvdMerged = (resp && resp.supported && Array.isArray(resp.data)) ? resp.data : null;
       refreshCvdDisplay(lastCandles);
@@ -5165,11 +5287,11 @@
         : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
       // OI 仅合约支持；现货时直接传 spot，后端会回 supported:false，前端清空
       const oiFetch = fetchJsonSoft(
-        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}${oiAggregateParam()}`
+        `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}${oiAggregateParam()}`
       );
       // CVD 合并模式：仅合约 + 开关打开时拉多合约 delta；否则前端用主图 K 线派生
       const cvdFetch = (market === 'futures' && _cvdAggregate)
-        ? fetchJsonSoft(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${KLINE_LIMIT}&aggregate=binance`)
+        ? fetchJsonSoft(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}&aggregate=binance`)
         : Promise.resolve(null);
       // 🧲 清算磁极信号：仅 futures 有效（spot 无杠杆）。
       // 主峰窗口 / 价格范围 = 用户当前在"清算热图"卡片上的选择，确保信号
@@ -5443,9 +5565,10 @@
     toggleMinimize(target, btn);
   });
   els.symbol.addEventListener('change', () => {
-    // 换 symbol 时也要清空 OI / CVD 合并缓存，下一次 poll 才会拉新值
+    // 换 symbol 时也要清空 OI / CVD 合并缓存与历史 K 线缓冲，下一次 poll 才会拉新值
     _lastOiResp = null;
     _lastCvdMerged = null;
+    _histReset();
     _smartUpdateSeries(oiSeries, []);
     _smartUpdateSeries(oiCandleSeries, []);
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
@@ -5459,9 +5582,10 @@
   els.market.addEventListener('change', () => {
     enforceIntervalMarketCompat('market');
     refreshSubTitles();
-    // 切到现货时立刻清空 OI / CVD 合并旧数据，避免显示"上一个 symbol/market"的曲线
+    // 切到现货时立刻清空 OI / CVD 合并旧数据与历史 K 线缓冲
     _lastOiResp = null;
     _lastCvdMerged = null;
+    _histReset();
     _smartUpdateSeries(oiSeries, []);
     _smartUpdateSeries(oiCandleSeries, []);
     setObBaselineWindow(_obBaselineState.windowMs);
@@ -5474,8 +5598,10 @@
   els.interval.addEventListener('change', () => {
     enforceIntervalMarketCompat('interval');
     refreshSubTitles();
-    // 换周期后旧的合并 CVD delta（按旧 interval 的 openTime）失效，先清缓存
+    // 换周期后旧的合并 CVD delta（按旧 interval 的 openTime）失效，先清缓存；
+    // 历史 K 线缓冲同理（openTime 网格完全不同）
     _lastCvdMerged = null;
+    _histReset();
     markChartsNeedFit();
     poll();
     restartSSE();
