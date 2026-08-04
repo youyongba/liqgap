@@ -5381,7 +5381,7 @@
         obFetch,
         oiFetch,
         fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}&interval=${interval}`),
-        fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`),
+        fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}&interval=${interval}`),
         liqSignalFetch,
         cvdFetch
       ]);
@@ -5854,9 +5854,9 @@
       const alerts = currentAlertsData || { flags: {}, riskScore: 0 };
       
       // 如果没有指标快照，尝试从页面元素中抓取部分信息作为后备
-      const symbolInfo = snap.symbol 
-        ? `${snap.symbol} · ${snap.market}` 
-        : `${els.symbol.value.toUpperCase()} · ${els.market.value}`;
+      const symbolInfo = snap.symbol
+        ? `${snap.symbol} · ${snap.market} · ${snap.interval || els.interval.value}`
+        : `${els.symbol.value.toUpperCase()} · ${els.market.value} · ${els.interval.value}`;
         
       const sideStr = sig.signal === 'LONG' ? '🟢 做多 LONG' : (sig.signal === 'SHORT' ? '🔴 做空 SHORT' : '⚪ 无信号 NONE');
       
@@ -5986,6 +5986,8 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
 
         const payload = {
           symbol,
+          // 分析周期：信号快照里的周期优先（后端实际计算所用），回落图表当前选择
+          interval: snap.interval || els.interval.value || undefined,
           direction,
           entry_price: sig.entryPrice,
           stop_loss: sig.stopLoss,

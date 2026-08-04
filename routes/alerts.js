@@ -28,6 +28,13 @@ const { mean, stdev, correlation } = require('../indicators/stats');
 
 const router = express.Router();
 
+// Binance 支持的 K 线周期白名单（与 /api/trade/signal 一致，非法值回落 1h）
+const VALID_INTERVALS = new Set([
+  '1m', '3m', '5m', '15m', '30m',
+  '1h', '2h', '4h', '6h', '8h', '12h',
+  '1d', '3d', '1w', '1M'
+]);
+
 // 内存型滚动 spread 样本缓存（按 symbol+market 分组）
 // (Tiny in-memory rolling cache for spread samples per (symbol, market).)
 const spreadHistory = new Map();
@@ -44,11 +51,13 @@ router.get('/alerts/liquidity', async (req, res) => {
     const symbol = (req.query.symbol || 'BTCUSDT').toUpperCase();
     // 默认合约 (default to futures)
     const market = req.query.market === 'spot' ? 'spot' : 'futures';
+    // 预警跟随前端图表当前周期（VWAP 偏离 / CVD-价格背离 基于该周期计算）
+    const interval = VALID_INTERVALS.has(req.query.interval) ? req.query.interval : '1h';
 
     // 并行请求 K 线 / 订单簿 / 成交 / 日 K（用于 ILLIQ）
     // (Run all four data fetches in parallel.)
     const [klinesRaw, dailyRaw, book, trades] = await Promise.all([
-      BinanceService.getKlines(symbol, '1h', 50, market),
+      BinanceService.getKlines(symbol, interval, 50, market),
       BinanceService.getKlines(symbol, '1d', 30, market),
       BinanceService.getOrderBook(symbol, 100, market),
       BinanceService.getAggTrades(symbol, 500, market)
@@ -112,6 +121,7 @@ router.get('/alerts/liquidity', async (req, res) => {
       data: {
         symbol,
         market,
+        interval,
         flags,
         riskScore,
         details: {
