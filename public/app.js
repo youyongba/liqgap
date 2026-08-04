@@ -3668,7 +3668,11 @@
         text: 'VOID'
       });
     }
-    // 关键：setMarkers 会触发主图重绘并清掉 lightweight-charts 内部 hover
+    // 关键 ①：setMarkers 要求整个数组按 time 升序 —— FVG 与 VOID 两组
+    // 各自有序但拼接后整体乱序，lightweight-charts 内部按序二分决定视口内
+    // 画哪些标记，乱序会导致缩放/平移时历史标记时隐时现。统一排序修复。
+    markers.sort((a, b) => a.time - b.time);
+    // 关键 ②：setMarkers 会触发主图重绘并清掉 lightweight-charts 内部 hover
     // state（导致 X 轴 hover label 闪烁）。FVG / liquidity voids 在历史区间，
     // 短时间内不变，每秒 SSE 推一次完全没必要重设 markers。
     // 用 hash 缓存：相同则跳过。
