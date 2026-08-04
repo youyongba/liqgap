@@ -309,6 +309,13 @@ function buildSignalCard(payload, meta = {}) {
   const lines = [];
   lines.push(`**标的 / Symbol**: ${sym} · ${market === 'spot' ? '现货 / Spot' : '合约 / Futures'}`);
   if (interval) lines.push(`**周期 / Interval**: ${interval}`);
+  // FVG 假突破形态信号：标注形态名 + 被触发的 FVG 区间
+  if (snap.setup && snap.setup.label) {
+    lines.push(`**形态 / Setup**: ${escapeMd(snap.setup.label)}`);
+    if (snap.setup.fvg) {
+      lines.push(`**触发 FVG 区间**: \`${fmt(snap.setup.fvg.lower)}\` ~ \`${fmt(snap.setup.fvg.upper)}\``);
+    }
+  }
   lines.push(`**最新价 / Last**: ${fmt(snap.latestPrice)}`);
   lines.push('---');
   if (signal === 'NONE') {

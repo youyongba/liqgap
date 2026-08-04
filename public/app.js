@@ -4402,17 +4402,23 @@
   function renderSignal(sig) {
     currentSignalData = sig;
     const banner = els.signalBanner;
+    const setup = (sig.indicatorsSnapshot || {}).setup || null;
     banner.classList.remove('long', 'short', 'none');
     if (sig.signal === 'LONG') {
       banner.classList.add('long');
-      banner.textContent = '🟢 做多 LONG · 入场 / Enter Long';
+      banner.textContent = setup
+        ? '🟢 做多 LONG · FVG回踩收复 / FVG Reclaim'
+        : '🟢 做多 LONG · 入场 / Enter Long';
     } else if (sig.signal === 'SHORT') {
       banner.classList.add('short');
-      banner.textContent = '🔴 做空 SHORT · 入场 / Enter Short';
+      banner.textContent = setup
+        ? '🔴 做空 SHORT · FVG假突破回落 / FVG Reject'
+        : '🔴 做空 SHORT · 入场 / Enter Short';
     } else {
       banner.classList.add('none');
       banner.textContent = '⚪ 无信号 NONE · 暂无入场 / No Setup';
     }
+    banner.title = setup ? setup.label || '' : '';
     els.signalMeta.textContent = sig.indicatorsSnapshot
       ? [
           sig.indicatorsSnapshot.symbol,
@@ -4454,7 +4460,14 @@
       bearishFvg: '看跌 FVG / Bearish FVG',
       depthDominantSell: '深度比 < -0.6 / depthRatio<-0.6',
       cvdPriceDown: 'CVD↓ & 价↓ / CVD down & price down',
-      belowVwap: '价 < VWAP / price<VWAP'
+      belowVwap: '价 < VWAP / price<VWAP',
+      // FVG 假突破形态条件 (FVG sweep-reject setup conditions)
+      cvdRising: '⚡ CVD 上涨 / CVD rising',
+      cvdFalling: '⚡ CVD 下跌 / CVD falling',
+      oiRising: '⚡ 持仓量上涨 / OI rising',
+      fvgTriggered: '⚡ FVG 已被打进 / FVG tagged',
+      priceRejected: '⚡ 跌回 FVG 下方 / rejected back',
+      priceReclaimed: '⚡ 收回 FVG 上方 / reclaimed back'
     };
     function paintCond(target, conds) {
       target.innerHTML = '';
@@ -4465,8 +4478,12 @@
         target.appendChild(div);
       });
     }
-    paintCond(els.longConditions, longConds);
-    paintCond(els.shortConditions, shortConds);
+    // 形态条件叠加到对应方向的条件区（全部 ⚡ 前缀，与打分条件区分）
+    const setupConds = setup ? setup.conditions || {} : {};
+    paintCond(els.longConditions,
+      sig.signal === 'LONG' && setup ? { ...setupConds, ...longConds } : longConds);
+    paintCond(els.shortConditions,
+      sig.signal === 'SHORT' && setup ? { ...setupConds, ...shortConds } : shortConds);
 
     els.snapshot.innerHTML = '';
     const kv = (label, value) => {
@@ -4482,6 +4499,9 @@
     kv('价差 / Spread', fmt(snap.spread, 4));
     kv('累计成交量差值 / CVD', fmt(snap.cvd, 3));
     kv('CVD~价格相关性 / CVD~Price ρ', fmt(snap.cvdPriceCorr, 3));
+    if (snap.oiChangePct != null) {
+      kv('持仓量趋势 / OI trend', `${snap.oiRising ? '↑ 增仓' : '↓ 减仓'} (${snap.oiChangePct >= 0 ? '+' : ''}${Number(snap.oiChangePct).toFixed(2)}%)`);
+    }
     kv('最新非流动性 / ILLIQ (latest)', snap.latestIlliq == null ? '-' : Number(snap.latestIlliq).toExponential(2));
     kv('平均非流动性 / ILLIQ (μ)', snap.illiqMean == null ? '-' : Number(snap.illiqMean).toExponential(2));
     kv('多头评分 / Long Score', String(snap.longScore ?? '-'));
@@ -6008,7 +6028,10 @@ ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : 
           spread: snap.spread,
           cvd: snap.cvd,
           cvd_price_corr: snap.cvdPriceCorr,
-          illiq: snap.latestIlliq
+          illiq: snap.latestIlliq,
+          setup: snap.setup ? snap.setup.label : undefined,
+          oi_rising: snap.oiChangePct != null ? snap.oiRising : undefined,
+          oi_change_pct: snap.oiChangePct != null ? Number(snap.oiChangePct.toFixed(3)) : undefined
         };
 
         Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);

@@ -6,6 +6,16 @@
  * 综合多种流动性信号，输出 LONG / SHORT / NONE 交易计划。
  * (Combines several liquidity signals to issue LONG / SHORT / NONE trade plans.)
  *
+ * 两条出信号路径 (Two signal paths)：
+ *   1. FVG 假突破形态 (FVG sweep-reject setup · 优先级更高，仅合约)：
+ *      做空 = CVD↑ + OI↑（多头持续堆积）+ 价格上方的看跌 FVG 被打进
+ *             又跌回其下方（假突破受阻回落，堆积的多头变燃料）
+ *      做多 = CVD↓ + OI↑（空头持续堆积）+ 价格下方的看涨 FVG 被打进
+ *             又收回其上方（下探失败，堆积的空头被反杀）
+ *   2. 打分制 (score-based)：多/空各 5 项条件，≥3 项命中出信号
+ *   开仓价 = 最新价；止损 / 止盈1-3 全部基于**当前周期** ATR(14) 计算，
+ *   形态信号的止损锚定被触发的那个 FVG 远端 ± ATR×倍数。
+ *
  * 查询参数 (Query params · 全部可选 / all optional):
  *   symbol            默认 'BTCUSDT'
  *   market            'spot' | 'futures'，默认 'spot'
@@ -31,6 +41,7 @@
 
 const express = require('express');
 const { BinanceLive: BinanceService } = require('../services/binanceLive');
+const { BinanceService: BinanceRest } = require('../services/binance');
 const {
   normalizeKlines,
   computeVWAP,
@@ -54,6 +65,13 @@ const VALID_INTERVALS = new Set([
   '1d', '3d', '1w', '1M'
 ]);
 
+// K 线周期 → OI 历史统计周期（openInterestHist 只支持这几档，就近映射）
+const OI_PERIOD_MAP = {
+  '1m': '5m', '3m': '5m', '5m': '5m', '15m': '15m', '30m': '30m',
+  '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '6h', '12h': '12h',
+  '1d': '1d', '3d': '1d', '1w': '1d', '1M': '1d'
+};
+
 router.get('/trade/signal', async (req, res) => {
   try {
     const symbol = (req.query.symbol || 'BTCUSDT').toUpperCase();
@@ -72,11 +90,17 @@ router.get('/trade/signal', async (req, res) => {
     // latestPrice 不再单独走 ticker REST，直接从当前周期 K 线最后一根 close 派生，
     // 既避免无谓 weight 消耗（在被 IP 限流时尤其重要），
     // 又能复用 stream 缓存里的实时数据。
-    const [klinesRaw, dailyRaw, book, trades] = await Promise.all([
-      BinanceService.getKlines(symbol, interval, 20, market),
+    // K 线取 50 根：FVG 假突破形态需要更宽的历史扫描窗口（与 alerts 路由一致）
+    // OI 历史仅合约有，失败/现货 → null，不阻断信号计算，只是形态路径不触发
+    const oiPromise = market === 'futures'
+      ? BinanceRest.getOpenInterestHist(symbol, OI_PERIOD_MAP[interval] || '1h', 12).catch(() => null)
+      : Promise.resolve(null);
+    const [klinesRaw, dailyRaw, book, trades, oiHistRaw] = await Promise.all([
+      BinanceService.getKlines(symbol, interval, 50, market),
       BinanceService.getKlines(symbol, '1d', 30, market),
       BinanceService.getOrderBook(symbol, 100, market),
-      BinanceService.getAggTrades(symbol, 500, market)
+      BinanceService.getAggTrades(symbol, 500, market),
+      oiPromise
     ]);
 
     const candles = normalizeKlines(klinesRaw);
@@ -130,6 +154,22 @@ router.get('/trade/signal', async (req, res) => {
     const priceTrendUp = sum(priceChanges) > 0;
     const cvdTrendUp = sum(cvdChanges) > 0;
 
+    // ---- OI 持仓量趋势（近 6 个样本 · 币本位口径，避免价格涨跌污染名义价值）----
+    let oiRising = false;
+    let oiChangePct = null;
+    if (Array.isArray(oiHistRaw) && oiHistRaw.length >= 2) {
+      const coins = oiHistRaw
+        .map((r) => Number(r.sumOpenInterest))
+        .filter((v) => Number.isFinite(v));
+      if (coins.length >= 2) {
+        const n = Math.min(6, coins.length);
+        const first = coins[coins.length - n];
+        const last = coins[coins.length - 1];
+        oiRising = last > first;
+        if (first > 0) oiChangePct = (last / first - 1) * 100;
+      }
+    }
+
     // 流动性健康：ILLIQ 不高于 20 日均值 且 spread 不超 2 倍均值
     // (Liquidity health: ILLIQ below 20-day mean & spread within 2x mean.)
     const illiqValues = illiqSeries.map((d) => d.illiq);
@@ -170,19 +210,42 @@ router.get('/trade/signal', async (req, res) => {
     const longScore = countTrue(longConditions);
     const shortScore = countTrue(shortConditions);
 
+    // ---- FVG 假突破形态（优先级高于打分制 / Setup path first）----
+    // 做空：CVD↑ + OI↑ + 上方看跌 FVG 被打进又跌回下方
+    // 做多：CVD↓ + OI↑ + 下方看涨 FVG 被打进又收回上方
+    const setup = findFvgRejectSetup({ fvgs, candles, latestPrice, cvdTrendUp, oiRising });
+    const setupSnapshot = setup
+      ? {
+          name: setup.name,
+          label: setup.side === 'SHORT'
+            ? '看跌FVG假突破回落 · CVD↑+OI↑ 多头堆积受阻'
+            : '看涨FVG回踩收复 · CVD↓+OI↑ 空头堆积失效',
+          fvg: { lower: setup.fvg.lower, upper: setup.fvg.upper },
+          conditions: setup.side === 'SHORT'
+            ? { cvdRising: true, oiRising: true, fvgTriggered: true, priceRejected: true }
+            : { cvdFalling: true, oiRising: true, fvgTriggered: true, priceReclaimed: true }
+        }
+      : null;
+
     let signal = 'NONE';
-    if (longScore >= 3 && longScore >= shortScore) signal = 'LONG';
+    if (setup) signal = setup.side;
+    else if (longScore >= 3 && longScore >= shortScore) signal = 'LONG';
     else if (shortScore >= 3) signal = 'SHORT';
 
     if (signal === 'NONE') {
       return res.json({
         success: true,
         data: emptySignal('No actionable signal', {
+          symbol,
+          market,
+          interval,
           latestPrice,
           longScore,
           shortScore,
           longConditions,
           shortConditions,
+          oiRising,
+          oiChangePct,
           atr: lastAtr,
           vwap: lastVwap,
           depthRatio,
@@ -197,9 +260,11 @@ router.get('/trade/signal', async (req, res) => {
     const entryPrice = latestPrice || lastCandle.close;
     let stopLoss;
     if (signal === 'LONG') {
-      const fvg = recentBullishFvgs[recentBullishFvgs.length - 1];
+      // 形态信号优先锚定被触发的看涨 FVG；否则用近期 FVG / 摆动低点
+      const fvg = (setup && setup.side === 'LONG' && setup.fvg)
+        || recentBullishFvgs[recentBullishFvgs.length - 1];
       if (fvg) {
-        // 多头：最近看涨 FVG 下沿 - ATR×倍数
+        // 多头：FVG 下沿 - 当前周期 ATR×倍数
         stopLoss = fvg.lower - lastAtr * atrMultSL;
       } else {
         // 没 FVG 退化为近 5 根低点下方 1% 或 ATR
@@ -208,9 +273,11 @@ router.get('/trade/signal', async (req, res) => {
         stopLoss = Math.min(swingLow * 0.99, entryPrice - lastAtr * atrMultSL);
       }
     } else {
-      const fvg = recentBearishFvgs[recentBearishFvgs.length - 1];
+      // 形态信号优先锚定被触发的看跌 FVG；否则用近期 FVG / 摆动高点
+      const fvg = (setup && setup.side === 'SHORT' && setup.fvg)
+        || recentBearishFvgs[recentBearishFvgs.length - 1];
       if (fvg) {
-        // 空头：最近看跌 FVG 上沿 + ATR×倍数
+        // 空头：FVG 上沿 + 当前周期 ATR×倍数
         stopLoss = fvg.upper + lastAtr * atrMultSL;
       } else {
         const recentHighs = candles.slice(-5).map((c) => c.high);
@@ -282,6 +349,9 @@ router.get('/trade/signal', async (req, res) => {
         symbol,
         market,
         interval,
+        setup: setupSnapshot,
+        oiRising,
+        oiChangePct,
         latestPrice,
         atr: lastAtr,
         vwap: lastVwap,
@@ -319,7 +389,14 @@ router.get('/trade/signal', async (req, res) => {
         // (Mark first to dedupe under concurrent polls.)
         feishu.markNotified(symbol, market, signal);
         feishu
-          .sendSignalCard(signalData, { symbol, market, interval, triggerSource: `auto · ${verdict.reason}` })
+          .sendSignalCard(signalData, {
+            symbol,
+            market,
+            interval,
+            triggerSource: setup
+              ? `auto · ${setup.name} · ${verdict.reason}`
+              : `auto · ${verdict.reason}`
+          })
           .then((r) => {
             if (!r.ok && !r.skipped) {
               // eslint-disable-next-line no-console
@@ -360,6 +437,61 @@ function emptySignal(reason, snapshot) {
   };
 }
 
+/**
+ * FVG 假突破回落 / 回踩收复形态检测
+ * (FVG sweep-reject / sweep-reclaim setup detection.)
+ *
+ * 做空 (FVG_REJECT_SHORT)：
+ *   前提 CVD↑ + OI↑（多头一路追进），价格上方存在看跌 FVG，
+ *   最近 FVG_TOUCH_LOOKBACK 根 K 线内价格曾冲入该 FVG（high ≥ 下沿，
+ *   含瞬间插针），而当前收盘又跌回 FVG 下沿之下 —— 追多的堆积仓位
+ *   被闷在上方，转为下跌燃料。
+ * 做多 (FVG_RECLAIM_LONG)：镜像逻辑（CVD↓ + OI↑ + 下方看涨 FVG
+ *   被打进又收回上方，堆积的空头被反杀）。
+ *
+ * 触发必须发生在 FVG 形成之后（i > f.index + 1），避免用形成 FVG 的
+ * 那三根 K 线自身当"触发"。命中多个 FVG 时取离当前价最近的那个
+ * （最先构成阻力/支撑、也是止损锚定最紧的那个）。
+ */
+const FVG_TOUCH_LOOKBACK = 6;
+function findFvgRejectSetup({ fvgs, candles, latestPrice, cvdTrendUp, oiRising }) {
+  if (!Array.isArray(fvgs) || !fvgs.length) return null;
+  if (!Array.isArray(candles) || !candles.length) return null;
+  if (!Number.isFinite(latestPrice)) return null;
+  if (!oiRising) return null; // 两个方向都要求 OI 上涨（持仓堆积）
+
+  const lastIdx = candles.length - 1;
+  const fromIdx = Math.max(0, candles.length - FVG_TOUCH_LOOKBACK);
+
+  function touchedRecently(f, isBearish) {
+    for (let i = lastIdx; i >= fromIdx; i -= 1) {
+      if (i <= f.index + 1) break; // 只认 FVG 形成之后的触发
+      const c = candles[i];
+      if (isBearish ? c.high >= f.lower : c.low <= f.upper) return true;
+    }
+    return false;
+  }
+
+  if (cvdTrendUp) {
+    // 做空候选：上方看跌 FVG，被打进过，当前又收在下沿之下
+    const candidates = fvgs
+      .filter((f) => f.type === 'bearish' && latestPrice < f.lower && touchedRecently(f, true))
+      .sort((a, b) => a.lower - b.lower);
+    if (candidates.length) {
+      return { side: 'SHORT', name: 'FVG_REJECT_SHORT', fvg: candidates[0] };
+    }
+  } else {
+    // 做多候选：下方看涨 FVG，被打进过，当前又收在上沿之上
+    const candidates = fvgs
+      .filter((f) => f.type === 'bullish' && latestPrice > f.upper && touchedRecently(f, false))
+      .sort((a, b) => b.upper - a.upper);
+    if (candidates.length) {
+      return { side: 'LONG', name: 'FVG_RECLAIM_LONG', fvg: candidates[0] };
+    }
+  }
+  return null;
+}
+
 function sum(arr) {
   let s = 0;
   for (const v of arr) s += v;
@@ -388,3 +520,5 @@ function sampleCvdAtCandleClose(candles, cvdSeries) {
 }
 
 module.exports = router;
+// 供冒烟测试直接调用 (Exposed for smoke tests)
+module.exports._findFvgRejectSetup = findFvgRejectSetup;
