@@ -3499,6 +3499,51 @@
     return gaps;
   }
 
+  // 流动性空白识别（与后端 detectLiquidityVoids 同一算法）：
+  // 连续 ≥ minLength 根 K 线，影线区间整体重合度 ≤ overlapPct 的紧密整理段。
+  // 与 FVG 一样在前端对"历史缓冲 + 实时窗口"合并后的全量 K 线动态识别，
+  // 拖拽加载更早历史后旧区间的空白带也会即时补上。
+  function detectLiquidityVoidsClient(candles, minLength = 5, overlapPct = 0.005) {
+    if (!candles.length) return [];
+    const voids = [];
+    let runStart = 0;
+    let runHigh = candles[0].high;
+    let runLow = candles[0].low;
+
+    function flushRun(endExclusive) {
+      const length = endExclusive - runStart;
+      if (length < minLength) return;
+      const mid = (runHigh + runLow) / 2 || 1;
+      if ((runHigh - runLow) / mid <= overlapPct) {
+        voids.push({
+          startTime: candles[runStart].openTime,
+          endTime: candles[endExclusive - 1].closeTime,
+          lower: runLow,
+          upper: runHigh,
+          length
+        });
+      }
+    }
+
+    for (let i = 1; i < candles.length; i += 1) {
+      const c = candles[i];
+      const newHigh = Math.max(runHigh, c.high);
+      const newLow = Math.min(runLow, c.low);
+      const mid = (newHigh + newLow) / 2 || 1;
+      if ((newHigh - newLow) / mid <= overlapPct) {
+        runHigh = newHigh;
+        runLow = newLow;
+      } else {
+        flushRun(i);
+        runStart = i;
+        runHigh = c.high;
+        runLow = c.low;
+      }
+    }
+    flushRun(candles.length);
+    return voids;
+  }
+
   async function loadOlderCandles() {
     if (histState.loading || histState.noMore) return;
     if (!lastCandles.length) return;
@@ -3551,7 +3596,7 @@
   });
 
   function renderMain(klinesData) {
-    const { candles, liquidityVoids = [], summary } = klinesData;
+    const { candles, summary } = klinesData;
     if (!candles.length) return;
     // 记住最近一次数据源，供历史翻页加载后立即重绘（loadOlderCandles）
     renderMain._lastArgs = klinesData;
@@ -3591,6 +3636,8 @@
     // （历史缓冲 + 实时窗口）前端实时检测 —— 拖拽加载更早历史后，
     // 旧区间的上涨/下跌 FVG 会即时补上（与后端 detectFVGs 同一算法）。
     const fvgs = detectFVGsClient(merged);
+    // 流动性空白同样对全量已加载 K 线动态识别（不再依赖后端窗口内的结果）
+    const liquidityVoids = detectLiquidityVoidsClient(merged);
 
     // 在主 K 线上绘制 FVG / 流动性空白的标记
     // (Markers for FVGs and liquidity voids on the candle series.)
@@ -3610,7 +3657,9 @@
         text: 'FVG'
       });
     }
-    for (const v of liquidityVoids.slice(-8)) {
+    // 流动性空白全量画标记（紧密整理段本身稀少，500 上限只是安全阀）
+    const VOID_MARKER_CAP = 500;
+    for (const v of liquidityVoids.slice(-VOID_MARKER_CAP)) {
       markers.push({
         time: toLwSeconds(v.startTime),
         position: 'inBar',
@@ -4965,7 +5014,6 @@
     everReady: false,       // 是否至少 ready 过一次（用于决定 poll 是否还需要做主图 seed）
     candles: [],            // 由 SSE 推送维护的 K 线序列
     summary: null,
-    patterns: { fvgs: [], liquidityVoids: [] }, // 由 10s poll 维护
     renderTimer: null,
     lastBookAt: 0,
     lastKlineAt: 0,
@@ -5021,9 +5069,7 @@
       if (!isSSEDriving()) return;
       renderMain({
         candles: sseState.candles,
-        summary: sseState.summary || { symbol: '', market: '', interval: '', count: sseState.candles.length },
-        fvgs: sseState.patterns.fvgs,
-        liquidityVoids: sseState.patterns.liquidityVoids
+        summary: sseState.summary || { symbol: '', market: '', interval: '', count: sseState.candles.length }
       });
     }, SSE_RENDER_THROTTLE_MS);
   }
@@ -5115,9 +5161,7 @@
         startWatchdog();
         renderMain({
           candles: sseState.candles,
-          summary: sseState.summary,
-          fvgs: sseState.patterns.fvgs,
-          liquidityVoids: sseState.patterns.liquidityVoids
+          summary: sseState.summary
         });
         renderOrderBookFromSSE(d.book);
         setSSELiveStatus(' · snapshot OK');
@@ -5336,16 +5380,9 @@
 
       const failed = [];
       if (kData) {
-        if (sseOwns) {
-          // SSE 接管 K 线渲染：这里只更新 FVG / Liquidity Voids
-          // 当 SSE 此刻仍在推送时触发一次重绘把新 patterns 叠上去；
-          // SSE 断线期间不重绘，等重连后由 SSE 自己恢复。
-          sseState.patterns = {
-            fvgs: kData.fvgs || [],
-            liquidityVoids: kData.liquidityVoids || []
-          };
-          if (isSSEDriving()) scheduleSSERender();
-        } else {
+        // FVG / 流动性空白已全部由前端在 renderMain 里对合并后的
+        // 全量 K 线动态识别，poll 不再需要搬运后端 patterns。
+        if (!sseOwns) {
           // 启动后首屏：SSE 还没成功过，poll 负责一次性把主图 seed 出来
           renderMain(kData);
         }
