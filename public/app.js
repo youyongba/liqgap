@@ -4414,7 +4414,11 @@
       banner.textContent = '⚪ 无信号 NONE · 暂无入场 / No Setup';
     }
     els.signalMeta.textContent = sig.indicatorsSnapshot
-      ? `${sig.indicatorsSnapshot.symbol || ''} · ${sig.indicatorsSnapshot.market || ''}`
+      ? [
+          sig.indicatorsSnapshot.symbol,
+          sig.indicatorsSnapshot.market,
+          sig.indicatorsSnapshot.interval
+        ].filter(Boolean).join(' · ')
       : '';
 
     els.kvEntry.textContent = sig.entryPrice == null ? '-' : fmt(sig.entryPrice, 4);
@@ -5376,7 +5380,7 @@
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${KLINE_LIMIT}&market=${market}&detectPatterns=true`),
         obFetch,
         oiFetch,
-        fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}`),
+        fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}&interval=${interval}`),
         fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}`),
         liqSignalFetch,
         cvdFetch
@@ -5803,6 +5807,7 @@
         body: JSON.stringify({
           symbol: els.symbol.value.trim().toUpperCase() || 'BTCUSDT',
           market: els.market.value,
+          interval: els.interval.value,
           force: !!force
         })
       });

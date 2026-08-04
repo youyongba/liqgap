@@ -297,6 +297,7 @@ function buildSignalCard(payload, meta = {}) {
   const isShort = signal === 'SHORT';
   const sym = (meta.symbol || (payload.indicatorsSnapshot && payload.indicatorsSnapshot.symbol) || 'BTCUSDT').toUpperCase();
   const market = meta.market || (payload.indicatorsSnapshot && payload.indicatorsSnapshot.market) || 'futures';
+  const interval = meta.interval || (payload.indicatorsSnapshot && payload.indicatorsSnapshot.interval) || '';
   const sideArrow = isLong ? '🟢 LONG (做多)' : isShort ? '🔴 SHORT (做空)' : '⚪ NONE';
   const template = isLong ? 'green' : isShort ? 'red' : 'grey';
 
@@ -307,6 +308,7 @@ function buildSignalCard(payload, meta = {}) {
   // 主体内容 (Body content) —— 用 lark_md 富文本
   const lines = [];
   lines.push(`**标的 / Symbol**: ${sym} · ${market === 'spot' ? '现货 / Spot' : '合约 / Futures'}`);
+  if (interval) lines.push(`**周期 / Interval**: ${interval}`);
   lines.push(`**最新价 / Last**: ${fmt(snap.latestPrice)}`);
   lines.push('---');
   if (signal === 'NONE') {

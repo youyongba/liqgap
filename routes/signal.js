@@ -9,6 +9,8 @@
  * 查询参数 (Query params · 全部可选 / all optional):
  *   symbol            默认 'BTCUSDT'
  *   market            'spot' | 'futures'，默认 'spot'
+ *   interval          K 线周期，默认 '1h'。前端传图表当前周期，
+ *                     信号跟随所看周期计算（1h 图给 1h 信号，4h 图给 4h 信号）
  *   riskPercent       默认 1     （账户单笔风险 %）
  *   accountBalance    默认 1000  （报价币本位 USDT 等值）
  *   atrMultiplierSL   默认 1.5   （ATR 止损倍数）
@@ -45,11 +47,20 @@ const feishu = require('../services/feishu');
 
 const router = express.Router();
 
+// Binance 支持的 K 线周期白名单（防注入 / 打错参数直接回落 1h）
+const VALID_INTERVALS = new Set([
+  '1m', '3m', '5m', '15m', '30m',
+  '1h', '2h', '4h', '6h', '8h', '12h',
+  '1d', '3d', '1w', '1M'
+]);
+
 router.get('/trade/signal', async (req, res) => {
   try {
     const symbol = (req.query.symbol || 'BTCUSDT').toUpperCase();
     // 默认合约 (default to futures)
     const market = req.query.market === 'spot' ? 'spot' : 'futures';
+    // 信号跟随前端图表当前周期 (Signal follows the chart's active interval)
+    const interval = VALID_INTERVALS.has(req.query.interval) ? req.query.interval : '1h';
     const riskPercent = Number(req.query.riskPercent) || 1;
     const accountBalance = Number(req.query.accountBalance) || 1000;
     const atrMultSL = Number(req.query.atrMultiplierSL) || 1.5;
@@ -58,11 +69,11 @@ router.get('/trade/signal', async (req, res) => {
     const atrMultTP3 = Number(req.query.atrMultiplierTP3) || 5;
 
     // 一次性并行抓取所需数据 (Fetch all upstream data in parallel)
-    // latestPrice 不再单独走 ticker REST，直接从 1h K 线最后一根 close 派生，
+    // latestPrice 不再单独走 ticker REST，直接从当前周期 K 线最后一根 close 派生，
     // 既避免无谓 weight 消耗（在被 IP 限流时尤其重要），
     // 又能复用 stream 缓存里的实时数据。
     const [klinesRaw, dailyRaw, book, trades] = await Promise.all([
-      BinanceService.getKlines(symbol, '1h', 20, market),
+      BinanceService.getKlines(symbol, interval, 20, market),
       BinanceService.getKlines(symbol, '1d', 30, market),
       BinanceService.getOrderBook(symbol, 100, market),
       BinanceService.getAggTrades(symbol, 500, market)
@@ -75,7 +86,7 @@ router.get('/trade/signal', async (req, res) => {
     if (candles.length < 5) {
       return res.json({
         success: true,
-        data: emptySignal('Not enough kline data', { latestPrice })
+        data: emptySignal('Not enough kline data', { symbol, market, interval, latestPrice })
       });
     }
 
@@ -270,6 +281,7 @@ router.get('/trade/signal', async (req, res) => {
       indicatorsSnapshot: {
         symbol,
         market,
+        interval,
         latestPrice,
         atr: lastAtr,
         vwap: lastVwap,
@@ -307,7 +319,7 @@ router.get('/trade/signal', async (req, res) => {
         // (Mark first to dedupe under concurrent polls.)
         feishu.markNotified(symbol, market, signal);
         feishu
-          .sendSignalCard(signalData, { symbol, market, triggerSource: `auto · ${verdict.reason}` })
+          .sendSignalCard(signalData, { symbol, market, interval, triggerSource: `auto · ${verdict.reason}` })
           .then((r) => {
             if (!r.ok && !r.skipped) {
               // eslint-disable-next-line no-console

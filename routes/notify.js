@@ -84,14 +84,17 @@ router.post('/notify/signal', async (req, res) => {
   const body = req.body || {};
   const symbol = String(body.symbol || 'BTCUSDT').toUpperCase();
   const market = body.market === 'spot' ? 'spot' : 'futures';
+  const interval = body.interval ? String(body.interval) : '';
   const force = body.force === true || body.force === 'true';
 
   // 反向调用 /api/trade/signal · notify=false 防止递归推送
+  // interval 透传给信号端点（白名单校验在信号端点内做，非法值回落 1h）
   const params = new URLSearchParams({
     symbol,
     market,
     notify: 'false'
   });
+  if (interval) params.set('interval', interval);
   if (body.accountBalance != null) params.set('accountBalance', String(body.accountBalance));
   if (body.riskPercent != null) params.set('riskPercent', String(body.riskPercent));
   const port = process.env.PORT || 3000;
@@ -144,6 +147,7 @@ router.post('/notify/signal', async (req, res) => {
   const r = await feishu.sendSignalCard(data, {
     symbol,
     market,
+    interval: interval || undefined,
     triggerSource: force ? 'manual force' : `manual · ${verdict.reason}`
   });
   if (r.ok) {
