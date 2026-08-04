@@ -26,9 +26,8 @@
     mainChart: document.getElementById('main-chart'),
     volumePane: document.getElementById('volume-pane'),
     cvdPane: document.getElementById('cvd-pane'),
-    // CVD 与持仓量已合并到同一个 pane（cvd-pane）；oiPane 指向同一元素，
-    // 兼容下游所有 els.oiPane 引用，无需逐处删改。
-    oiPane: document.getElementById('cvd-pane'),
+    // 同一副图模块内上下拆分：oi-pane 在上（持仓量），cvd-pane 在下（CVD）
+    oiPane: document.getElementById('oi-pane'),
     orderbookCanvas: document.getElementById('orderbook-chart'),
     mainMeta: document.getElementById('main-meta'),
     signalBanner: document.getElementById('signal-banner'),
@@ -275,8 +274,8 @@
     const itvLab = intervalLabel(itv);
     const market = els.market ? els.market.value : 'futures';
     if (els.volTitle) els.volTitle.textContent = `成交量 / Volume · ${itvLab}`;
-    // CVD + 持仓量 合并图：标题保持简洁，各档位由头部按钮自身文案体现
-    if (els.cvdTitle) els.cvdTitle.textContent = `CVD(左) + 持仓量(右) · ${itvLab}`;
+    // 持仓量(上) + CVD(下) 上下拆分图：标题保持简洁，各档位由头部按钮自身文案体现
+    if (els.cvdTitle) els.cvdTitle.textContent = `持仓量(上) + CVD(下) · ${itvLab}`;
     if (els.obTitle)  els.obTitle.textContent  = `订单簿深度图 / Order Book Depth · 前 ${obDepthForInterval(itv)} 档`;
     if (els.oiTitle) {
       if (market !== 'futures') {
@@ -403,10 +402,9 @@
     priceFormat: { type: 'volume' }
   });
 
-  // ---- 副图：CVD + 持仓量 合并图 (Combined CVD + Open Interest chart) ----
-  // 同一张图、双纵轴：CVD 走左轴（绿线），持仓量 OI 走右轴（橙面积 / 红绿 K 线）。
-  // 两者尺度差异大（CVD ~ ±B、OI ~ 10B），分轴才能各自读数清晰；
-  // 共用同一条时间轴，配合判断资金方向：
+  // ---- 副图：持仓量(上) + CVD(下) 上下拆分 (Stacked OI-over-CVD charts) ----
+  // 同一个副图模块内两张图上下排列：上 = 持仓量 OI（隐藏时间轴省空间），
+  // 下 = CVD（显示时间轴）。两图时间轴 / 十字线联动，配合判断资金方向：
   //   OI ↑ + CVD ↓ → 新空单进场 (short build-up)
   //   OI ↑ + CVD ↑ → 新多单进场 (long build-up)
   //   OI ↓ + CVD ↑ → 空头平仓 (short covering)
@@ -423,8 +421,7 @@
       borderColor: '#1f2837',
       tickMarkFormatter: lwTickFormatter
     },
-    rightPriceScale: { borderColor: '#1f2837', visible: true },  // 右轴 = 持仓量 OI
-    leftPriceScale: { borderColor: '#1f2837', visible: true },   // 左轴 = CVD
+    rightPriceScale: { borderColor: '#1f2837' },
     localization: lwLocalization
   });
   // CVD 纵轴 / 十字线数值格式化：带符号的紧凑缩写（K/M/B），避免出现
@@ -445,28 +442,40 @@
   const cvdSeries = cvdChart.addLineSeries({
     color: '#4ade80',
     lineWidth: 2,
-    priceScaleId: 'left',  // CVD 走左轴
     priceFormat: { type: 'custom', formatter: _cvdCompact, minMove: 0.01 }
   });
 
-  // ---- 持仓量 OI 系列：与 CVD 共用同一张图，走右轴 ----
-  // oiChart 复用 cvdChart（合并为一个模块），所有引用 oiChart 的下游逻辑
-  // （resize / 时间轴同步 / 十字线）自动作用在同一张图上。
-  const oiChart = cvdChart;
+  // ---- 持仓量 OI：上方独立图 ----
+  // 时间轴隐藏（visible:false），由下方 CVD 图统一显示时间标签；
+  // 隐藏的时间轴仍参与 allTimeScales 联动（setVisibleRange 照常生效）。
+  const oiChart = LightweightCharts.createChart(els.oiPane, {
+    layout: { background: { color: 'transparent' }, textColor: '#9aa7b8' },
+    grid: {
+      vertLines: { color: '#1f2837' },
+      horzLines: { color: '#1f2837' }
+    },
+    timeScale: {
+      visible: false,
+      timeVisible: true,
+      secondsVisible: false,
+      borderColor: '#1f2837',
+      tickMarkFormatter: lwTickFormatter
+    },
+    rightPriceScale: { borderColor: '#1f2837' },
+    localization: lwLocalization
+  });
   // 半透明面积线，颜色与 CVD 区分（橙色），强调"持仓量"金额维度
   const oiSeries = oiChart.addAreaSeries({
     lineColor: '#fbbf24',
     topColor: 'rgba(251, 191, 36, 0.35)',
     bottomColor: 'rgba(251, 191, 36, 0.02)',
     lineWidth: 2,
-    priceScaleId: 'right',  // OI 走右轴
     priceFormat: { type: 'volume' }
   });
   // 持仓量 K 线：用相邻周期合成 OHLC（open=上一周期 OI，close=本周期 OI）
   //   close ≥ open → 绿（增仓）；close < open → 红（减仓）
   // 与面积图共用同一价格刻度（右轴），通过 visible 切换显示，默认显示 K 线。
   const oiCandleSeries = oiChart.addCandlestickSeries({
-    priceScaleId: 'right',
     upColor: '#22c55e',
     downColor: '#ef4444',
     borderUpColor: '#22c55e',
@@ -482,7 +491,7 @@
     mainChart.resize(els.mainChart.clientWidth, els.mainChart.clientHeight);
     volumeChart.resize(els.volumePane.clientWidth, els.volumePane.clientHeight);
     cvdChart.resize(els.cvdPane.clientWidth, els.cvdPane.clientHeight);
-    // oiChart === cvdChart（合并图），无需再次 resize
+    oiChart.resize(els.oiPane.clientWidth, els.oiPane.clientHeight);
   }
   window.addEventListener('resize', fitCharts);
 
@@ -515,7 +524,7 @@
   _attachChartResizeObserver(els.mainChart,  () => _safeResize(mainChart,  els.mainChart.clientWidth,   els.mainChart.clientHeight));
   _attachChartResizeObserver(els.volumePane, () => _safeResize(volumeChart, els.volumePane.clientWidth, els.volumePane.clientHeight));
   _attachChartResizeObserver(els.cvdPane,    () => _safeResize(cvdChart,    els.cvdPane.clientWidth,    els.cvdPane.clientHeight));
-  // oiChart === cvdChart（合并图），cvdPane 的 observer 已覆盖，无需重复监听
+  _attachChartResizeObserver(els.oiPane,     () => _safeResize(oiChart,     els.oiPane.clientWidth,     els.oiPane.clientHeight));
   // Chart.js orderbook：监控 canvas 父元素 (.pane-body)，显式带 w/h resize
   // 否则 Chart.js 内部 ResizeObserver 偶尔漏更新会导致 canvas 像素缓冲区
   // 与 CSS 显示尺寸不一致 → 全屏退出后 chart 内容只画在右上角 / 缩在一角。
@@ -545,7 +554,8 @@
   const allTimeScales = [
     mainChart.timeScale(),
     volumeChart.timeScale(),
-    cvdChart.timeScale()  // oiChart === cvdChart，时间轴同一条
+    cvdChart.timeScale(),
+    oiChart.timeScale()  // 时间轴隐藏但仍参与联动
   ];
   let _syncingTime = false;
   function _broadcastTimeRange(srcScale, range) {
@@ -579,7 +589,7 @@
     if (!range) return;
     _syncingTime = true;
     try {
-      for (const ts of [volumeChart.timeScale(), cvdChart.timeScale()]) {
+      for (const ts of [volumeChart.timeScale(), cvdChart.timeScale(), oiChart.timeScale()]) {
         try { ts.setVisibleRange(range); } catch (_) { /* empty data */ }
       }
     } finally {
@@ -2459,8 +2469,8 @@
   const _crossPairs = [
     { chart: mainChart,   series: candleSeries,  container: els.mainChart  },
     { chart: volumeChart, series: volumeSeries,  container: els.volumePane },
-    { chart: cvdChart,    series: cvdSeries,     container: els.cvdPane    }
-    // oiChart === cvdChart（合并图），共用上面这一项，避免十字线重复绑定
+    { chart: cvdChart,    series: cvdSeries,     container: els.cvdPane    },
+    { chart: oiChart,     series: oiCandleSeries, container: els.oiPane    }
   ];
   let _syncingCrosshair = false;
   // 跟踪鼠标"真实"是否 hover 在 chart 上。Lightweight Charts 在数据 update

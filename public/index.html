@@ -322,6 +322,23 @@
         position: relative;
         min-height: 0;
       }
+      /* 上下拆分容器（OI 上 / CVD 下）：两块各占一半，中间细分隔线 */
+      .pane-body-split {
+        display: flex;
+        flex-direction: column;
+      }
+      .pane-body-split .split-chart {
+        flex: 1;
+        min-height: 0;
+        min-width: 0;
+        position: relative;
+      }
+      .pane-body-split .split-chart + .split-chart {
+        border-top: 1px solid var(--border);
+      }
+      .pane-body-split .split-chart > div > canvas {
+        max-width: 100%;
+      }
       #signal-card { overflow-y: auto; }
 
       .signal-banner {
@@ -1061,7 +1078,7 @@
           </div>
           <div class="sub-pane" data-pane="cvd" id="sub-pane-cvd">
             <div class="sub-pane-header">
-              <h3 id="cvd-title">CVD(左) + 持仓量(右) / CVD + OI</h3>
+              <h3 id="cvd-title">持仓量(上) + CVD(下) / OI + CVD</h3>
               <button class="oi-unit-btn" id="cvd-scope-toggle" type="button"
                       title="CVD 统计范围：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）。">CVD合并</button>
               <button class="oi-unit-btn" id="cvd-unit-toggle" type="button"
@@ -1075,7 +1092,11 @@
               <button class="min-btn" type="button" data-min-target="sub-pane-cvd" title="最小化 / Minimize">⊟</button>
               <button class="fs-btn" type="button" data-fs-target="sub-pane-cvd" title="此图全屏 / Fullscreen (Esc 退出)">⛶</button>
             </div>
-            <div class="pane-body" id="cvd-pane"></div>
+            <!-- 上下拆分：上 = 持仓量 OI（隐藏时间轴），下 = CVD（显示时间轴），时间轴联动 -->
+            <div class="pane-body pane-body-split">
+              <div class="split-chart" id="oi-pane"></div>
+              <div class="split-chart" id="cvd-pane"></div>
+            </div>
           </div>
           <div class="sub-pane" data-pane="ob" id="sub-pane-ob">
             <div class="sub-pane-header">
