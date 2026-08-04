@@ -331,24 +331,32 @@
   // 给状态栏/小时间戳用：HH:mm:ss (BJ)
   function nowBJTimeHMS() { return fmtBJTimeHMS(Date.now()); }
 
+  // 星期几（东八区），用于时间轴日期刻度和十字线浮窗
+  const _WEEKDAYS_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+  function bjWeekday(ms) { return _WEEKDAYS_CN[_bjShift(ms).getUTCDay()]; }
+
   // lightweight-charts 时间轴 tick 格式化：
   // tickMarkType 枚举 0=Year, 1=Month, 2=DayOfMonth, 3=Time, 4=TimeWithSeconds
+  // 日期级刻度（跨日边界）带星期几；小时/分钟刻度保持简短不加。
   function lwTickFormatter(timeSec, tickMarkType) {
     const ms = Number(timeSec) * 1000;
     const d = _bjShift(ms);
     switch (Number(tickMarkType)) {
       case 0: return String(d.getUTCFullYear());
       case 1: return `${d.getUTCFullYear()}-${_pad2(d.getUTCMonth() + 1)}`;
-      case 2: return `${_pad2(d.getUTCMonth() + 1)}-${_pad2(d.getUTCDate())}`;
+      case 2: return `${_pad2(d.getUTCMonth() + 1)}-${_pad2(d.getUTCDate())} ${bjWeekday(ms)}`;
       case 3: return `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}`;
       case 4:
       default:
         return `${_pad2(d.getUTCHours())}:${_pad2(d.getUTCMinutes())}:${_pad2(d.getUTCSeconds())}`;
     }
   }
-  // crosshair 浮窗里的时间 (整段 datetime)
+  // crosshair 浮窗里的时间 (整段 datetime + 星期几)
   const lwLocalization = {
-    timeFormatter: (timeSec) => fmtBJDateTime(Number(timeSec) * 1000),
+    timeFormatter: (timeSec) => {
+      const ms = Number(timeSec) * 1000;
+      return `${fmtBJDateTime(ms)} ${bjWeekday(ms)}`;
+    },
     dateFormat: 'yyyy-MM-dd'
   };
 
@@ -3586,9 +3594,11 @@
 
     // 在主 K 线上绘制 FVG / 流动性空白的标记
     // (Markers for FVGs and liquidity voids on the candle series.)
-    // 历史动态加载后 FVG 会很多：箭头标记最多 60 个、区间上下沿最多 8 个（都取最近的）。
-    const FVG_MARKER_CAP = 60;   // FVG 箭头标记最多显示数量
-    const FVG_ZONE_CAP = 8;      // FVG 区间上下沿（价格线）最多显示数量
+    // 历史 FVG 全量画箭头标记：拖拽加载多少历史，就标多少（识别与显示同步扩展）。
+    // 上限只是内存/渲染安全阀（5200 根 K 线的 FVG 通常 ~1300 个，远够）；
+    // setMarkers 有 hash 缓存，数据不变不会重复重绘。
+    const FVG_MARKER_CAP = 2000; // FVG 箭头标记安全上限
+    const FVG_ZONE_CAP = 8;      // FVG 区间上下沿（价格线）只画最近几个，避免横线铺满全图
     const markers = [];
     for (const f of fvgs.slice(-FVG_MARKER_CAP)) {
       const ts = toLwSeconds(f.startTime);
