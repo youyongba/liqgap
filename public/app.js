@@ -734,7 +734,7 @@
       return factor * exp;
     }
 
-    function _draw() {
+    function _draw(offsetX = 0) {
       if (!ctx) return;
       const W = state.cssWidth, H = state.cssHeight;
       ctx.clearRect(0, 0, W, H);
@@ -756,6 +756,14 @@
       const cellW = pw / T;
       const cellH = ph / P;
 
+      // === 以下内容随鼠标拖动进行视觉平移 ===
+      ctx.save();
+      ctx.beginPath();
+      // 向下稍微放宽一点 clip 区域，以便把底部的"时间刻度"也一起平移
+      ctx.rect(ox, oy, pw, ph + 20);
+      ctx.clip();
+      ctx.translate(offsetX, 0);
+
       // 色块：合并 bid+ask 取较大值（同价位通常只会有一边有挂单）
       const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
       for (let ti = 0; ti < T; ti += 1) {
@@ -775,11 +783,6 @@
 
     // ---- (1.5) K线叠加 (Overlay K-lines) -------------------
     if (state.heatmapKlines && state.heatmapKlines.length > 0) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(ox, oy, pw, ph);
-      ctx.clip();
-
       let intervalMs = 60000;
       if (state.heatmapKlines.length > 1) {
           intervalMs = Number(state.heatmapKlines[1].openTime) - Number(state.heatmapKlines[0].openTime);
@@ -820,7 +823,6 @@
         
         ctx.fillRect(x - hw, bodyTop, hw * 2, bodyHeight);
       }
-      ctx.restore();
     }
 
       // ---- (2) 水平价格 grid（暗色虚线） ---------------------
@@ -921,17 +923,30 @@
       ctx.lineWidth = 1;
       ctx.strokeRect(ox + 0.5, oy + 0.5, pw, ph);
 
-      if (state.hoverCell) {
+      if (state.hoverCell && !isDragging) {
         const { ti, pi } = state.hoverCell;
         if (ti >= 0 && ti < T && pi >= 0 && pi < P) {
-          const x = ox + ti * cellW;
+          const x = ox + offsetX + ti * cellW;
           const y = oy + (P - 1 - pi) * cellH;
-          ctx.save();
-          ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-          ctx.lineWidth = 1.5;
-          ctx.strokeRect(x + 0.5, y + 0.5, cellW, cellH);
-          ctx.restore();
+          if (x >= ox && x <= ox + pw) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(x + 0.5, y + 0.5, cellW, cellH);
+            ctx.restore();
+          }
         }
+      }
+      
+      // 如果有平移，右上角绘制一个复位小提示
+      if (state.dragPanMs > 0 && !isDragging) {
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.15)';
+        ctx.fillRect(ox + pw - 90, oy + 4, 86, 20);
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = '11px ui-monospace, SFMono-Regular';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('双击复位 (Reset)', ox + pw - 47, oy + 14);
       }
     }
 
@@ -954,11 +969,13 @@
     let isDragging = false;
     let dragStartX = 0;
     let dragStartPan = 0;
+    let dragOffsetPx = 0;
 
     canvas.addEventListener('mousedown', (e) => {
       isDragging = true;
       dragStartX = e.clientX;
       dragStartPan = state.dragPanMs || 0;
+      dragOffsetPx = 0;
       canvas.style.cursor = 'grabbing';
     });
 
@@ -966,18 +983,21 @@
       if (isDragging) {
         isDragging = false;
         canvas.style.cursor = 'crosshair';
-        scheduleFetch(0);
+        if (Math.abs(dragOffsetPx) > 0) {
+          const msPerPixel = state.windowMs / state.plot.w;
+          state.dragPanMs = dragStartPan + dragOffsetPx * msPerPixel;
+          if (state.dragPanMs < 0) state.dragPanMs = 0;
+          dragOffsetPx = 0;
+          scheduleFetch(0);
+        }
       }
     });
 
     canvas.addEventListener('mousemove', (e) => {
       if (isDragging) {
-        const dx = e.clientX - dragStartX;
-        const msPerPixel = state.windowMs / state.plot.w;
-        state.dragPanMs = dragStartPan + dx * msPerPixel;
-        if (state.dragPanMs < 0) state.dragPanMs = 0;
-        // 在拖动期间，先粗略更新偏移，延迟拉取真实数据
-        scheduleFetch(200);
+        dragOffsetPx = e.clientX - dragStartX;
+        // 拖动时，只做视觉平移，不发请求，实现 60fps 丝滑拖拽
+        _draw(dragOffsetPx);
         return;
       }
       
@@ -1010,6 +1030,14 @@
       tooltip.style.top  = ttY + 'px';
       _draw();
     });
+    canvas.addEventListener('dblclick', () => {
+      state.dragPanMs = 0;
+      state.windowMs = Number(els.heatmapWindow ? els.heatmapWindow.value : 3_600_000) || 3_600_000;
+      if (els.heatmapRange) els.heatmapRange.value = 'auto';
+      state.priceRange = 'auto';
+      scheduleFetch(0);
+    });
+
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const zoomFactor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
