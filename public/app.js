@@ -986,7 +986,7 @@
         if (Math.abs(dragOffsetPx) > 0) {
           const msPerPixel = state.windowMs / state.plot.w;
           state.dragPanMs = dragStartPan + dragOffsetPx * msPerPixel;
-          if (state.dragPanMs < 0) state.dragPanMs = 0;
+          if (state.dragPanMs < -state.windowMs * 0.8) state.dragPanMs = -state.windowMs * 0.8;
           dragOffsetPx = 0;
           scheduleFetch(0);
         }
@@ -1038,19 +1038,94 @@
       scheduleFetch(0);
     });
 
-    // 移除之前的滚轮缩放周期功能，改为支持触控板/滚轮的平移（拖拽）
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      // 使用触控板双指滑动或鼠标滚轮进行平移
-      const dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
-      if (Math.abs(dx) > 0) {
-        const msPerPixel = state.windowMs / state.plot.w;
-        // deltaX > 0 表示向右滚动，图表向左移动，查看未来，所以 dragPanMs 减小
-        state.dragPanMs -= dx * msPerPixel;
-        if (state.dragPanMs < 0) state.dragPanMs = 0;
-        scheduleFetch(150);
+      
+      const isZoom = e.ctrlKey || e.metaKey || (!e.deltaX && !e.shiftKey && Math.abs(e.deltaY) > 0);
+      
+      if (isZoom) {
+        // 放大缩小 (Zoom)
+        const zoomFactor = e.deltaY > 0 ? 1.1 : 1 / 1.1;
+        const oldWindowMs = state.windowMs;
+        const newWindowMs = Math.max(5 * 60_000, Math.min(180 * 86400_000, oldWindowMs * zoomFactor));
+        
+        // 保持鼠标所在位置的时间不变 (Zoom around cursor)
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const { x: ox, w: pw } = state.plot;
+        if (x >= ox && x <= ox + pw) {
+          const ratio = (x - ox) / pw;
+          state.dragPanMs += (1 - ratio) * (oldWindowMs - newWindowMs);
+        }
+        
+        state.windowMs = newWindowMs;
+        if (state.dragPanMs < -state.windowMs * 0.8) state.dragPanMs = -state.windowMs * 0.8;
+        scheduleFetch(50);
+      } else {
+        // 使用触控板双指滑动进行平移
+        const dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+        if (Math.abs(dx) > 0) {
+          const msPerPixel = state.windowMs / state.plot.w;
+          state.dragPanMs -= dx * msPerPixel;
+          if (state.dragPanMs < -state.windowMs * 0.8) state.dragPanMs = -state.windowMs * 0.8;
+          scheduleFetch(150);
+        }
       }
     });
+
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const y = e.clientY - rect.top;
+      const { y: oy, h: ph } = state.plot;
+      const d = state.data;
+      if (d && y >= oy && y <= oy + ph) {
+        const price = d.priceMax - ((y - oy) / ph) * (d.priceMax - d.priceMin);
+        const priceStr = price >= 1000 ? price.toFixed(1) : price.toFixed(4);
+        
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(priceStr).then(() => {
+            _showToast(`已复制价格: ${priceStr}`);
+          });
+        } else {
+          // fallback
+          const textArea = document.createElement("textarea");
+          textArea.value = priceStr;
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand("Copy");
+          textArea.remove();
+          _showToast(`已复制价格: ${priceStr}`);
+        }
+      }
+    });
+
+    function _showToast(msg) {
+      let toast = document.getElementById('heatmap-toast');
+      if (!toast) {
+        toast = document.createElement('div');
+        toast.id = 'heatmap-toast';
+        toast.style.position = 'absolute';
+        toast.style.top = '10px';
+        toast.style.right = '10px';
+        toast.style.background = 'rgba(11, 14, 22, 0.9)';
+        toast.style.color = '#4ade80';
+        toast.style.padding = '8px 16px';
+        toast.style.borderRadius = '4px';
+        toast.style.fontFamily = 'ui-monospace, SFMono-Regular, monospace';
+        toast.style.fontSize = '12px';
+        toast.style.zIndex = '9999';
+        toast.style.pointerEvents = 'none';
+        toast.style.transition = 'opacity 0.3s';
+        toast.style.border = '1px solid rgba(74, 222, 128, 0.3)';
+        canvas.parentElement.appendChild(toast);
+      }
+      toast.textContent = msg;
+      toast.style.opacity = '1';
+      setTimeout(() => {
+        toast.style.opacity = '0';
+      }, 1500);
+    }
 
     canvas.addEventListener('mouseleave', () => {
       state.hoverCell = null;
