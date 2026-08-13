@@ -1038,25 +1038,18 @@
       scheduleFetch(0);
     });
 
+    // 移除之前的滚轮缩放周期功能，改为支持触控板/滚轮的平移（拖拽）
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const zoomFactor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
-      const newWindow = state.windowMs * zoomFactor;
-      
-      // 限制最小 15m，最大 3mo
-      const minW = 15 * 60_000;
-      const maxW = 90 * 86400_000;
-      state.windowMs = Math.max(minW, Math.min(maxW, newWindow));
-      
-      // 同步到 select 控件 (如果有匹配的，否则显示 custom 也可以，或者就让它脱离 select)
-      if (els.heatmapWindow) {
-        // 如果正好等于某个选项，就选中它
-        const opts = Array.from(els.heatmapWindow.options);
-        const match = opts.find(o => Math.abs(Number(o.value) - state.windowMs) < 1000);
-        if (match) els.heatmapWindow.value = match.value;
+      // 使用触控板双指滑动或鼠标滚轮进行平移
+      const dx = e.deltaX || (e.shiftKey ? e.deltaY : 0);
+      if (Math.abs(dx) > 0) {
+        const msPerPixel = state.windowMs / state.plot.w;
+        // deltaX > 0 表示向右滚动，图表向左移动，查看未来，所以 dragPanMs 减小
+        state.dragPanMs -= dx * msPerPixel;
+        if (state.dragPanMs < 0) state.dragPanMs = 0;
+        scheduleFetch(150);
       }
-      
-      scheduleFetch(200);
     });
 
     canvas.addEventListener('mouseleave', () => {
