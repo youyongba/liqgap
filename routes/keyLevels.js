@@ -17,6 +17,9 @@
  *       - 买单墙（中价下方最强 bid 挂单价位）
  *       - 卖单墙（中价上方最强 ask 挂单价位）
  *     聚合口径与 /api/orderbook/heatmap 一致（USDT 名义额跨快照取 max）。
+ *   • 建议开仓区 (entryZones)：把以上全部价位按现价上下分成支撑/阻力，
+ *     贪心聚类（间隔≤0.5%）+ 加权打分（周期×类型），各取共振最强的一簇
+ *     作为做多 / 做空开仓价格区间，附依据因子列表与总分。
  *
  * 性能设计 (Performance)：
  *   • K 线复用：4 个热图窗口只发 2 次 K 线请求（1m×245 覆盖 15m/1h/4h 切片，
@@ -214,6 +217,129 @@ function _computeIntervalLevels(interval, raw) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// 建议开仓区 (Entry Zones)：多因子价位聚类
+// ---------------------------------------------------------------------------
+
+// 各因子权重 = 周期权重 × 类型系数。周期越长越重要；清算主峰是磁极
+// （价格倾向先扫过去），权重最高；VWAP 只是均值回归参考，权重最低。
+const _ZONE_TF_WEIGHT = { '15m': 1, '1h': 1.5, '4h': 2.5, '1d': 3, '24h': 3 };
+const _ZONE_TYPE_FACTOR = { liq: 1.2, wall: 1.0, fvg: 1.0, poc: 0.8, vwap: 0.6 };
+// 距现价超过该比例的价位不参与聚类（太远，不是"开仓区"级别的位置）
+const _ZONE_MAX_DIST = 0.06;
+// 相邻价位间隔 ≤ 现价×该比例 → 归为同一簇
+const _ZONE_CLUSTER_GAP = 0.005;
+// 簇总分低于该值 → 共振不足，不给区间
+const _ZONE_MIN_SCORE = 2.5;
+// 输出区间最大宽度（现价比例），超过则围绕加权中心收窄
+const _ZONE_MAX_WIDTH = 0.012;
+
+/**
+ * 根据 Key Levels 全部因子给出做多 / 做空开仓价格区间。
+ *
+ * 算法：
+ *   1. 收集候选价位并分边：现价下方=支撑（做多），上方=阻力（做空）
+ *      - 看涨 FVG（整体在现价下方）/ 看跌 FVG（整体在上方）→ 区间因子
+ *      - POC / VWAP → 按中点分边
+ *      - 清算主峰 L↓（下方）/ S↑（上方）
+ *      - 买单墙（下方）/ 卖单墙（上方）
+ *   2. 每边按代表价排序，间隔 ≤ 0.5% 贪心合簇
+ *   3. 取总分最高的簇：区间 = 簇内价位/区间的 min~max（>1.2% 时围绕
+ *      加权中心收窄），依据 = 簇内因子标签（按权重降序）
+ */
+function _computeEntryZones({ latestPrice, intervals, liqWindows, obWalls }) {
+  if (!Number.isFinite(latestPrice) || latestPrice <= 0) return { long: null, short: null };
+  const px = latestPrice;
+  const support = []; // 做多候选（现价下方）
+  const resist = [];  // 做空候选（现价上方）
+
+  function add(list, rep, lo, hi, tf, type, label) {
+    if (!Number.isFinite(rep) || rep <= 0) return;
+    if (Math.abs(rep - px) / px > _ZONE_MAX_DIST) return;
+    const weight = (_ZONE_TF_WEIGHT[tf] || 1) * (_ZONE_TYPE_FACTOR[type] || 1);
+    list.push({ rep, lo: Number.isFinite(lo) ? lo : rep, hi: Number.isFinite(hi) ? hi : rep, weight, label });
+  }
+
+  for (const it of intervals || []) {
+    if (!it.ok) continue;
+    const tf = it.interval;
+    // FVG：整体在现价一侧才算（跨现价的 FVG 已被触发一半，不作开仓依据）
+    if (it.bullFvg && it.bullFvg.upper < px) {
+      add(support, (it.bullFvg.lower + it.bullFvg.upper) / 2, it.bullFvg.lower, it.bullFvg.upper, tf, 'fvg', `${tf}看涨FVG`);
+    }
+    if (it.bearFvg && it.bearFvg.lower > px) {
+      add(resist, (it.bearFvg.lower + it.bearFvg.upper) / 2, it.bearFvg.lower, it.bearFvg.upper, tf, 'fvg', `${tf}看跌FVG`);
+    }
+    if (it.poc && Number.isFinite(it.poc.low) && Number.isFinite(it.poc.high)) {
+      const mid = (it.poc.low + it.poc.high) / 2;
+      add(mid < px ? support : resist, mid, it.poc.low, it.poc.high, tf, 'poc', `${tf}POC`);
+    }
+    if (Number.isFinite(it.vwap)) {
+      add(it.vwap < px ? support : resist, it.vwap, it.vwap, it.vwap, tf, 'vwap', `${tf}VWAP`);
+    }
+  }
+  for (const w of liqWindows || []) {
+    if (Number.isFinite(w.lMax) && w.lMax < px) add(support, w.lMax, w.lMax, w.lMax, w.label, 'liq', `${w.label}·L↓主峰`);
+    if (Number.isFinite(w.sMax) && w.sMax > px) add(resist, w.sMax, w.sMax, w.sMax, w.label, 'liq', `${w.label}·S↑主峰`);
+  }
+  for (const w of obWalls || []) {
+    if (Number.isFinite(w.bidWall) && w.bidWall < px) add(support, w.bidWall, w.bidWall, w.bidWall, w.label, 'wall', `${w.label}买墙`);
+    if (Number.isFinite(w.askWall) && w.askWall > px) add(resist, w.askWall, w.askWall, w.askWall, w.label, 'wall', `${w.label}卖墙`);
+  }
+
+  function bestCluster(list) {
+    if (!list.length) return null;
+    list.sort((a, b) => a.rep - b.rep);
+    // 贪心合簇：相邻代表价间隔 ≤ 现价×0.5% → 同簇
+    const clusters = [];
+    let cur = [list[0]];
+    for (let i = 1; i < list.length; i += 1) {
+      if (list[i].rep - list[i - 1].rep <= px * _ZONE_CLUSTER_GAP) cur.push(list[i]);
+      else { clusters.push(cur); cur = [list[i]]; }
+    }
+    clusters.push(cur);
+
+    let best = null;
+    let bestScore = 0;
+    for (const c of clusters) {
+      const score = c.reduce((s, f) => s + f.weight, 0);
+      if (score > bestScore) { bestScore = score; best = c; }
+    }
+    if (!best || bestScore < _ZONE_MIN_SCORE) return null;
+
+    let lo = Infinity;
+    let hi = -Infinity;
+    let wSum = 0;
+    let wPx = 0;
+    for (const f of best) {
+      if (f.lo < lo) lo = f.lo;
+      if (f.hi > hi) hi = f.hi;
+      wSum += f.weight;
+      wPx += f.rep * f.weight;
+    }
+    const center = wPx / wSum;
+    // 区间太宽（比如被一个大 FVG 拉开）→ 围绕加权中心收窄
+    if (hi - lo > px * _ZONE_MAX_WIDTH) {
+      lo = Math.max(lo, center - px * _ZONE_MAX_WIDTH / 2);
+      hi = Math.min(hi, center + px * _ZONE_MAX_WIDTH / 2);
+    }
+    const basis = best
+      .slice()
+      .sort((a, b) => b.weight - a.weight)
+      .map((f) => f.label);
+    return {
+      low: lo,
+      high: hi,
+      center,
+      score: Math.round(bestScore * 10) / 10,
+      factorCount: best.length,
+      basis
+    };
+  }
+
+  return { long: bestCluster(support), short: bestCluster(resist) };
+}
+
 async function _computeKeyLevels(symbol, market) {
   // 6 次 K 线请求并行：1m / 5m 给热图窗口切片，4 个周期给 FVG/POC/VWAP
   const [m1Raw, m5Raw, ...levelRaws] = await Promise.all([
@@ -258,7 +384,10 @@ async function _computeKeyLevels(symbol, market) {
     } catch (_) { /* 无录盘数据 → 前端隐藏该组 */ }
   }
 
-  return { symbol, market, ts: Date.now(), latestPrice, intervals, liqWindows, obWalls };
+  // 建议开仓区：基于以上全部因子的价位聚类（纯内存计算，无额外请求）
+  const entryZones = _computeEntryZones({ latestPrice, intervals, liqWindows, obWalls });
+
+  return { symbol, market, ts: Date.now(), latestPrice, intervals, liqWindows, obWalls, entryZones };
 }
 
 router.get('/key-levels', async (req, res) => {
@@ -297,3 +426,4 @@ module.exports = router;
 module.exports._computeWindowPeaks = _computeWindowPeaks;
 module.exports._computeIntervalLevels = _computeIntervalLevels;
 module.exports._computeObWalls = _computeObWalls;
+module.exports._computeEntryZones = _computeEntryZones;

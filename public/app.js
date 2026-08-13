@@ -4819,6 +4819,34 @@
     if (!els.keyLevels || !data) return;
     const parts = [];
 
+    // ⓪ 建议开仓区：全部因子聚类出的做多 / 做空价格范围（置顶展示）
+    if (data.entryZones && (data.entryZones.long || data.entryZones.short)) {
+      const zoneRow = (z, side) => {
+        const isLong = side === 'long';
+        const name = isLong ? '做多 / Long' : '做空 / Short';
+        if (!z) {
+          return `<div class="kl-row"><span class="kl-label">${name}</span><span class="kl-val"><span class="kl-empty">共振不足 / no confluence</span></span></div>`;
+        }
+        const basis = (z.basis || []).slice(0, 4).join(' · ')
+          + ((z.basis || []).length > 4 ? ` +${z.basis.length - 4}` : '');
+        return `
+          <div class="kl-row">
+            <span class="kl-label">${name}</span>
+            <span class="kl-val">${_klPrice(z.low, isLong ? 'up' : 'down')} ~ ${_klPrice(z.high, isLong ? 'up' : 'down')}
+              <span class="meta">分${z.score}</span></span>
+          </div>
+          <div class="kl-row"><span class="kl-label"></span><span class="kl-val"><span class="meta">依据: ${basis}</span></span></div>`;
+      };
+      parts.push(`
+        <div class="kl-group kl-zone">
+          <div class="kl-group-title">🎯 建议开仓区 / Entry Zones
+            <span class="meta">多因子聚类 · 仅供参考</span>
+          </div>
+          ${zoneRow(data.entryZones.long, 'long')}
+          ${zoneRow(data.entryZones.short, 'short')}
+        </div>`);
+    }
+
     // ① 每个周期的 FVG / POC / VWAP
     for (const it of data.intervals || []) {
       if (!it.ok) {

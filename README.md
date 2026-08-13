@@ -122,7 +122,7 @@ npm run dev            # nodemon 热重载
 | POST | `/api/alerts/liquidation-cross` | 清算热图实时事件（`eventType=cross` 穿越 / `eventType=reclaim` 假突破收回），声音 + 飞书 |
 | GET | `/api/alerts/liquidation-cross/status` | 各 side+event 最近触发时间、冷却参数、飞书启用状态 |
 | GET | `/api/trade/signal` | LONG/SHORT/NONE 信号 + 入场/止损/止盈（前端面板已由 key-levels 替代，接口保留） |
-| GET | `/api/key-levels` | **核心**：多周期关键价位聚合（15m/1h/4h/1d 的 FVG/POC/VWAP + 15m/1h/4h/24h 清算主峰 S↑/L↓ + 15m/1h/4h/24h 买单墙/卖单墙），30s 服务端缓存 |
+| GET | `/api/key-levels` | **核心**：多周期关键价位聚合（15m/1h/4h/1d 的 FVG/POC/VWAP + 15m/1h/4h/24h 清算主峰 S↑/L↓ + 15m/1h/4h/24h 买单墙/卖单墙 + 🎯 建议开仓区 entryZones），30s 服务端缓存 |
 | GET | `/api/squeeze/warning` | 扎空/扎多预警评分（资金费率 / OI / 持仓比 / Taker） |
 | GET | `/api/squeeze/confirmation` | 价格-OI 背离 / 爆仓主导 / 资金费率回归 |
 | GET | `/api/squeeze/heatmap` | 清算价位热力图 + 最近多/空爆仓集群 |
@@ -217,6 +217,11 @@ positionSize = riskAmount / |entry - stopLoss|
   （主峰算法与清算热图横线同源），
   以及每个窗口 (15m/1h/4h/24h) 的 🧱 最强买单墙 / 卖单墙价位
   （流动性热图口径：订单簿录盘按 USDT 名义额跨快照取 max，仅 BTCUSDT 合约有录盘）；
+  面板置顶为 **🎯 建议开仓区 / Entry Zones**——把以上全部价位按现价上下分成
+  支撑 / 阻力两组，贪心聚类（相邻价位间隔 ≤0.5% 归为一簇）+ 加权打分
+  （周期权重 15m=1 → 1d/24h=3，类型系数 清算主峰 1.2 > 挂单墙/FVG 1.0 > POC 0.8 > VWAP 0.6，
+  距现价 >6% 的价位不参与），各取总分最高的一簇作为做多 / 做空开仓价格区间
+  （区间 >1.2% 时围绕加权中心收窄；总分 <2.5 显示"共振不足"），并列出依据因子与总分；
   服务端 30s 缓存 + 前端 30s 节流。
   另含清算磁极信号 v2 与双层共振信号子卡（原「交易信号 / Trade Signal」卡已移除，
   `/api/trade/signal` 接口保留可直接 curl）

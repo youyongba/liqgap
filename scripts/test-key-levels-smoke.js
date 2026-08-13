@@ -118,5 +118,54 @@ console.log('\n[3] _computeObWalls · 买/卖墙价位');
   }
 }
 
+// ---------------------------------------------------------------------------
+// 场景 4：_computeEntryZones —— 多因子聚类给出做多 / 做空开仓区
+// ---------------------------------------------------------------------------
+console.log('\n[4] _computeEntryZones · 建议开仓区');
+{
+  const px = 100;
+  // 下方 97.2~97.8 有强共振（L↓ + 买墙 + 看涨FVG），上方 102.5 附近有 S↑ + 卖墙
+  const input = {
+    latestPrice: px,
+    intervals: [
+      {
+        interval: '1h', ok: true,
+        bullFvg: { lower: 97.2, upper: 97.6 },
+        bearFvg: { lower: 102.4, upper: 102.8 },
+        poc: { low: 99.0, high: 99.2 },   // 下方但离簇远（>0.5% gap）
+        vwap: 120                          // 距现价 20% → 应被距离过滤
+      }
+    ],
+    liqWindows: [
+      { label: '24h', lMax: 97.5, sMax: 102.6 },
+      { label: '15m', lMax: 91,   sMax: 109 }   // 9% 距离 → 过滤
+    ],
+    obWalls: [
+      { label: '4h', bidWall: 97.8, askWall: 102.5 }
+    ]
+  };
+  const z = kl._computeEntryZones(input);
+  check('做多区间存在', z.long != null);
+  check('做多区间覆盖 97.2~97.8', z.long && z.long.low <= 97.2 && z.long.high >= 97.8 - 1e-9);
+  check('做多区间在现价下方', z.long && z.long.high < px);
+  check('做多依据含 24h·L↓主峰', z.long && z.long.basis.includes('24h·L↓主峰'));
+  check('做多依据不含 20% 外的 VWAP', z.long && !z.long.basis.some((b) => b.includes('VWAP')));
+  check('做空区间存在且在现价上方', z.short != null && z.short.low > px);
+  check('做空依据含 4h卖墙', z.short && z.short.basis.includes('4h卖墙'));
+
+  // 共振不足：只有一个 15m VWAP → 分数 0.6 < 2.5 → null
+  const weak = kl._computeEntryZones({
+    latestPrice: px,
+    intervals: [{ interval: '15m', ok: true, bullFvg: null, bearFvg: null, poc: null, vwap: 99.5 }],
+    liqWindows: [],
+    obWalls: []
+  });
+  check('共振不足返回 null', weak.long === null && weak.short === null);
+
+  // 无现价 → 双 null
+  const noPx = kl._computeEntryZones({ latestPrice: null, intervals: [], liqWindows: [], obWalls: [] });
+  check('无现价返回双 null', noPx.long === null && noPx.short === null);
+}
+
 console.log(`\n结果: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
