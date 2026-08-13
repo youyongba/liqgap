@@ -645,6 +645,7 @@
       klineInterval: (els.heatmapKlineInterval && els.heatmapKlineInterval.value) || '5m',
       // anchorMs：热图 to 时刻（默认 null = 跟实时 now，主图 hover 时锁定到 hover 时间）
       anchorMs: null,
+      dragPanMs: 0, // 手动拖拽平移的毫秒数
       data: null,
       heatmapKlines: [],
       pixelRatio: window.devicePixelRatio || 1,
@@ -911,6 +912,9 @@
         ctx.stroke();
         ctx.restore();
       }
+      
+      // 如果用户有手动平移，在右上角显示一个 "返回现在" 的提示或直接靠图标提示，这里省略复杂UI
+
 
       // ---- (7) 边框 + hover 高亮 ------------------------------
       ctx.strokeStyle = 'rgba(255,255,255,0.12)';
@@ -947,7 +951,36 @@
       return { ti, pi, cx, cy };
     }
 
+    let isDragging = false;
+    let dragStartX = 0;
+    let dragStartPan = 0;
+
+    canvas.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartPan = state.dragPanMs || 0;
+      canvas.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        canvas.style.cursor = 'crosshair';
+        scheduleFetch(0);
+      }
+    });
+
     canvas.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const dx = e.clientX - dragStartX;
+        const msPerPixel = state.windowMs / state.plot.w;
+        state.dragPanMs = dragStartPan + dx * msPerPixel;
+        if (state.dragPanMs < 0) state.dragPanMs = 0;
+        // 在拖动期间，先粗略更新偏移，延迟拉取真实数据
+        scheduleFetch(200);
+        return;
+      }
+      
       const hit = _hitTest(e.clientX, e.clientY);
       state.hoverCell = hit;
       if (!hit) {
@@ -977,6 +1010,27 @@
       tooltip.style.top  = ttY + 'px';
       _draw();
     });
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const zoomFactor = e.deltaY > 0 ? 1.2 : 1 / 1.2;
+      const newWindow = state.windowMs * zoomFactor;
+      
+      // 限制最小 15m，最大 3mo
+      const minW = 15 * 60_000;
+      const maxW = 90 * 86400_000;
+      state.windowMs = Math.max(minW, Math.min(maxW, newWindow));
+      
+      // 同步到 select 控件 (如果有匹配的，否则显示 custom 也可以，或者就让它脱离 select)
+      if (els.heatmapWindow) {
+        // 如果正好等于某个选项，就选中它
+        const opts = Array.from(els.heatmapWindow.options);
+        const match = opts.find(o => Math.abs(Number(o.value) - state.windowMs) < 1000);
+        if (match) els.heatmapWindow.value = match.value;
+      }
+      
+      scheduleFetch(200);
+    });
+
     canvas.addEventListener('mouseleave', () => {
       state.hoverCell = null;
       tooltip.style.display = 'none';
@@ -991,7 +1045,8 @@
      *   - bucket 自适应：力求每图约 60~90 个时间桶，可读性最佳。
      */
     function _resolveRange() {
-      const toMs = Number.isFinite(state.anchorMs) ? state.anchorMs : Date.now();
+      const baseToMs = Number.isFinite(state.anchorMs) ? state.anchorMs : Date.now();
+      const toMs = baseToMs - state.dragPanMs;
       const fromMs = toMs - state.windowMs;
       const span = toMs - fromMs;
       let bucketMs;
@@ -999,16 +1054,23 @@
       else if (span <= 60 * 60_000)   bucketMs = 60_000;          // 1h  → 1m × 60
       else if (span <= 4 * 3600_000)  bucketMs = 2 * 60_000;      // 4h  → 2m × 120
       else if (span <= 12 * 3600_000) bucketMs = 10 * 60_000;     // 12h → 10m × 72
-      else                            bucketMs = 15 * 60_000;     // 24h → 15m × 96
+      else if (span <= 24 * 3600_000) bucketMs = 15 * 60_000;     // 24h → 15m × 96
+      else if (span <= 7 * 86400_000) bucketMs = 2 * 3600_000;    // 1w  → 2h × 84
+      else if (span <= 14 * 86400_000) bucketMs = 4 * 3600_000;   // 2w  → 4h × 84
+      else if (span <= 21 * 86400_000) bucketMs = 6 * 3600_000;   // 3w  → 6h × 84
+      else if (span <= 31 * 86400_000) bucketMs = 8 * 3600_000;   // 1mo → 8h × 93
+      else if (span <= 62 * 86400_000) bucketMs = 12 * 3600_000;  // 2mo → 12h × 124
+      else                            bucketMs = 24 * 3600_000;   // 3mo+ → 24h
       return { fromMs, toMs, bucketMs };
     }
 
     /**
      * 主图 hover 时的锚定回调。hoverMs 为 null 表示恢复到实时 now。
-     * 这是热图被主图驱动的"唯一通道"——不会响应主图的缩放/拖动，
-     * 因为缩放主图时大家通常想保持热图窗口稳定来对照具体时刻。
      */
     function setHeatmapAnchor(hoverMs) {
+      // 只有在没被用户手动拖动平移的时候，才响应主图的锚定
+      if (state.dragPanMs > 0) return;
+      
       const next = Number.isFinite(hoverMs) ? Math.floor(hoverMs) : null;
       if (next === state.anchorMs) return;
       state.anchorMs = next;
@@ -1078,6 +1140,7 @@
     if (els.heatmapWindow) {
       els.heatmapWindow.addEventListener('change', () => {
         state.windowMs = Number(els.heatmapWindow.value) || 3_600_000;
+        state.dragPanMs = 0; // 切换窗口大小时，重置拖动平移，回到实时或锚定位置
         state.lastFetchKey = ''; // 强制重拉
         scheduleFetch(0);
       });
