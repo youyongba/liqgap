@@ -68,6 +68,10 @@
     liqHeatmapAlert: document.getElementById('liq-heatmap-alert'),
     subCard: document.getElementById('sub-card'),
     mainCard: document.getElementById('main-card'),
+    // Key Levels Card
+    keyLevelsCard: document.getElementById('key-levels-card'),
+    keyLevelsMeta: document.getElementById('key-levels-meta'),
+    keyLevelsTbody: document.getElementById('key-levels-tbody'),
     // 🧲 清算磁极信号 / Liq-Magnet Signal sub-card
     liqSignalCard: document.getElementById('liq-signal-card'),
     liqSignalMeta: document.getElementById('liq-signal-meta'),

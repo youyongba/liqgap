@@ -44,6 +44,7 @@ const liqSignalRoute = require('./routes/liqSignal');
 const resonanceSignalRoute = require('./routes/resonanceSignal');
 const autoTradeRoute = require('./routes/autoTrade');
 const cvdRoute = require('./routes/cvd');
+const keyLevelsRoute = require('./routes/keyLevels');
 const orderbookRecorder = require('./services/orderbookRecorder');
 
 const app = express();
@@ -80,6 +81,7 @@ app.use('/api', liqSignalRoute);
 app.use('/api', resonanceSignalRoute);
 app.use('/api', autoTradeRoute);
 app.use('/api', cvdRoute);
+app.use('/api', keyLevelsRoute);
 app.use('/api/ai', aiRoute);
 
 // 健康检查 (Health-check endpoint)

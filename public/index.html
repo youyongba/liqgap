@@ -1134,194 +1134,34 @@
         </div>
       </section>
 
-      <aside id="signal-card" class="card">
+            <aside id="key-levels-card" class="card">
         <div class="card-header">
-          <h2>交易信号 / Trade Signal</h2>
-          <span class="meta" id="signal-meta"></span>
-          <button class="min-btn" type="button" data-min-target="signal-card"
-                  title="信号面板最小化 / Minimize">⊟</button>
-          <button class="fs-btn" type="button" data-fs-target="signal-card"
-                  title="信号面板全屏 / Fullscreen (Esc 退出)">⛶</button>
+          <h2>关键价位 / Key Levels</h2>
+          <span class="meta" id="key-levels-meta"></span>
+          <button class="min-btn" type="button" data-min-target="key-levels-card"
+                  title="面板最小化 / Minimize">⊟</button>
+          <button class="fs-btn" type="button" data-fs-target="key-levels-card"
+                  title="面板全屏 / Fullscreen (Esc 退出)">⛶</button>
         </div>
 
-        <!-- 飞书推送控制 / Feishu push controls -->
-        <div class="feishu-bar" id="feishu-bar">
-          <button id="fs-push" type="button" title="按当前 symbol/market 推送一次（受冷却限制）">推送飞书 / Push</button>
-          <button id="fs-push-force" type="button" class="ghost" title="绕过冷却强制推送">强制推送 / Force</button>
-          <button id="fs-test" type="button" class="ghost" title="发送一条测试消息验证 webhook">测试 webhook / Test</button>
-          <button id="btn-copy-signal" type="button" class="ghost" title="复制当前交易信号信息">一键复制 / Copy</button>
-          <button id="btn-ai-analyze" type="button" class="ghost" title="发送数据进行 AI 分析">AI 分析 / AI Analyze</button>
-          <!-- 自动交易运行时开关 (Auto-Trade Runtime Kill Switch) -->
-          <button id="at-toggle" type="button"
-                  title="切换是否发送 webhook 自动下单。关闭后所有信号只推飞书，不下单。重启后回到 .env 默认行为。">
-            🤖 自动交易 / AutoTrade: …
-          </button>
-          <span id="fs-status" class="meta">飞书状态加载中… / Loading…</span>
-        </div>
-
-        <!-- ====== 🧲 清算磁极信号 / Liq-Magnet Signal ====== -->
-        <div id="liq-signal-card" class="liq-signal-card">
-          <div class="liq-signal-header">
-            <span class="title">🧲 清算磁极信号 / Liq-Magnet Signal</span>
-            <span class="meta" id="liq-signal-meta">加载中… / Loading…</span>
-            <button id="liq-signal-alert" type="button" class="ghost"
-                    style="font-size:11px;padding:2px 8px;"
-                    title="开启后：① 价格穿越最强清算墙 ② 触发 reversal/squeeze 信号（confidence ≥ 75）—— 都会播放警报声 + 推送飞书。同一来源 5 分钟内只响一次。开关与上方"清算热图"卡共享。">
-              🔔 警报 / Alert: ON
-            </button>
-            <button id="btn-copy-liq-signal" type="button" class="ghost" style="font-size:11px;padding:2px 8px;"
-                    title="复制清算磁极信号详情">复制 / Copy</button>
-          </div>
-          <div id="liq-signal-banner" class="signal-banner none" style="margin-bottom:8px;">
-            等待清算磁极信号… / Waiting…
-          </div>
-          <div class="liq-signal-body" id="liq-signal-body" style="display:none;">
-            <div class="kv-grid" style="grid-template-columns:auto 1fr auto 1fr;">
-              <div class="label">入场 / Entry</div>      <div class="value" id="liq-kv-entry">-</div>
-              <div class="label">止损 / Stop</div>       <div class="value" id="liq-kv-sl">-</div>
-              <div class="label">触发墙 / Wall</div>     <div class="value" id="liq-kv-wall">-</div>
-              <div class="label">置信度 / Conf</div>     <div class="value" id="liq-kv-conf">-</div>
-              <div class="label">L↓ 多头墙</div>          <div class="value" id="liq-kv-long-peak">-</div>
-              <div class="label">S↑ 空头墙</div>          <div class="value" id="liq-kv-short-peak">-</div>
-              <div class="label">仓位 / Size</div>       <div class="value" id="liq-kv-size">-</div>
-              <div class="label">名义 / Notional</div>   <div class="value" id="liq-kv-notional">-</div>
-            </div>
-            <div id="liq-tp-list" style="margin-bottom:8px;"></div>
-            <div id="liq-playbook" class="liq-playbook"></div>
-            <div id="liq-conditions" class="conditions" style="margin-top:6px;"></div>
-          </div>
-        </div>
-
-        <!-- ====== 🏆 双层共振信号 / Two-Tier Resonance Signal ====== -->
-        <div id="resonance-card" class="liq-signal-card">
-          <div class="liq-signal-header">
-            <span class="title">🏆 双层共振信号 / Two-Tier Resonance</span>
-            <span class="meta" id="resonance-meta">加载中… / Loading…</span>
-            <button id="resonance-alert" type="button" class="ghost"
-                    style="font-size:11px;padding:2px 8px;"
-                    title="HEXA 顶级 (90+) 或 TRIO 日内 (75+) 共振信号出现时：声音 + 飞书 + auto-trade webhook。冷却由后端控制 (HEXA 6h / TRIO 2h)。">
-              🔔 警报 / Alert: ON
-            </button>
-            <button id="btn-copy-resonance" type="button" class="ghost" style="font-size:11px;padding:2px 8px;"
-                    title="复制共振信号详情">复制 / Copy</button>
-          </div>
-          <div id="resonance-banner" class="signal-banner none" style="margin-bottom:8px;">
-            等待共振信号… / Waiting…
-          </div>
-          <div class="liq-signal-body" id="resonance-body" style="display:none;">
-            <div class="kv-grid" style="grid-template-columns:auto 1fr auto 1fr;">
-              <div class="label">Tier</div>            <div class="value" id="res-kv-tier">-</div>
-              <div class="label">置信度 / Conf</div>     <div class="value" id="res-kv-conf">-</div>
-              <div class="label">入场 / Entry</div>      <div class="value" id="res-kv-entry">-</div>
-              <div class="label">止损 / Stop</div>       <div class="value" id="res-kv-sl">-</div>
-              <div class="label">触发墙 / Wall</div>     <div class="value" id="res-kv-wall">-</div>
-              <div class="label">活跃 FVG</div>          <div class="value" id="res-kv-fvg">-</div>
-              <div class="label">杠杆 / Lev</div>        <div class="value" id="res-kv-lev">-</div>
-              <div class="label">仓位 / Size%</div>      <div class="value" id="res-kv-size">-</div>
-              <div class="label">VWAP 1h/4h</div>        <div class="value" id="res-kv-vwap">-</div>
-              <div class="label">Vol/OI Surge</div>      <div class="value" id="res-kv-vo">-</div>
-            </div>
-            <div id="res-tp-list" style="margin-bottom:8px;"></div>
-            <div id="res-playbook" class="liq-playbook"></div>
-            <div id="res-conditions" class="conditions" style="margin-top:6px;"></div>
-          </div>
-        </div>
-
-        <div id="signal-banner" class="signal-banner none">等待信号… / Waiting…</div>
-
-        <div class="kv-grid" id="signal-kv">
-          <div class="label">入场价 / Entry</div><div class="value" id="kv-entry">-</div>
-          <div class="label">止损价 / Stop Loss</div><div class="value" id="kv-sl">-</div>
-          <div class="label">风险金额 / Risk Amount</div><div class="value" id="kv-risk">-</div>
-          <div class="label">仓位大小 / Position Size</div><div class="value" id="kv-size">-</div>
-          <div class="label">名义本金 / Notional</div><div class="value" id="kv-notional">-</div>
-        </div>
-
-        <div class="section-title">止盈目标 / Take-Profits</div>
-        <div id="tp-list"></div>
-
-        <div class="section-title">条件评估 / Condition Check</div>
-        <div class="section-title" style="margin-top:0;color:var(--accent)">多头 / Long</div>
-        <div id="long-conditions" class="conditions"></div>
-        <div class="section-title" style="margin-top:8px;color:var(--accent-down)">空头 / Short</div>
-        <div id="short-conditions" class="conditions"></div>
-
-        <div class="section-title">流动性预警 / Liquidity Alerts</div>
-        <div id="alerts" class="alerts-list"></div>
-
-        <div class="section-title">指标快照 / Indicators Snapshot</div>
-        <div class="kv-grid" id="snapshot"></div>
-
-        <div class="section-title">AI 分析报告 / AI Analysis Report</div>
-        <div id="ai-report-content" style="font-size:12px;color:var(--fg-1);background:var(--bg-2);padding:10px;border-radius:6px;border:1px solid var(--border);margin-bottom:12px;white-space:pre-wrap;overflow-x:auto;">
-          暂无分析报告 / No report yet
-        </div>
-
-        <!-- ====== 30 天策略回测 / 30-day Backtest ====== -->
-        <div class="backtest-card" id="backtest-card">
-          <div class="card-header">
-            <h2>30 天策略回测 / 30-day Backtest</h2>
-            <span class="bt-status" id="bt-status">未运行 / idle</span>
-            <button class="min-btn" type="button" data-min-target="backtest-card"
-                    title="回测面板最小化 / Minimize">⊟</button>
-          </div>
-          <div class="backtest-controls">
-            <span class="label-inline">天数 / Days</span>
-            <input id="bt-days" type="number" min="1" max="90" value="30" />
-            <span class="label-inline">本金 / Capital</span>
-            <input id="bt-capital" type="number" min="10" value="1000" />
-            <span class="label-inline">风险% / Risk%</span>
-            <input id="bt-risk" type="number" min="0.1" max="100" step="0.1" value="1" />
-            <button id="bt-run">运行回测 / Run</button>
-          </div>
-
-          <div class="bt-summary" id="bt-summary">
-            <div class="label">最终余额 / Final Balance</div><div class="value" id="bt-final">-</div>
-            <div class="label">总盈亏 / Total P&amp;L</div><div class="value" id="bt-pnl">-</div>
-            <div class="label">收益率 / Return %</div><div class="value" id="bt-return">-</div>
-            <div class="label">交易笔数 / Trades</div><div class="value" id="bt-trades">-</div>
-            <div class="label">胜率 / Win Rate</div><div class="value" id="bt-winrate">-</div>
-            <div class="label">盈亏比 / Payoff Ratio</div><div class="value" id="bt-payoff">-</div>
-            <div class="label">盈利因子 / Profit Factor</div><div class="value" id="bt-pf">-</div>
-            <div class="label">最大回撤 / Max Drawdown</div><div class="value" id="bt-mdd">-</div>
-            <div class="label">期望值/笔 / Expectancy</div><div class="value" id="bt-exp">-</div>
-            <div class="label">回测周期 / Period (days)</div><div class="value" id="bt-period">-</div>
-          </div>
-
-          <div class="bt-equity"><canvas id="bt-equity-chart"></canvas></div>
-
-          <!-- 真实数据声明 / Real-data manifest -->
-          <div class="bt-notes" id="bt-notes" style="display:none">
-            <b>真实数据声明 / Real-data manifest</b>
-            <div id="bt-notes-body"></div>
-          </div>
-          <div class="bt-skipped" id="bt-skipped" style="display:none">
-            <b>未参与回测的指标 / Skipped indicators:</b>
-            <div id="bt-skipped-body"></div>
-          </div>
-          <div class="bt-warnings" id="bt-warnings" style="display:none"></div>
-          <div class="bt-source" id="bt-source" style="display:none"></div>
-
-          <!-- 交易明细 / Trades table -->
-          <div class="bt-trades-wrap" id="bt-trades-wrap" style="display:none">
-            <table class="bt-trades">
-              <thead>
-                <tr>
-                  <th>开仓时间 / Entry</th>
-                  <th>方向 / Side</th>
-                  <th>结果 / Outcome</th>
-                  <th>入场 / Entry Px</th>
-                  <th>止损 / SL</th>
-                  <th>TP1 / SL 命中</th>
-                  <th>平仓 / Exit Px</th>
-                  <th>结束原因 / Exit</th>
-                  <th>持仓 K 线 / Bars</th>
-                  <th>盈亏 / P&amp;L (USDT)</th>
-                </tr>
-              </thead>
-              <tbody id="bt-trades-body"></tbody>
-            </table>
-          </div>
+        <div id="key-levels-body" style="padding: 12px; font-size: 13px; overflo        <div id="key-levels-body" style="padding: 12px; font-size: 13px; overflo        <div id="key-levet-align: right;">
+            <thead>
+              <tr style="border-bottom: 1px solid var(--border); color: var(--fg-2);">
+                <th style="text-align: left; padding: 6px;">周期</th>
+                <th style="padding: 6px;">看涨FVG</th>
+                <th style="padding: 6px;">看跌FVG</th>
+                <th style="padding: 6px;">POC</th>
+                <th style="padding: 6px;">VWAP</th>
+                <th style="padding: 6px;">最强买墙</th>
+                <th style="padding: 6px;">最强卖墙</th>
+                <th style="padding: 6px;">多头清算</th>
+                <th style="padding: 6px;">空头清算</th>
+              </tr>
+            </thead>
+            <tbody id="key-levels-tbody">
+              <tr><td colspan="9" style="text-align:center; padding: 20px; color: var(--fg-2);">加载中... / Loading...</td></tr>
+            </tbody>
+          </table>
         </div>
       </aside>
     </main>
