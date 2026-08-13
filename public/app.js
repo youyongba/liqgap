@@ -4792,8 +4792,8 @@
     kv('空头评分 / Short Score', String(snap.shortScore ?? '-'));
   }
 
-  // ===== 🧲 清算磁极信号 / Liq-Magnet Signal =====
-  let _lastLiqSignal = null;
+  // 🧲 清算磁极信号 / Liq-Magnet Signal (Deleted)
+    let _lastLiqSignal = null;
   // 信号声音警报去重：按 signal type 5 分钟内只响一次
   const LIQ_SIGNAL_ALERT_COOLDOWN_MS = 5 * 60_000;
   const _liqSignalAlertLastAt = {};
