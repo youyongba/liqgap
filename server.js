@@ -45,6 +45,7 @@ const resonanceSignalRoute = require('./routes/resonanceSignal');
 const autoTradeRoute = require('./routes/autoTrade');
 const cvdRoute = require('./routes/cvd');
 const keyLevelsRoute = require('./routes/keyLevels');
+const orderbookRecorder = require('./services/orderbookRecorder');
 
 const app = express();
 const PORT = process.env.PORT || 3000;

@@ -13,10 +13,15 @@
  *       - L↓ max（多头最大清算价位）
  *     主峰算法与 /api/trade/liq-signal 完全同源（_findPeaks），
  *     保证与前端清算热图上标注的横线一致。
+ *   • 每个挂单墙窗口 (15m / 1h / 4h / 24h · 仅有订单簿录盘的品种)：
+ *       - 买单墙（中价下方最强 bid 挂单价位）
+ *       - 卖单墙（中价上方最强 ask 挂单价位）
+ *     聚合口径与 /api/orderbook/heatmap 一致（USDT 名义额跨快照取 max）。
  *
  * 性能设计 (Performance)：
  *   • K 线复用：4 个热图窗口只发 2 次 K 线请求（1m×245 覆盖 15m/1h/4h 切片，
  *     5m×293 覆盖 24h），加上 4 个周期各 1 次 → 每次全量计算共 6 次 K 线请求
+ *   • 挂单墙：24h 快照只读一次盘，只建一个矩阵，4 个窗口按时间子切片复用
  *   • 30s 内存 TTL 缓存（按 symbol|market），并发请求共享同一个 in-flight Promise
  *   • 单一聚合接口，前端一次拉全，不用发 8+ 个请求
  *
@@ -35,6 +40,7 @@ const {
 const { computeVolumeProfile } = require('../indicators/volumeProfile');
 const { buildPredictiveLiquidationHeatmap } = require('../services/predictiveLiquidations');
 const { _findPeaks } = require('./liqSignal');
+const obRecorder = require('../services/orderbookRecorder');
 
 const router = express.Router();
 
@@ -51,6 +57,14 @@ const LIQ_WINDOWS = [
   { label: '1h', ms: ONE_HOUR_MS, src: '1m', srcMs: ONE_MIN_MS, bucketMs: ONE_MIN_MS },
   { label: '4h', ms: 4 * ONE_HOUR_MS, src: '1m', srcMs: ONE_MIN_MS, bucketMs: 2 * ONE_MIN_MS },
   { label: '24h', ms: 24 * ONE_HOUR_MS, src: '5m', srcMs: 5 * ONE_MIN_MS, bucketMs: 15 * ONE_MIN_MS }
+];
+
+// 挂单墙窗口集合（流动性热图 / 订单簿录盘）：一个 24h 矩阵按时间子切片复用
+const OB_WALL_WINDOWS = [
+  { label: '15m', ms: 15 * ONE_MIN_MS },
+  { label: '1h', ms: ONE_HOUR_MS },
+  { label: '4h', ms: 4 * ONE_HOUR_MS },
+  { label: '24h', ms: 24 * ONE_HOUR_MS }
 ];
 
 // ---- 30s TTL 缓存（in-flight Promise 共享，防并发击穿）----
@@ -93,6 +107,78 @@ function _computeWindowPeaks(srcCandles, win, midPrice, toMs) {
     fromMs, toMs, bucketMs: win.bucketMs, priceMin, priceMax, priceBucket
   });
   return _findPeaks(heat, midPrice);
+}
+
+/**
+ * 挂单墙（流动性热图口径）：每个窗口的最强买单墙 / 卖单墙价位。
+ *
+ * 性能：录盘快照只读一次（24h），只建一个 5min×~240桶 矩阵，
+ * 各窗口通过时间子切片取 row-max —— 与流动性热图"最大值突出持续墙"
+ * 的聚合口径一致。仅 BTCUSDT futures 有录盘，其余返回 []。
+ */
+function _computeObWalls(symbol, market, midPrice) {
+  const now = Date.now();
+  const snapshots = obRecorder.findRange(symbol, market, now - 24 * ONE_HOUR_MS, now);
+  if (!snapshots || !snapshots.length) return [];
+
+  // 价格范围：扫快照实际覆盖的价差（与 /api/orderbook/heatmap auto 一致）
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const snap of snapshots) {
+    for (const [pStr] of (snap.bids || [])) {
+      const p = Number(pStr);
+      if (Number.isFinite(p) && p < lo) lo = p;
+    }
+    for (const [pStr] of (snap.asks || [])) {
+      const p = Number(pStr);
+      if (Number.isFinite(p) && p > hi) hi = p;
+    }
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return [];
+
+  const rawBucket = (hi - lo) / 240;
+  const exp = Math.pow(10, Math.floor(Math.log10(rawBucket)));
+  const norm = rawBucket / exp;
+  const factor = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+  const priceBucket = Math.max(0.01, factor * exp);
+
+  const fromMs = now - 24 * ONE_HOUR_MS;
+  const bucketMs = 5 * ONE_MIN_MS;
+  const m = obRecorder.buildHeatmapMatrix(snapshots, {
+    fromMs, toMs: now, bucketMs, priceMin: lo, priceMax: hi, priceBucket
+  });
+  const T = m.times.length;
+  const P = m.prices.length;
+  const half = priceBucket / 2;
+
+  return OB_WALL_WINDOWS.map((win) => {
+    // 该窗口对应的时间桶起点
+    let startTi = 0;
+    const winFrom = now - win.ms;
+    while (startTi < T && m.times[startTi] + bucketMs <= winFrom) startTi += 1;
+
+    let bidArg = -1;
+    let bidMax = 0;
+    let askArg = -1;
+    let askMax = 0;
+    for (let pi = 0; pi < P; pi += 1) {
+      const price = m.prices[pi] + half;
+      for (let ti = startTi; ti < T; ti += 1) {
+        const bv = m.bidMatrix[ti] ? (m.bidMatrix[ti][pi] || 0) : 0;
+        const av = m.askMatrix[ti] ? (m.askMatrix[ti][pi] || 0) : 0;
+        if (bv > bidMax && price < midPrice) { bidMax = bv; bidArg = pi; }
+        if (av > askMax && price > midPrice) { askMax = av; askArg = pi; }
+      }
+    }
+    return {
+      label: win.label,
+      windowMs: win.ms,
+      bidWall: bidArg >= 0 ? m.prices[bidArg] + half : null,
+      bidUsd: bidArg >= 0 ? bidMax : null,
+      askWall: askArg >= 0 ? m.prices[askArg] + half : null,
+      askUsd: askArg >= 0 ? askMax : null
+    };
+  });
 }
 
 /** 单个周期的 FVG / POC / VWAP */
@@ -164,7 +250,15 @@ async function _computeKeyLevels(symbol, market) {
     });
   }
 
-  return { symbol, market, ts: Date.now(), latestPrice, intervals, liqWindows };
+  // 挂单墙（订单簿录盘，同步磁盘读，放 try 里防录盘目录缺失）
+  let obWalls = [];
+  if (Number.isFinite(latestPrice) && latestPrice > 0) {
+    try {
+      obWalls = _computeObWalls(symbol, market, latestPrice);
+    } catch (_) { /* 无录盘数据 → 前端隐藏该组 */ }
+  }
+
+  return { symbol, market, ts: Date.now(), latestPrice, intervals, liqWindows, obWalls };
 }
 
 router.get('/key-levels', async (req, res) => {
@@ -202,3 +296,4 @@ module.exports = router;
 // 供冒烟测试 (Exposed for smoke tests)
 module.exports._computeWindowPeaks = _computeWindowPeaks;
 module.exports._computeIntervalLevels = _computeIntervalLevels;
+module.exports._computeObWalls = _computeObWalls;

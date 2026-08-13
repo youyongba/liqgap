@@ -712,6 +712,83 @@
       return viridisFromValue(value, normMax);
     }
 
+    /*
+     * 挂单墙检测 (Wall detection)：
+     *   - 每个价位行取时间维度的峰值 (row-max)，行峰值 ≥ P95 的视为"墙"
+     *   - bid 墙取中价下方 top3、ask 墙取中价上方 top3（相邻 2 桶内去重）
+     *   - 墙线从"墙首次出现"的时间桶向右延伸；
+     *     当叠加 K 线穿过该价位（bid: low≤墙价 / ask: high≥墙价）即断开
+     * 结果缓存到 state._walls，仅在 data / K线 变化时重算（拖拽重绘不重算）。
+     */
+    function _detectWalls(d, klines) {
+      if (!d || !d.times || !d.times.length || !d.prices || !d.prices.length) return [];
+      const T = d.times.length;
+      const P = d.prices.length;
+      const half = (d.priceBucket || 0) / 2;
+      const mid = Number.isFinite(d.midPrice) ? d.midPrice : NaN;
+      const threshold = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : (d.maxValue || 0) * 0.5;
+      if (!(threshold > 0) || !Number.isFinite(mid)) return [];
+
+      // 行峰值 + 首次达到 60% 行峰值的时间桶
+      const cand = { bid: [], ask: [] };
+      for (let pi = 0; pi < P; pi += 1) {
+        let bidMax = 0, askMax = 0;
+        for (let ti = 0; ti < T; ti += 1) {
+          const bv = d.bidMatrix[ti] ? (d.bidMatrix[ti][pi] || 0) : 0;
+          const av = d.askMatrix[ti] ? (d.askMatrix[ti][pi] || 0) : 0;
+          if (bv > bidMax) bidMax = bv;
+          if (av > askMax) askMax = av;
+        }
+        const price = d.prices[pi] + half;
+        if (bidMax >= threshold && price < mid) cand.bid.push({ pi, price, value: bidMax });
+        if (askMax >= threshold && price > mid) cand.ask.push({ pi, price, value: askMax });
+      }
+
+      const intervalMs = (klines && klines.length > 1)
+        ? Number(klines[1].openTime) - Number(klines[0].openTime)
+        : 60_000;
+
+      const out = [];
+      for (const side of ['bid', 'ask']) {
+        cand[side].sort((a, b) => b.value - a.value);
+        const picked = [];
+        for (const c of cand[side]) {
+          if (picked.length >= 3) break;
+          if (picked.some((p) => Math.abs(p.pi - c.pi) <= 2)) continue; // 相邻桶属于同一面墙
+          picked.push(c);
+        }
+        for (const c of picked) {
+          // 首次成墙时间：该行第一次达到 60% 行峰值
+          const matrix = side === 'bid' ? d.bidMatrix : d.askMatrix;
+          let firstTi = 0;
+          for (let ti = 0; ti < T; ti += 1) {
+            const v = matrix[ti] ? (matrix[ti][c.pi] || 0) : 0;
+            if (v >= c.value * 0.6) { firstTi = ti; break; }
+          }
+          const startMs = d.times[firstTi];
+          // K 线穿墙 → 断开
+          let endMs = d.toMs;
+          let broken = false;
+          if (klines && klines.length) {
+            for (const k of klines) {
+              const ts = Number(k.openTime);
+              if (ts < startMs) continue;
+              const pierced = side === 'bid'
+                ? Number(k.low) <= c.price
+                : Number(k.high) >= c.price;
+              if (pierced) {
+                endMs = Math.min(d.toMs, ts + intervalMs);
+                broken = true;
+                break;
+              }
+            }
+          }
+          out.push({ side, price: c.price, value: c.value, startMs, endMs, broken });
+        }
+      }
+      return out;
+    }
+
     /** 选好看的价格 tick 步长（1/2/5 ×10^k 系列） */
     function _niceStep(rawStep) {
       if (!(rawStep > 0)) return 1;
@@ -814,6 +891,55 @@
         
         ctx.fillRect(x - hw, bodyTop, hw * 2, bodyHeight);
       }
+    }
+
+    // ---- (1.6) 挂单墙延伸线 (Wall extension lines) -------------------
+    // 墙从形成时刻向右延伸，被 K 线穿过即断开；缓存避免拖拽重绘时重算。
+    if (state._wallsSrc !== d || state._wallsKlines !== state.heatmapKlines) {
+      state._walls = _detectWalls(d, state.heatmapKlines);
+      state._wallsSrc = d;
+      state._wallsKlines = state.heatmapKlines;
+    }
+    if (state._walls && state._walls.length) {
+      const span = d.toMs - d.fromMs;
+      const pSpan = d.priceMax - d.priceMin;
+      ctx.save();
+      ctx.setLineDash([6, 3]);
+      ctx.lineWidth = 1.5;
+      ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textBaseline = 'bottom';
+      for (const wl of state._walls) {
+        const y = oy + ph - ((wl.price - d.priceMin) / pSpan) * ph;
+        if (y < oy || y > oy + ph) continue;
+        const x1 = ox + Math.max(0, (wl.startMs - d.fromMs) / span) * pw;
+        const x2 = ox + Math.min(1, (wl.endMs - d.fromMs) / span) * pw;
+        if (x2 - x1 < 2) continue;
+        const color = wl.side === 'bid' ? 'rgba(74, 222, 128, 0.9)' : 'rgba(248, 113, 113, 0.9)';
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x1, y);
+        ctx.lineTo(x2, y);
+        ctx.stroke();
+        // 断开处画一个小 ✕，表示墙被 K 线穿过
+        if (wl.broken) {
+          ctx.save();
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(x2 - 3, y - 3); ctx.lineTo(x2 + 3, y + 3);
+          ctx.moveTo(x2 - 3, y + 3); ctx.lineTo(x2 + 3, y - 3);
+          ctx.stroke();
+          ctx.restore();
+        }
+        // 起点标签：墙厚度（USDT 名义额，紧凑格式）
+        const v = wl.value;
+        const label = v >= 1e9 ? `${(v / 1e9).toFixed(1)}B`
+          : v >= 1e6 ? `${(v / 1e6).toFixed(1)}M`
+          : v >= 1e3 ? `${(v / 1e3).toFixed(0)}K` : `${Math.round(v)}`;
+        ctx.fillStyle = color;
+        ctx.textAlign = 'left';
+        ctx.fillText(label, x1 + 2, y - 2);
+      }
+      ctx.restore();
     }
 
     ctx.restore();
@@ -4720,6 +4846,30 @@
         <div class="kl-group">
           <div class="kl-group-title">🧲 清算主峰 / Liq Peaks
             <span class="meta">S↑=空头最大清算 · L↓=多头最大清算</span>
+          </div>
+          ${rows}
+        </div>`);
+    }
+
+    // ③ 每个窗口的买单墙 / 卖单墙（流动性热图口径 · 仅有订单簿录盘的品种）
+    if (Array.isArray(data.obWalls) && data.obWalls.length) {
+      const usdCompact = (v) => {
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) return '';
+        if (n >= 1e9) return ` (${(n / 1e9).toFixed(1)}B)`;
+        if (n >= 1e6) return ` (${(n / 1e6).toFixed(1)}M)`;
+        if (n >= 1e3) return ` (${(n / 1e3).toFixed(0)}K)`;
+        return ` (${n.toFixed(0)})`;
+      };
+      const rows = data.obWalls.map((w) => `
+        <div class="kl-row">
+          <span class="kl-label">${w.label}</span>
+          <span class="kl-val">买墙 ${_klPrice(w.bidWall, 'up')}<span class="meta">${usdCompact(w.bidUsd)}</span> · 卖墙 ${_klPrice(w.askWall, 'down')}<span class="meta">${usdCompact(w.askUsd)}</span></span>
+        </div>`).join('');
+      parts.push(`
+        <div class="kl-group">
+          <div class="kl-group-title">🧱 挂单墙 / OB Walls
+            <span class="meta">流动性热图最强买/卖墙 · 括号=USDT 名义额</span>
           </div>
           ${rows}
         </div>`);

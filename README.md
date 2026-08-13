@@ -122,7 +122,7 @@ npm run dev            # nodemon 热重载
 | POST | `/api/alerts/liquidation-cross` | 清算热图实时事件（`eventType=cross` 穿越 / `eventType=reclaim` 假突破收回），声音 + 飞书 |
 | GET | `/api/alerts/liquidation-cross/status` | 各 side+event 最近触发时间、冷却参数、飞书启用状态 |
 | GET | `/api/trade/signal` | LONG/SHORT/NONE 信号 + 入场/止损/止盈（前端面板已由 key-levels 替代，接口保留） |
-| GET | `/api/key-levels` | **核心**：多周期关键价位聚合（15m/1h/4h/1d 的 FVG/POC/VWAP + 15m/1h/4h/24h 清算主峰 S↑/L↓），30s 服务端缓存 |
+| GET | `/api/key-levels` | **核心**：多周期关键价位聚合（15m/1h/4h/1d 的 FVG/POC/VWAP + 15m/1h/4h/24h 清算主峰 S↑/L↓ + 15m/1h/4h/24h 买单墙/卖单墙），30s 服务端缓存 |
 | GET | `/api/squeeze/warning` | 扎空/扎多预警评分（资金费率 / OI / 持仓比 / Taker） |
 | GET | `/api/squeeze/confirmation` | 价格-OI 背离 / 爆仓主导 / 资金费率回归 |
 | GET | `/api/squeeze/heatmap` | 清算价位热力图 + 最近多/空爆仓集群 |
@@ -208,10 +208,16 @@ positionSize = riskAmount / |entry - stopLoss|
 - 右下副图：成交量直方图、CVD 累积曲线、持仓量、订单簿水平条形深度图
   - **CVD 副图「合并 / 单一 + Coin / USD」切换**：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径，按 10s poll 刷新）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）。口径 Coin = 币数(BTC)，USD = 报价额/名义价值（对照 Coinglass 选 USD）
   - **持仓量副图「合并 / 单一 + USD / Coin + K线 / 面积」切换**：合并三类合约、口径、合成 K 线（绿增红减）三组开关
+- **流动性热图 / Liquidity Heatmap**（仅 BTCUSDT 合约有录盘）：订单簿 2D 热图 + K 线叠加，
+  并自动标注**买/卖墙延伸线**——每侧取行峰值 ≥ P95 的 top3 墙，从墙形成时刻向右延伸虚线，
+  直到被 K 线穿过即断开（断点画 ✕）；bid 墙绿色 / ask 墙红色，线首标签为墙厚度（USDT 名义额）
 - 右侧面板：**📌 关键价位 / Key Levels**（点击任意价格即复制）——
   每个周期 (15m/1h/4h/1d) 的看涨/看跌 FVG 区间、POC、VWAP，
   加上每个清算热图窗口 (15m/1h/4h/24h) 的 S↑ 空头最大清算价与 L↓ 多头最大清算价
-  （主峰算法与清算热图横线同源）；服务端 30s 缓存 + 前端 30s 节流。
+  （主峰算法与清算热图横线同源），
+  以及每个窗口 (15m/1h/4h/24h) 的 🧱 最强买单墙 / 卖单墙价位
+  （流动性热图口径：订单簿录盘按 USDT 名义额跨快照取 max，仅 BTCUSDT 合约有录盘）；
+  服务端 30s 缓存 + 前端 30s 节流。
   另含清算磁极信号 v2 与双层共振信号子卡（原「交易信号 / Trade Signal」卡已移除，
   `/api/trade/signal` 接口保留可直接 curl）
 

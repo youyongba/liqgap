@@ -81,5 +81,42 @@ console.log('\n[2] _computeWindowPeaks · 主峰位于现价两侧');
   check('K 线不足返回 null', kl._computeWindowPeaks(few, win, mid, now) === null);
 }
 
+// ---------------------------------------------------------------------------
+// 场景 3：_computeObWalls —— 挂单墙（buy 墙在中价下方 / sell 墙在中价上方）
+// ---------------------------------------------------------------------------
+console.log('\n[3] _computeObWalls · 买/卖墙价位');
+{
+  const obRecorder = require('../services/orderbookRecorder.js');
+  const origFindRange = obRecorder.findRange;
+  try {
+    const now = Date.now();
+    const mid = 100;
+    // 伪造 30 分钟快照：98 有一面持续的大买墙，103 有一面大卖墙
+    const snaps = [];
+    for (let i = 0; i < 30; i += 1) {
+      const ts = now - (30 - i) * 60_000;
+      snaps.push({
+        ts,
+        bids: [['99.5', '1'], ['98', '50'], ['97', '2']],
+        asks: [['100.5', '1'], ['103', '40'], ['104', '2']]
+      });
+    }
+    obRecorder.findRange = () => snaps;
+
+    const walls = kl._computeObWalls('BTCUSDT', 'futures', mid);
+    check('返回 4 个窗口', Array.isArray(walls) && walls.length === 4);
+    const w1h = walls.find((w) => w.label === '1h');
+    check('1h 买墙在中价下方且贴近 98', w1h && w1h.bidWall < mid && Math.abs(w1h.bidWall - 98) < 1);
+    check('1h 卖墙在中价上方且贴近 103', w1h && w1h.askWall > mid && Math.abs(w1h.askWall - 103) < 1);
+    check('买墙名义额 > 卖墙以外档位', w1h && w1h.bidUsd > 0 && w1h.askUsd > 0);
+
+    // 无快照 → []
+    obRecorder.findRange = () => [];
+    check('无快照返回 []', kl._computeObWalls('ETHUSDT', 'futures', mid).length === 0);
+  } finally {
+    obRecorder.findRange = origFindRange;
+  }
+}
+
 console.log(`\n结果: ${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
