@@ -249,97 +249,32 @@ function buildHeatmapMatrix(snapshots, opts) {
   // 由于"取最大"算子需要先在单个快照内累加 sum，然后跨快照取 max，
   // 所以每处理一个快照都用临时 sum 数组，处理完再 max-merge 到主矩阵。
   let maxValue = 0;
-  let lockedBidPi = null;
-  let lockedBidVol = 0;
-  let lockedAskPi = null;
-  let lockedAskVol = 0;
-
   for (const snap of snapshots) {
     const ti = Math.floor((snap.ts - fromMs) / bucketMs);
     if (ti < 0 || ti >= tCount) continue;
-
     const sumBid = new Array(pCount).fill(0);
     const sumAsk = new Array(pCount).fill(0);
-    let bestBid = -Infinity;
-    let bestAsk = Infinity;
-
     for (const [pStr, qStr] of (snap.bids || [])) {
       const p = Number(pStr);
       const q = Number(qStr);
       if (!Number.isFinite(p) || !Number.isFinite(q) || q <= 0) continue;
-      if (p > bestBid) bestBid = p;
       const pi = Math.floor((p - priceMin) / priceBucket);
       if (pi < 0 || pi >= pCount) continue;
       sumBid[pi] += p * q;
     }
-
     for (const [pStr, qStr] of (snap.asks || [])) {
       const p = Number(pStr);
       const q = Number(qStr);
       if (!Number.isFinite(p) || !Number.isFinite(q) || q <= 0) continue;
-      if (p < bestAsk) bestAsk = p;
       const pi = Math.floor((p - priceMin) / priceBucket);
       if (pi < 0 || pi >= pCount) continue;
       sumAsk[pi] += p * q;
     }
-
-    let maxBidVol = 0, maxBidPi = -1;
-    let maxAskVol = 0, maxAskPi = -1;
-    for (let pi = 0; pi < pCount; pi++) {
-      if (sumBid[pi] > maxBidVol) { maxBidVol = sumBid[pi]; maxBidPi = pi; }
-      if (sumAsk[pi] > maxAskVol) { maxAskVol = sumAsk[pi]; maxAskPi = pi; }
-    }
-
-    // 处理买单墙锁定与断裂 (Bid Wall Lock & Break)
-    if (lockedBidPi !== null) {
-      const lockedPrice = prices[lockedBidPi];
-      const isExecuted = bestAsk <= lockedPrice + priceBucket; // K线价格触碰
-      const currentVol = sumBid[lockedBidPi] || 0;
-      
-      if (isExecuted) {
-        lockedBidPi = null;
-        lockedBidVol = 0;
-      } else {
-        // 只要没被K线穿透，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失（无限向右延伸）
-        if (currentVol > lockedBidVol) {
-            lockedBidVol = currentVol;
-        }
-      }
-    }
-    if (lockedBidPi === null && maxBidPi !== -1) {
-      lockedBidPi = maxBidPi;
-      lockedBidVol = maxBidVol;
-    }
-
-    // 处理卖单墙锁定与断裂 (Ask Wall Lock & Break)
-    if (lockedAskPi !== null) {
-      const lockedPrice = prices[lockedAskPi];
-      const isExecuted = bestBid >= lockedPrice; // K线价格触碰
-      const currentVol = sumAsk[lockedAskPi] || 0;
-      
-      if (isExecuted) {
-        lockedAskPi = null;
-        lockedAskVol = 0;
-      } else {
-        // 只要没被K线穿透，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失
-        if (currentVol > lockedAskVol) {
-            lockedAskVol = currentVol;
-        }
-      }
-    }
-    if (lockedAskPi === null && maxAskPi !== -1) {
-      lockedAskPi = maxAskPi;
-      lockedAskVol = maxAskVol;
-    }
-
-    // 仅将锁定的最强墙写入矩阵，形成直线，无限延伸直到被K线穿过
-    if (lockedBidPi !== null) {
-      if (lockedBidVol > bidMatrix[ti][lockedBidPi]) bidMatrix[ti][lockedBidPi] = lockedBidVol;
-      if (lockedBidVol > maxValue) maxValue = lockedBidVol;
-    }
-    if (lockedAskPi !== null) {
-      if (lockedAskVol > askMatrix[ti][lockedAskPi]) askMatrix[ti][lockedAskPi] = lockedAskVol;
-      if (lockedAskVol > maxValue) maxValue = lockedAskVol;
+    for (let pi = 0; pi < pCount; pi += 1) {
+      if (sumBid[pi] > bidMatrix[ti][pi]) bidMatrix[ti][pi] = sumBid[pi];
+      if (sumAsk[pi] > askMatrix[ti][pi]) askMatrix[ti][pi] = sumAsk[pi];
+      if (sumBid[pi] > maxValue) maxValue = sumBid[pi];
+      if (sumAsk[pi] > maxValue) maxValue = sumAsk[pi];
     }
   }
 

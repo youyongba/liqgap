@@ -115,17 +115,7 @@ router.get('/orderbook/heatmap', async (req, res) => {
     const priceRangeRaw = req.query.priceRange;
     let priceRange = NaN;
     let autoRange = false;
-    let customMin = NaN;
-    let customMax = NaN;
-    
-    if (req.query.priceMin && req.query.priceMax) {
-       customMin = Number(req.query.priceMin);
-       customMax = Number(req.query.priceMax);
-    }
-    
-    if (Number.isFinite(customMin) && Number.isFinite(customMax)) {
-      // 明确指定了 custom min/max
-    } else if (priceRangeRaw === undefined || priceRangeRaw === '' || priceRangeRaw === 'auto' || priceRangeRaw === 'custom') {
+    if (priceRangeRaw === undefined || priceRangeRaw === '' || priceRangeRaw === 'auto') {
       autoRange = true;
     } else {
       priceRange = Number(priceRangeRaw);
@@ -138,10 +128,7 @@ router.get('/orderbook/heatmap', async (req, res) => {
 
     let priceMin;
     let priceMax;
-    if (Number.isFinite(customMin) && Number.isFinite(customMax)) {
-      priceMin = customMin;
-      priceMax = customMax;
-    } else if (autoRange) {
+    if (autoRange) {
       // 扫所有快照拿到价差极值；再加 5% 边距让最远档位仍然可见。
       let lo = Infinity;
       let hi = -Infinity;

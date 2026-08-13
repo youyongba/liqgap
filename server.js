@@ -44,7 +44,6 @@ const liqSignalRoute = require('./routes/liqSignal');
 const resonanceSignalRoute = require('./routes/resonanceSignal');
 const autoTradeRoute = require('./routes/autoTrade');
 const cvdRoute = require('./routes/cvd');
-const orderbookRecorder = require('./services/orderbookRecorder');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -81,7 +80,6 @@ app.use('/api', resonanceSignalRoute);
 app.use('/api', autoTradeRoute);
 app.use('/api', cvdRoute);
 app.use('/api/ai', aiRoute);
-
 // 健康检查 (Health-check endpoint)
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } });
