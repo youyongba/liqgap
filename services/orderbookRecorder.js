@@ -250,7 +250,9 @@ function buildHeatmapMatrix(snapshots, opts) {
   // 所以每处理一个快照都用临时 sum 数组，处理完再 max-merge 到主矩阵。
   let maxValue = 0;
   let lockedBidPi = null;
+  let lockedBidVol = 0;
   let lockedAskPi = null;
+  let lockedAskVol = 0;
 
   for (const snap of snapshots) {
     const ti = Math.floor((snap.ts - fromMs) / bucketMs);
@@ -292,38 +294,48 @@ function buildHeatmapMatrix(snapshots, opts) {
     if (lockedBidPi !== null) {
       const lockedPrice = prices[lockedBidPi];
       const isExecuted = bestAsk <= lockedPrice + priceBucket; // K线价格触碰
-      const isOvercome = sumBid[lockedBidPi] < maxBidVol * 0.8; // 墙被撤销或被其他更强的墙取代
-      if (isExecuted || isOvercome) {
+      if (isExecuted) {
         lockedBidPi = null;
+        lockedBidVol = 0;
+      } else {
+        // 只要没被K线穿透，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失（无限向右延伸）
+        if (sumBid[lockedBidPi] > lockedBidVol) {
+            lockedBidVol = sumBid[lockedBidPi];
+        }
       }
     }
     if (lockedBidPi === null && maxBidPi !== -1) {
       lockedBidPi = maxBidPi;
+      lockedBidVol = maxBidVol;
     }
 
     // 处理卖单墙锁定与断裂 (Ask Wall Lock & Break)
     if (lockedAskPi !== null) {
       const lockedPrice = prices[lockedAskPi];
       const isExecuted = bestBid >= lockedPrice; // K线价格触碰
-      const isOvercome = sumAsk[lockedAskPi] < maxAskVol * 0.8; // 墙被撤销或被其他更强的墙取代
-      if (isExecuted || isOvercome) {
+      if (isExecuted) {
         lockedAskPi = null;
+        lockedAskVol = 0;
+      } else {
+        // 只要没被K线穿透，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失
+        if (sumAsk[lockedAskPi] > lockedAskVol) {
+            lockedAskVol = sumAsk[lockedAskPi];
+        }
       }
     }
     if (lockedAskPi === null && maxAskPi !== -1) {
       lockedAskPi = maxAskPi;
+      lockedAskVol = maxAskVol;
     }
 
-    // 仅将锁定的最强墙写入矩阵，形成直线
+    // 仅将锁定的最强墙写入矩阵，形成直线，无限延伸直到被K线穿过
     if (lockedBidPi !== null) {
-      const vol = sumBid[lockedBidPi];
-      if (vol > bidMatrix[ti][lockedBidPi]) bidMatrix[ti][lockedBidPi] = vol;
-      if (vol > maxValue) maxValue = vol;
+      if (lockedBidVol > bidMatrix[ti][lockedBidPi]) bidMatrix[ti][lockedBidPi] = lockedBidVol;
+      if (lockedBidVol > maxValue) maxValue = lockedBidVol;
     }
     if (lockedAskPi !== null) {
-      const vol = sumAsk[lockedAskPi];
-      if (vol > askMatrix[ti][lockedAskPi]) askMatrix[ti][lockedAskPi] = vol;
-      if (vol > maxValue) maxValue = vol;
+      if (lockedAskVol > askMatrix[ti][lockedAskPi]) askMatrix[ti][lockedAskPi] = lockedAskVol;
+      if (lockedAskVol > maxValue) maxValue = lockedAskVol;
     }
   }
 
