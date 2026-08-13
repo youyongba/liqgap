@@ -54,6 +54,7 @@
     heatmapEmpty: document.getElementById('heatmap-empty'),
     heatmapMeta: document.getElementById('heatmap-meta'),
     heatmapWindow: document.getElementById('heatmap-window'),
+    heatmapKlineInterval: document.getElementById('heatmap-kline-interval'),
     heatmapRange: document.getElementById('heatmap-range'),
     liqHeatmapCanvas: document.getElementById('liq-heatmap-canvas'),
     liqHeatmapTooltip: document.getElementById('liq-heatmap-tooltip'),
@@ -641,9 +642,11 @@
     const state = {
       windowMs: Number((els.heatmapWindow && els.heatmapWindow.value) || 3_600_000),
       priceRange: _readPriceRange(),
+      klineInterval: (els.heatmapKlineInterval && els.heatmapKlineInterval.value) || '5m',
       // anchorMs：热图 to 时刻（默认 null = 跟实时 now，主图 hover 时锁定到 hover 时间）
       anchorMs: null,
       data: null,
+      heatmapKlines: [],
       pixelRatio: window.devicePixelRatio || 1,
       cssWidth: 0,
       cssHeight: 0,
@@ -769,55 +772,55 @@
         }
       }
 
-      // ---- (1.5) K线叠加 (Overlay K-lines) -------------------
-      if (typeof lastCandles !== 'undefined' && lastCandles.length > 0) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(ox, oy, pw, ph);
-        ctx.clip();
+    // ---- (1.5) K线叠加 (Overlay K-lines) -------------------
+    if (state.heatmapKlines && state.heatmapKlines.length > 0) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(ox, oy, pw, ph);
+      ctx.clip();
 
-        let intervalMs = 60000;
-        if (lastCandles.length > 1) {
-            intervalMs = Number(lastCandles[1].openTime) - Number(lastCandles[0].openTime);
-        }
-        const candleW = Math.max(1, (intervalMs / (d.toMs - d.fromMs)) * pw * 0.5);
-        for (const c of lastCandles) {
-          const ts = Number(c.openTime);
-          if (ts < d.fromMs - intervalMs || ts > d.toMs + intervalMs) continue;
-          
-          const x = ox + ((ts - d.fromMs) / (d.toMs - d.fromMs)) * pw;
-          const open = Number(c.open);
-          const high = Number(c.high);
-          const low = Number(c.low);
-          const close = Number(c.close);
-          
-          const yO = oy + ph - ((open - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
-          const yH = oy + ph - ((high - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
-          const yL = oy + ph - ((low - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
-          const yC = oy + ph - ((close - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
-          
-          const isUp = close >= open;
-          // 半透明K线，避免完全遮挡热图
-          ctx.strokeStyle = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
-          ctx.fillStyle = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
-          
-          // 影线
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(x, yH);
-          ctx.lineTo(x, yL);
-          ctx.stroke();
-          
-          // 实体
-          const bodyTop = Math.min(yO, yC);
-          const bodyBottom = Math.max(yO, yC);
-          const bodyHeight = Math.max(2, bodyBottom - bodyTop);
-          const hw = Math.max(1, candleW / 2);
-          
-          ctx.fillRect(x - hw, bodyTop, hw * 2, bodyHeight);
-        }
-        ctx.restore();
+      let intervalMs = 60000;
+      if (state.heatmapKlines.length > 1) {
+          intervalMs = Number(state.heatmapKlines[1].openTime) - Number(state.heatmapKlines[0].openTime);
       }
+      const candleW = Math.max(1, (intervalMs / (d.toMs - d.fromMs)) * pw * 0.5);
+      for (const c of state.heatmapKlines) {
+        const ts = Number(c.openTime);
+        if (ts < d.fromMs - intervalMs || ts > d.toMs + intervalMs) continue;
+        
+        const x = ox + ((ts - d.fromMs) / (d.toMs - d.fromMs)) * pw;
+        const open = Number(c.open);
+        const high = Number(c.high);
+        const low = Number(c.low);
+        const close = Number(c.close);
+        
+        const yO = oy + ph - ((open - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+        const yH = oy + ph - ((high - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+        const yL = oy + ph - ((low - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+        const yC = oy + ph - ((close - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+        
+        const isUp = close >= open;
+        // 半透明K线，避免完全遮挡热图
+        ctx.strokeStyle = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
+        ctx.fillStyle = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
+        
+        // 影线
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x, yH);
+        ctx.lineTo(x, yL);
+        ctx.stroke();
+        
+        // 实体
+        const bodyTop = Math.min(yO, yC);
+        const bodyBottom = Math.max(yO, yC);
+        const bodyHeight = Math.max(2, bodyBottom - bodyTop);
+        const hw = Math.max(1, candleW / 2);
+        
+        ctx.fillRect(x - hw, bodyTop, hw * 2, bodyHeight);
+      }
+      ctx.restore();
+    }
 
       // ---- (2) 水平价格 grid（暗色虚线） ---------------------
       const priceSpan = d.priceMax - d.priceMin;
@@ -1018,7 +1021,7 @@
       const { fromMs, toMs, bucketMs } = _resolveRange();
       const symbol = els.symbol.value.toUpperCase();
       const market = els.market.value;
-      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}`;
+      const key = `${symbol}|${market}|${fromMs}|${toMs}|${bucketMs}|${state.priceRange === 'auto' ? 'auto' : String(state.priceRange)}|${state.klineInterval}`;
       // 同一参数 5s 内不重拉
       const now = Date.now();
       if (key === state.lastFetchKey && now - state.lastFetchAt < 5_000) return;
@@ -1036,13 +1039,24 @@
         } else {
           params.set('priceRange', String(state.priceRange));
         }
-        const url = `/api/orderbook/heatmap?${params.toString()}`;
-        const data = await fetchJsonSoft(url);
+        
+        // 并发请求热图和K线
+        const heatmapUrl = `/api/orderbook/heatmap?${params.toString()}`;
+        
+        const klineLimit = 1500;
+        const klineUrl = `/api/klines?symbol=${symbol}&interval=${state.klineInterval}&limit=${klineLimit}&market=${market}&endTime=${toMs}&detectPatterns=false`;
+
+        const [data, klineRes] = await Promise.all([
+          fetchJsonSoft(heatmapUrl),
+          fetchJsonSoft(klineUrl)
+        ]);
+
         if (!data) {
           _updateMeta('拉取失败 / Fetch failed');
           return;
         }
         state.data = data;
+        state.heatmapKlines = (klineRes && klineRes.candles) ? klineRes.candles : [];
         _updateMeta();
         _draw();
       } catch (err) {
@@ -1068,6 +1082,14 @@
         scheduleFetch(0);
       });
     }
+    if (els.heatmapKlineInterval) {
+      els.heatmapKlineInterval.addEventListener('change', () => {
+        state.klineInterval = els.heatmapKlineInterval.value || '5m';
+        state.lastFetchKey = ''; // 强制重拉
+        scheduleFetch(0);
+      });
+    }
+
     if (els.heatmapRange) {
       els.heatmapRange.addEventListener('change', () => {
         state.priceRange = _readPriceRange();
