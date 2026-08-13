@@ -294,13 +294,17 @@ function buildHeatmapMatrix(snapshots, opts) {
     if (lockedBidPi !== null) {
       const lockedPrice = prices[lockedBidPi];
       const isExecuted = bestAsk <= lockedPrice + priceBucket; // K线价格触碰
-      if (isExecuted) {
+      const currentVol = sumBid[lockedBidPi] || 0;
+      // 如果当前挂单量衰减到曾经最高量的 20% 以下，视为庄家撤单 (Spoofing withdrawn)
+      const isSpoofed = currentVol < lockedBidVol * 0.2; 
+      
+      if (isExecuted || isSpoofed) {
         lockedBidPi = null;
         lockedBidVol = 0;
       } else {
-        // 只要没被K线穿透，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失（无限向右延伸）
-        if (sumBid[lockedBidPi] > lockedBidVol) {
-            lockedBidVol = sumBid[lockedBidPi];
+        // 只要没被K线穿透且没被大幅撤单，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失（无限向右延伸）
+        if (currentVol > lockedBidVol) {
+            lockedBidVol = currentVol;
         }
       }
     }
@@ -313,13 +317,16 @@ function buildHeatmapMatrix(snapshots, opts) {
     if (lockedAskPi !== null) {
       const lockedPrice = prices[lockedAskPi];
       const isExecuted = bestBid >= lockedPrice; // K线价格触碰
-      if (isExecuted) {
+      const currentVol = sumAsk[lockedAskPi] || 0;
+      const isSpoofed = currentVol < lockedAskVol * 0.2;
+      
+      if (isExecuted || isSpoofed) {
         lockedAskPi = null;
         lockedAskVol = 0;
       } else {
-        // 只要没被K线穿透，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失
-        if (sumAsk[lockedAskPi] > lockedAskVol) {
-            lockedAskVol = sumAsk[lockedAskPi];
+        // 只要没被K线穿透且没被大幅撤单，就保持该墙的最大挂单量，确保视觉上直线不会变暗或消失
+        if (currentVol > lockedAskVol) {
+            lockedAskVol = currentVol;
         }
       }
     }
