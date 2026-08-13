@@ -17,6 +17,7 @@
  */
 
 (function () {
+  let lastCandles = [];
   const els = {
     symbol: document.getElementById('symbol'),
     market: document.getElementById('market'),
@@ -768,6 +769,56 @@
         }
       }
 
+      // ---- (1.5) K线叠加 (Overlay K-lines) -------------------
+      if (typeof lastCandles !== 'undefined' && lastCandles.length > 0) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(ox, oy, pw, ph);
+        ctx.clip();
+
+        let intervalMs = 60000;
+        if (lastCandles.length > 1) {
+            intervalMs = Number(lastCandles[1].openTime) - Number(lastCandles[0].openTime);
+        }
+        const candleW = Math.max(1, (intervalMs / (d.toMs - d.fromMs)) * pw * 0.5);
+        for (const c of lastCandles) {
+          const ts = Number(c.openTime);
+          if (ts < d.fromMs - intervalMs || ts > d.toMs + intervalMs) continue;
+          
+          const x = ox + ((ts - d.fromMs) / (d.toMs - d.fromMs)) * pw;
+          const open = Number(c.open);
+          const high = Number(c.high);
+          const low = Number(c.low);
+          const close = Number(c.close);
+          
+          const yO = oy + ph - ((open - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+          const yH = oy + ph - ((high - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+          const yL = oy + ph - ((low - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+          const yC = oy + ph - ((close - d.priceMin) / (d.priceMax - d.priceMin)) * ph;
+          
+          const isUp = close >= open;
+          // 半透明K线，避免完全遮挡热图
+          ctx.strokeStyle = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
+          ctx.fillStyle = isUp ? 'rgba(74, 222, 128, 0.85)' : 'rgba(248, 113, 113, 0.85)';
+          
+          // 影线
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x, yH);
+          ctx.lineTo(x, yL);
+          ctx.stroke();
+          
+          // 实体
+          const bodyTop = Math.min(yO, yC);
+          const bodyBottom = Math.max(yO, yC);
+          const bodyHeight = Math.max(2, bodyBottom - bodyTop);
+          const hw = Math.max(1, candleW / 2);
+          
+          ctx.fillRect(x - hw, bodyTop, hw * 2, bodyHeight);
+        }
+        ctx.restore();
+      }
+
       // ---- (2) 水平价格 grid（暗色虚线） ---------------------
       const priceSpan = d.priceMax - d.priceMin;
       const targetTicks = Math.max(6, Math.min(12, Math.floor(ph / 36)));
@@ -1058,6 +1109,7 @@
 
     return {
       refresh: () => scheduleFetch(0),
+      redraw: () => _draw(),
       setAnchor: setHeatmapAnchor,
       resize: () => _resizeCanvas(),
       onSymbolMarketChange: () => {
@@ -2929,7 +2981,6 @@
   // 缓存最近一次渲染的 K 线，便于右键时定位 OHLC
   // (Cache last-rendered candles so context menu can show OHLC for the
   //  bar under the cursor.)
-  let lastCandles = [];
   let ctxMenuEl = null;
   let copyToastEl = null;
   let copyToastTimer = null;
@@ -3612,6 +3663,10 @@
       close: c.close
     }));
     _smartUpdateSeries(candleSeries, mapped);
+    
+    if (heatmap && heatmap.redraw) {
+      heatmap.redraw();
+    }
 
     // VWAP 兜底：SSE 推送的 candle 没有 vwap 字段（hub 缓存的是 raw kline）；
     // 加载了历史后各分页的 vwap 是各自窗口累积的、边界会跳变 ——
