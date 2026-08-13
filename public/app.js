@@ -734,7 +734,7 @@
       return factor * exp;
     }
 
-    function _draw(offsetX = 0) {
+    function _draw(offsetX = 0, offsetY = 0) {
       if (!ctx) return;
       const W = state.cssWidth, H = state.cssHeight;
       ctx.clearRect(0, 0, W, H);
@@ -762,7 +762,7 @@
       // 向下稍微放宽一点 clip 区域，以便把底部的"时间刻度"也一起平移
       ctx.rect(ox, oy, pw, ph + 20);
       ctx.clip();
-      ctx.translate(offsetX, 0);
+      ctx.translate(offsetX, offsetY);
 
       // 色块：合并 bid+ask 取较大值（同价位通常只会有一边有挂单）
       const normMax = (Number.isFinite(d.p95) && d.p95 > 0) ? d.p95 : d.maxValue;
@@ -825,6 +825,15 @@
       }
     }
 
+    ctx.restore();
+
+    // === 2. 价格刻度和网格 (仅 Y 轴平移) ===
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, oy, W, ph); // 限制在图表高度内
+    ctx.clip();
+    ctx.translate(0, offsetY);
+
       // ---- (2) 水平价格 grid（暗色虚线） ---------------------
       const priceSpan = d.priceMax - d.priceMin;
       const targetTicks = Math.max(6, Math.min(12, Math.floor(ph / 36)));
@@ -879,6 +888,15 @@
           ctx.restore();
         }
       }
+      
+    ctx.restore();
+
+    // === 3. 时间刻度和垂直线 (仅 X 轴平移) ===
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(ox, oy, pw, ph + 30);
+    ctx.clip();
+    ctx.translate(offsetX, 0);
 
       // ---- (5) 时间刻度 (底部) -------------------------------
       ctx.fillStyle = 'rgba(220,228,240,0.95)';
@@ -915,8 +933,8 @@
         ctx.restore();
       }
       
-      // 如果用户有手动平移，在右上角显示一个 "返回现在" 的提示或直接靠图标提示，这里省略复杂UI
-
+      // 结束 X 轴平移上下文
+      ctx.restore();
 
       // ---- (7) 边框 + hover 高亮 ------------------------------
       ctx.strokeStyle = 'rgba(255,255,255,0.12)';
@@ -926,7 +944,7 @@
       if (state.hoverCell && !isDragging) {
         const { ti, pi } = state.hoverCell;
         if (ti >= 0 && ti < T && pi >= 0 && pi < P) {
-          const x = ox + offsetX + ti * cellW;
+          const x = ox + ti * cellW;
           const y = oy + (P - 1 - pi) * cellH;
           if (x >= ox && x <= ox + pw) {
             ctx.save();
@@ -939,7 +957,7 @@
       }
       
       // 如果有平移，右上角绘制一个复位小提示
-      if (state.dragPanMs > 0 && !isDragging) {
+      if ((state.dragPanMs > 0 || Math.abs(state.dragPanPrice) > 0) && !isDragging) {
         ctx.fillStyle = 'rgba(251, 191, 36, 0.15)';
         ctx.fillRect(ox + pw - 90, oy + 4, 86, 20);
         ctx.fillStyle = '#fbbf24';
@@ -968,14 +986,20 @@
 
     let isDragging = false;
     let dragStartX = 0;
+    let dragStartY = 0;
     let dragStartPan = 0;
+    let dragStartPanPrice = 0;
     let dragOffsetPx = 0;
+    let dragOffsetYPx = 0;
 
     canvas.addEventListener('mousedown', (e) => {
       isDragging = true;
       dragStartX = e.clientX;
+      dragStartY = e.clientY;
       dragStartPan = state.dragPanMs || 0;
+      dragStartPanPrice = state.dragPanPrice || 0;
       dragOffsetPx = 0;
+      dragOffsetYPx = 0;
       canvas.style.cursor = 'grabbing';
     });
 
@@ -983,11 +1007,23 @@
       if (isDragging) {
         isDragging = false;
         canvas.style.cursor = 'crosshair';
-        if (Math.abs(dragOffsetPx) > 0) {
+        if (Math.abs(dragOffsetPx) > 0 || Math.abs(dragOffsetYPx) > 0) {
           const msPerPixel = state.windowMs / state.plot.w;
           state.dragPanMs = dragStartPan + dragOffsetPx * msPerPixel;
           if (state.dragPanMs < -state.windowMs * 0.8) state.dragPanMs = -state.windowMs * 0.8;
+          
+          if (state.data && state.data.priceMax && state.data.priceMin) {
+             const pricePerPixel = (state.data.priceMax - state.data.priceMin) / state.plot.h;
+             state.dragPanPrice = dragStartPanPrice + dragOffsetYPx * pricePerPixel;
+          }
+          
           dragOffsetPx = 0;
+          dragOffsetYPx = 0;
+          // 当发生拖拽后，强制切换到 custom 价格范围，以维持平移后的视角
+          if (state.priceRange === 'auto' && Math.abs(state.dragPanPrice) > 0) {
+              state.priceRange = 'custom';
+              if (els.heatmapRange) els.heatmapRange.value = 'custom';
+          }
           scheduleFetch(0);
         }
       }
@@ -996,8 +1032,9 @@
     canvas.addEventListener('mousemove', (e) => {
       if (isDragging) {
         dragOffsetPx = e.clientX - dragStartX;
-        // 拖动时，只做视觉平移，不发请求，实现 60fps 丝滑拖拽
-        _draw(dragOffsetPx);
+        dragOffsetYPx = e.clientY - dragStartY;
+        // 拖动时，做视觉平移
+        _draw(dragOffsetPx, dragOffsetYPx);
         return;
       }
       
@@ -1032,6 +1069,7 @@
     });
     canvas.addEventListener('dblclick', () => {
       state.dragPanMs = 0;
+      state.dragPanPrice = 0;
       state.windowMs = Number(els.heatmapWindow ? els.heatmapWindow.value : 3_600_000) || 3_600_000;
       if (els.heatmapRange) els.heatmapRange.value = 'auto';
       state.priceRange = 'auto';
@@ -1194,6 +1232,12 @@
         });
         if (state.priceRange === 'auto') {
           params.set('priceRange', 'auto');
+        } else if (state.priceRange === 'custom' && state.data && state.data.priceMax && state.data.priceMin) {
+          params.set('priceRange', 'custom');
+          // 将平移后的中心价和原本的跨度传过去
+          const span = state.data.priceMax - state.data.priceMin;
+          params.set('priceMin', String(state.data.priceMin + state.dragPanPrice));
+          params.set('priceMax', String(state.data.priceMax + state.dragPanPrice));
         } else {
           params.set('priceRange', String(state.priceRange));
         }
