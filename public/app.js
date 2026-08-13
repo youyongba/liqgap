@@ -31,18 +31,9 @@
     oiPane: document.getElementById('oi-pane'),
     orderbookCanvas: document.getElementById('orderbook-chart'),
     mainMeta: document.getElementById('main-meta'),
-    signalBanner: document.getElementById('signal-banner'),
     signalMeta: document.getElementById('signal-meta'),
-    kvEntry: document.getElementById('kv-entry'),
-    kvSL: document.getElementById('kv-sl'),
-    kvRisk: document.getElementById('kv-risk'),
-    kvSize: document.getElementById('kv-size'),
-    kvNotional: document.getElementById('kv-notional'),
-    tpList: document.getElementById('tp-list'),
-    longConditions: document.getElementById('long-conditions'),
-    shortConditions: document.getElementById('short-conditions'),
-    alerts: document.getElementById('alerts'),
-    snapshot: document.getElementById('snapshot'),
+    keyLevels: document.getElementById('key-levels'),
+    keyLevelsMeta: document.getElementById('kl-meta'),
     volTitle: document.getElementById('vol-title'),
     cvdTitle: document.getElementById('cvd-title'),
     oiTitle: document.getElementById('oi-title'),
@@ -4676,116 +4667,116 @@
     }, 200);
   }
 
-  let currentSignalData = null;
-  let currentAlertsData = null;
+  // ===== 📌 关键价位 / Key Levels =====
+  // 后端 /api/key-levels 一次聚合返回（服务端 30s 缓存），前端 30s 节流拉取，
+  // 每个价格点击即复制原始数值（无千分位，方便直接粘到交易所）。
+  const KEY_LEVELS_REFRESH_MS = 30_000;
+  const _klState = { key: '', lastAt: 0, inflight: false };
 
-  function renderSignal(sig) {
-    currentSignalData = sig;
-    const banner = els.signalBanner;
-    const setup = (sig.indicatorsSnapshot || {}).setup || null;
-    banner.classList.remove('long', 'short', 'none');
-    if (sig.signal === 'LONG') {
-      banner.classList.add('long');
-      banner.textContent = setup
-        ? '🟢 做多 LONG · FVG回踩收复 / FVG Reclaim'
-        : '🟢 做多 LONG · 入场 / Enter Long';
-    } else if (sig.signal === 'SHORT') {
-      banner.classList.add('short');
-      banner.textContent = setup
-        ? '🔴 做空 SHORT · FVG假突破回落 / FVG Reject'
-        : '🔴 做空 SHORT · 入场 / Enter Short';
-    } else {
-      banner.classList.add('none');
-      banner.textContent = '⚪ 无信号 NONE · 暂无入场 / No Setup';
+  // 复制用原始值：保留足够精度但去掉浮点尾巴
+  function _klRaw(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '';
+    return String(parseFloat(n.toPrecision(10)));
+  }
+  function _klPrice(v, cls) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '<span class="kl-empty">-</span>';
+    return `<span class="kl-price${cls ? ' ' + cls : ''}" data-copy="${_klRaw(n)}" title="点击复制 / Click to copy">${fmt(n, 2)}</span>`;
+  }
+  function _klRange(zone, cls) {
+    if (!zone) return '<span class="kl-empty">— 无 / none —</span>';
+    return `${_klPrice(zone.lower ?? zone.low, cls)} ~ ${_klPrice(zone.upper ?? zone.high, cls)}`;
+  }
+
+  function renderKeyLevels(data) {
+    if (!els.keyLevels || !data) return;
+    const parts = [];
+
+    // ① 每个周期的 FVG / POC / VWAP
+    for (const it of data.intervals || []) {
+      if (!it.ok) {
+        parts.push(`<div class="kl-group"><div class="kl-group-title">${it.interval}<span class="meta">数据不足 / no data</span></div></div>`);
+        continue;
+      }
+      parts.push(`
+        <div class="kl-group">
+          <div class="kl-group-title">${it.interval}</div>
+          <div class="kl-row"><span class="kl-label">看涨 FVG / Bull</span><span class="kl-val">${_klRange(it.bullFvg, 'up')}</span></div>
+          <div class="kl-row"><span class="kl-label">看跌 FVG / Bear</span><span class="kl-val">${_klRange(it.bearFvg, 'down')}</span></div>
+          <div class="kl-row"><span class="kl-label">POC</span><span class="kl-val">${_klRange(it.poc, '')}</span></div>
+          <div class="kl-row"><span class="kl-label">VWAP</span><span class="kl-val">${_klPrice(it.vwap, '')}</span></div>
+        </div>`);
     }
-    banner.title = setup ? setup.label || '' : '';
-    els.signalMeta.textContent = sig.indicatorsSnapshot
-      ? [
-          sig.indicatorsSnapshot.symbol,
-          sig.indicatorsSnapshot.market,
-          sig.indicatorsSnapshot.interval
-        ].filter(Boolean).join(' · ')
-      : '';
 
-    els.kvEntry.textContent = sig.entryPrice == null ? '-' : fmt(sig.entryPrice, 4);
-    els.kvSL.textContent = sig.stopLoss == null ? '-' : fmt(sig.stopLoss, 4);
-    els.kvSL.className = 'value ' + (sig.signal === 'LONG' ? 'down' : sig.signal === 'SHORT' ? 'up' : '');
-    els.kvRisk.textContent = sig.riskAmount == null ? '-' : fmt(sig.riskAmount, 2);
-    els.kvSize.textContent = sig.positionSize == null ? '-' : fmt(sig.positionSize, 6);
-    els.kvNotional.textContent = sig.positionSizeQuote == null ? '-' : fmt(sig.positionSizeQuote, 2);
+    // ② 每个清算热图窗口的 S↑ max / L↓ max（仅合约）
+    if (Array.isArray(data.liqWindows) && data.liqWindows.length) {
+      const rows = data.liqWindows.map((w) => `
+        <div class="kl-row">
+          <span class="kl-label">${w.label}</span>
+          <span class="kl-val">S↑ ${_klPrice(w.sMax, 'down')} · L↓ ${_klPrice(w.lMax, 'up')}</span>
+        </div>`).join('');
+      parts.push(`
+        <div class="kl-group">
+          <div class="kl-group-title">🧲 清算主峰 / Liq Peaks
+            <span class="meta">S↑=空头最大清算 · L↓=多头最大清算</span>
+          </div>
+          ${rows}
+        </div>`);
+    }
 
-    els.tpList.innerHTML = '';
-    if (Array.isArray(sig.takeProfits)) {
-      sig.takeProfits.forEach((tp, i) => {
-        const row = document.createElement('div');
-        row.className = 'tp-item';
-        row.innerHTML = `
-          <span class="tp-label">止盈 TP${i + 1}</span>
-          <span class="tp-price">${fmt(tp.price, 4)}</span>
-          <span class="tp-fraction">平仓 / Close ${(tp.closeFraction * 100).toFixed(0)}%</span>
-        `;
-        els.tpList.appendChild(row);
+    els.keyLevels.innerHTML = parts.join('') || '<span class="kl-empty">暂无数据 / No data</span>';
+    if (els.keyLevelsMeta) {
+      els.keyLevelsMeta.textContent =
+        `${data.symbol} · ${data.market} · 最新价 ${fmt(data.latestPrice, 2)} · ${fmtBJDateTime(data.ts)}`;
+    }
+  }
+
+  async function refreshKeyLevels(force) {
+    if (!els.keyLevels || _klState.inflight) return;
+    const symbol = (els.symbol.value || 'BTCUSDT').trim().toUpperCase();
+    const market = els.market.value;
+    const key = `${symbol}|${market}`;
+    const now = Date.now();
+    // symbol/market 没变且未到刷新间隔 → 跳过（30s 节流，配合服务端 30s 缓存）
+    if (!force && key === _klState.key && now - _klState.lastAt < KEY_LEVELS_REFRESH_MS) return;
+    _klState.inflight = true;
+    try {
+      const resp = await fetchJsonSoft(`/api/key-levels?symbol=${symbol}&market=${market}`);
+      // 拉取期间用户切换了 symbol/market → 丢弃
+      if (key !== `${(els.symbol.value || 'BTCUSDT').trim().toUpperCase()}|${els.market.value}`) return;
+      if (resp) {
+        _klState.key = key;
+        _klState.lastAt = Date.now();
+        renderKeyLevels(resp);
+      }
+    } finally {
+      _klState.inflight = false;
+    }
+  }
+
+  // 点击复制（事件委托，整个列表只挂一个监听器）
+  if (els.keyLevels) {
+    els.keyLevels.addEventListener('click', (ev) => {
+      const target = ev.target.closest('.kl-price');
+      if (!target || !target.dataset.copy) return;
+      navigator.clipboard.writeText(target.dataset.copy).then(() => {
+        target.classList.add('copied');
+        const orig = target.textContent;
+        target.textContent = '✓ 已复制';
+        setTimeout(() => {
+          target.textContent = orig;
+          target.classList.remove('copied');
+        }, 900);
+      }).catch(() => {
+        // clipboard API 不可用（非 https 等）→ 退化为选中文本
+        const range = document.createRange();
+        range.selectNodeContents(target);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
       });
-    }
-
-    const snap = sig.indicatorsSnapshot || {};
-    const longConds = snap.longConditions || {};
-    const shortConds = snap.shortConditions || {};
-    const condLabels = {
-      bullishFvg: '看涨 FVG / Bullish FVG',
-      depthDominant: '深度比 > 0.6 / depthRatio>0.6',
-      cvdPriceUp: 'CVD↑ & 价↑ / CVD up & price up',
-      liquidityHealthy: '流动性健康 / Liquidity OK',
-      aboveVwap: '价 > VWAP / price>VWAP',
-      bearishFvg: '看跌 FVG / Bearish FVG',
-      depthDominantSell: '深度比 < -0.6 / depthRatio<-0.6',
-      cvdPriceDown: 'CVD↓ & 价↓ / CVD down & price down',
-      belowVwap: '价 < VWAP / price<VWAP',
-      // FVG 假突破形态条件 (FVG sweep-reject setup conditions)
-      cvdRising: '⚡ CVD 上涨 / CVD rising',
-      cvdFalling: '⚡ CVD 下跌 / CVD falling',
-      oiRising: '⚡ 持仓量上涨 / OI rising',
-      fvgTriggered: '⚡ FVG 已被打进 / FVG tagged',
-      priceRejected: '⚡ 跌回 FVG 下方 / rejected back',
-      priceReclaimed: '⚡ 收回 FVG 上方 / reclaimed back'
-    };
-    function paintCond(target, conds) {
-      target.innerHTML = '';
-      Object.entries(conds).forEach(([k, v]) => {
-        const div = document.createElement('div');
-        div.className = 'cond ' + (v ? 'ok' : 'bad');
-        div.innerHTML = `<span class="dot"></span><span>${condLabels[k] || k}</span>`;
-        target.appendChild(div);
-      });
-    }
-    // 形态条件叠加到对应方向的条件区（全部 ⚡ 前缀，与打分条件区分）
-    const setupConds = setup ? setup.conditions || {} : {};
-    paintCond(els.longConditions,
-      sig.signal === 'LONG' && setup ? { ...setupConds, ...longConds } : longConds);
-    paintCond(els.shortConditions,
-      sig.signal === 'SHORT' && setup ? { ...setupConds, ...shortConds } : shortConds);
-
-    els.snapshot.innerHTML = '';
-    const kv = (label, value) => {
-      els.snapshot.insertAdjacentHTML(
-        'beforeend',
-        `<div class="label">${label}</div><div class="value">${value}</div>`
-      );
-    };
-    kv('最新价 / Last Price', fmt(snap.latestPrice, 4));
-    kv('成交量加权均价 / VWAP', fmt(snap.vwap, 4));
-    kv('平均真实波幅 / ATR(14)', fmt(snap.atr, 4));
-    kv('深度比 / Depth Ratio', fmt(snap.depthRatio, 3));
-    kv('价差 / Spread', fmt(snap.spread, 4));
-    kv('累计成交量差值 / CVD', fmt(snap.cvd, 3));
-    kv('CVD~价格相关性 / CVD~Price ρ', fmt(snap.cvdPriceCorr, 3));
-    if (snap.oiChangePct != null) {
-      kv('持仓量趋势 / OI trend', `${snap.oiRising ? '↑ 增仓' : '↓ 减仓'} (${snap.oiChangePct >= 0 ? '+' : ''}${Number(snap.oiChangePct).toFixed(2)}%)`);
-    }
-    kv('最新非流动性 / ILLIQ (latest)', snap.latestIlliq == null ? '-' : Number(snap.latestIlliq).toExponential(2));
-    kv('平均非流动性 / ILLIQ (μ)', snap.illiqMean == null ? '-' : Number(snap.illiqMean).toExponential(2));
-    kv('多头评分 / Long Score', String(snap.longScore ?? '-'));
-    kv('空头评分 / Short Score', String(snap.shortScore ?? '-'));
+    });
   }
 
   // ===== 🧲 清算磁极信号 / Liq-Magnet Signal =====
@@ -5273,30 +5264,6 @@
   if (els.symbol) els.symbol.addEventListener('change', refreshResonance);
   if (els.market) els.market.addEventListener('change', refreshResonance);
 
-  function renderAlerts(alertData) {
-    currentAlertsData = alertData;
-    const flagLabels = {
-      spreadShock: '价差异常 / Spread shock (3σ)',
-      illiqShock: '低流动性 / ILLIQ shock (>2x μ)',
-      depthImbalance: '深度失衡 / Depth imbalance (>0.8)',
-      vwapDeviation: 'VWAP 偏离 / VWAP dev >2%',
-      cvdPriceDivergence: 'CVD/价格背离 / CVD-Price divergence'
-    };
-    els.alerts.innerHTML = '';
-    Object.entries(flagLabels).forEach(([k, label]) => {
-      const on = !!(alertData.flags && alertData.flags[k]);
-      const row = document.createElement('div');
-      row.className = 'alert-row ' + (on ? 'on' : 'off');
-      row.innerHTML = `<span>${label}</span><span>${on ? '触发 / ALERT' : '-'}</span>`;
-      els.alerts.appendChild(row);
-    });
-    const score = alertData.riskScore || 0;
-    const summary = document.createElement('div');
-    summary.className = 'alert-row ' + (score > 0 ? 'on' : 'off');
-    summary.innerHTML = `<strong>综合风险分数 / Risk Score</strong><strong>${score}/5</strong>`;
-    els.alerts.appendChild(summary);
-  }
-
   // ============================================================
   // SSE 实时模式 (Server-Sent Events realtime mode)
   // ============================================================
@@ -5676,12 +5643,14 @@
         ? fetchJsonSoft(`/api/trade/liq-signal?${liqSignalParams.toString()}`)
         : Promise.resolve(null);
 
-      const [kData, obData, oiData, signal, alerts, liqSignal, cvdData] = await Promise.all([
+      // 关键价位面板：内部 30s 节流 + 服务端 30s 缓存，放在主 Promise.all 外
+      // 不阻塞主循环（fire-and-forget）
+      refreshKeyLevels().catch(() => {});
+
+      const [kData, obData, oiData, liqSignal, cvdData] = await Promise.all([
         fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${KLINE_LIMIT}&market=${market}&detectPatterns=true`),
         obFetch,
         oiFetch,
-        fetchJsonSoft(`/api/trade/signal?symbol=${symbol}&market=${market}&interval=${interval}`),
-        fetchJsonSoft(`/api/alerts/liquidity?symbol=${symbol}&market=${market}&interval=${interval}`),
         liqSignalFetch,
         cvdFetch
       ]);
@@ -5712,8 +5681,6 @@
         }
         refreshCvdDisplay(lastCandles);
       }
-      if (signal) renderSignal(signal); else failed.push('signal');
-      if (alerts) renderAlerts(alerts); else failed.push('alerts');
       if (market === 'futures') {
         if (!liqWindowAnyAllowed) {
           renderLiqSignalWindowGated(liqWindowMs);
@@ -5977,11 +5944,7 @@
   // 飞书推送 (Feishu push controls)
   // ============================================================
   const fsEls = {
-    push: document.getElementById('fs-push'),
-    pushForce: document.getElementById('fs-push-force'),
     test: document.getElementById('fs-test'),
-    copy: document.getElementById('btn-copy-signal'),
-    btnAiAnalyze: document.getElementById('btn-ai-analyze'),
     atToggle: document.getElementById('at-toggle'),
     status: document.getElementById('fs-status')
   };
@@ -6074,8 +6037,6 @@
       const d = j.data;
       if (!d.enabled) {
         setFsStatus('飞书未配置 / Webhook not configured (.env)', 'warn');
-        if (fsEls.push) fsEls.push.disabled = true;
-        if (fsEls.pushForce) fsEls.pushForce.disabled = true;
         if (fsEls.test) fsEls.test.disabled = true;
         return;
       }
@@ -6098,33 +6059,6 @@
     }
   }
 
-  async function pushFeishuSignal(force) {
-    setFsStatus(force ? '强制推送中… / Forcing…' : '推送中… / Pushing…');
-    try {
-      const r = await fetch('/api/notify/signal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          symbol: els.symbol.value.trim().toUpperCase() || 'BTCUSDT',
-          market: els.market.value,
-          interval: els.interval.value,
-          force: !!force
-        })
-      });
-      const j = await r.json();
-      if (j.success) {
-        setFsStatus(`已推送 / Pushed · ${j.data.signal} · ${nowBJTimeHMS()} (UTC+8)`, 'ok');
-      } else {
-        setFsStatus('推送跳过 / Skip: ' + j.error, 'warn');
-      }
-    } catch (err) {
-      setFsStatus('推送失败 / Failed: ' + err.message, 'error');
-    } finally {
-      // 任何分支后都刷新一下状态以显示最新 lastNotified
-      setTimeout(refreshFeishuStatus, 1000);
-    }
-  }
-
   async function testFeishuWebhook() {
     setFsStatus('测试中… / Testing…');
     try {
@@ -6137,249 +6071,10 @@
     }
   }
 
-  if (fsEls.push) fsEls.push.addEventListener('click', () => pushFeishuSignal(false));
-  if (fsEls.pushForce) fsEls.pushForce.addEventListener('click', () => pushFeishuSignal(true));
   if (fsEls.test) fsEls.test.addEventListener('click', testFeishuWebhook);
 
-  if (fsEls.copy) {
-    fsEls.copy.addEventListener('click', () => {
-      // 只要有任何数据 (信号、快照、或者预警)，都可以复制
-      if (!currentSignalData && !currentAlertsData) {
-        alert('暂无数据 / No data yet');
-        return;
-      }
-      
-      const sig = currentSignalData || { signal: 'NONE' };
-      const snap = sig.indicatorsSnapshot || {};
-      const alerts = currentAlertsData || { flags: {}, riskScore: 0 };
-      
-      // 如果没有指标快照，尝试从页面元素中抓取部分信息作为后备
-      const symbolInfo = snap.symbol
-        ? `${snap.symbol} · ${snap.market} · ${snap.interval || els.interval.value}`
-        : `${els.symbol.value.toUpperCase()} · ${els.market.value} · ${els.interval.value}`;
-        
-      const sideStr = sig.signal === 'LONG' ? '🟢 做多 LONG' : (sig.signal === 'SHORT' ? '🔴 做空 SHORT' : '⚪ 无信号 NONE');
-      
-      const tps = Array.isArray(sig.takeProfits) 
-        ? sig.takeProfits.map((tp, i) => `TP${i+1}: ${fmt(tp.price, 4)} (平仓 ${(tp.closeFraction * 100).toFixed(0)}%)`).join('\n')
-        : '无 / None';
-
-      // 组装条件评估字符串
-      const condLabels = {
-        bullishFvg: '看涨 FVG', depthDominant: '深度比 > 0.6', cvdPriceUp: 'CVD↑ & 价↑',
-        liquidityHealthy: '流动性健康', aboveVwap: '价 > VWAP',
-        bearishFvg: '看跌 FVG', depthDominantSell: '深度比 < -0.6', cvdPriceDown: 'CVD↓ & 价↓',
-        belowVwap: '价 < VWAP'
-      };
-      
-      const longConds = snap.longConditions || {};
-      const shortConds = snap.shortConditions || {};
-      
-      const longStr = Object.keys(longConds).length > 0
-        ? Object.entries(longConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n')
-        : '无数据';
-      const shortStr = Object.keys(shortConds).length > 0
-        ? Object.entries(shortConds).map(([k, v]) => `${v ? '✅' : '❌'} ${condLabels[k] || k}`).join('\n')
-        : '无数据';
-
-      // 组装预警字符串
-      const flagLabels = {
-        spreadShock: '价差异常', illiqShock: '低流动性', depthImbalance: '深度失衡',
-        vwapDeviation: 'VWAP 偏离', cvdPriceDivergence: 'CVD/价格背离'
-      };
-      const alertStr = Object.entries(flagLabels).map(([k, label]) => {
-        const on = !!(alerts.flags && alerts.flags[k]);
-        return `${on ? '⚠️ 触发' : '➖ 正常'} : ${label}`;
-      }).join('\n');
-
-      
-      const text = `【交易信号 / Trade Signal】
-交易对: ${symbolInfo}
-方向: ${sideStr}
-
-入场价 (Entry): ${sig.entryPrice == null ? '-' : fmt(sig.entryPrice, 4)}
-止损价 (SL): ${sig.stopLoss == null ? '-' : fmt(sig.stopLoss, 4)}
-风险金额 (Risk): ${sig.riskAmount == null ? '-' : fmt(sig.riskAmount, 2)}
-仓位大小 (Size): ${sig.positionSize == null ? '-' : fmt(sig.positionSize, 6)}
-名义本金 (Notional): ${sig.positionSizeQuote == null ? '-' : fmt(sig.positionSizeQuote, 2)}
-
-【止盈目标 / Take-Profits】
-${tps}
-
-【条件评估 / Condition Check】
-[多头 / LONG]
-${longStr}
-
-[空头 / SHORT]
-${shortStr}
-
-【流动性预警 / Liquidity Alerts】
-${alertStr}
-综合风险分数: ${alerts.riskScore || 0}/5
-
-【指标快照 / Indicators Snapshot】
-最新价 (Last Price): ${snap.latestPrice != null ? fmt(snap.latestPrice, 4) : '-'}
-VWAP: ${snap.vwap != null ? fmt(snap.vwap, 4) : '-'}
-ATR(14): ${snap.atr != null ? fmt(snap.atr, 4) : '-'}
-深度比 (Depth Ratio): ${snap.depthRatio != null ? fmt(snap.depthRatio, 3) : '-'}
-价差 (Spread): ${snap.spread != null ? fmt(snap.spread, 4) : '-'}
-CVD: ${snap.cvd != null ? fmt(snap.cvd, 3) : '-'}
-CVD-Price ρ: ${snap.cvdPriceCorr != null ? fmt(snap.cvdPriceCorr, 3) : '-'}
-ILLIQ: ${snap.latestIlliq != null ? Number(snap.latestIlliq).toExponential(2) : '-'} (μ: ${snap.illiqMean != null ? Number(snap.illiqMean).toExponential(2) : '-'})
-多头评分: ${snap.longScore ?? '-'} / 空头评分: ${snap.shortScore ?? '-'}
-`;
-
-      navigator.clipboard.writeText(text).then(() => {
-        const origText = fsEls.copy.textContent;
-        fsEls.copy.textContent = '已复制 / Copied!';
-        setTimeout(() => { fsEls.copy.textContent = origText; }, 2000);
-      }).catch(err => {
-        alert('复制失败 / Copy failed: ' + err.message);
-      });
-    });
-  }
-
-  if (fsEls.btnAiAnalyze) {
-    fsEls.btnAiAnalyze.addEventListener('click', async () => {
-      console.log('[AI Analyze] Button clicked');
-      if (!currentSignalData && !currentAlertsData) {
-        console.warn('[AI Analyze] No data available');
-        alert('暂无数据 / No data yet');
-        return;
-      }
-      
-      const btn = fsEls.btnAiAnalyze;
-      const origText = btn.textContent;
-      btn.textContent = '分析中... / Analyzing...';
-      btn.disabled = true;
-      
-      try {
-        const sig = currentSignalData || { signal: 'NONE' };
-        const snap = sig.indicatorsSnapshot || {};
-        const alerts = currentAlertsData || { flags: {}, riskScore: 0 };
-        
-        const symbol = snap.symbol || els.symbol.value.toUpperCase();
-        const direction = sig.signal === 'NONE' ? null : sig.signal;
-        
-        console.log('[AI Analyze] Preparing payload for symbol:', symbol);
-        
-        const condLabels = {
-          bullishFvg: '看涨 FVG', depthDominant: '深度比 > 0.6', cvdPriceUp: 'CVD↑ & 价↑',
-          lliqLow: '流动性较好', riskLow: '综合风险 ≤2', vwapSupport: '价 > VWAP',
-          bearishFvg: '看跌 FVG', depthWeak: '深度比 < 0.4', cvdPriceDown: 'CVD↓ & 价↓',
-          vwapResist: '价 < VWAP'
-        };
-        const alertLabels = {
-          highSpread: '价差过大', lowDepth: '盘口深度薄弱', highIlliq: 'ILLIQ异常高',
-          cvdDivergence: 'CVD背离', flashCrashRisk: '闪崩风险', squeezeRisk: '逼空风险'
-        };
-
-        const longConditions = snap.longConditions 
-          ? Object.keys(snap.longConditions).filter(k => snap.longConditions[k]).map(k => condLabels[k] || k) 
-          : [];
-        const shortConditions = snap.shortConditions 
-          ? Object.keys(snap.shortConditions).filter(k => snap.shortConditions[k]).map(k => condLabels[k] || k) 
-          : [];
-        const liquidityAlerts = Object.keys(alerts.flags || {})
-          .filter(k => alerts.flags[k])
-          .map(k => alertLabels[k] || k);
-
-        const payload = {
-          symbol,
-          // 分析周期：信号快照里的周期优先（后端实际计算所用），回落图表当前选择
-          interval: snap.interval || els.interval.value || undefined,
-          direction,
-          entry_price: sig.entryPrice,
-          stop_loss: sig.stopLoss,
-          take_profits: sig.takeProfits ? JSON.stringify(sig.takeProfits.map(tp => tp.price)) : undefined,
-          risk_amount: sig.riskAmount,
-          position_size: sig.positionSize,
-          notional: sig.positionSizeQuote,
-          long_conditions: longConditions.length ? JSON.stringify(longConditions) : undefined,
-          short_conditions: shortConditions.length ? JSON.stringify(shortConditions) : undefined,
-          liquidity_alerts: liquidityAlerts.length ? JSON.stringify(liquidityAlerts) : undefined,
-          risk_score: alerts.riskScore,
-          long_score: snap.longScore,
-          short_score: snap.shortScore,
-          last_price: snap.latestPrice,
-          vwap: snap.vwap,
-          atr14: snap.atr,
-          depth_ratio: snap.depthRatio,
-          spread: snap.spread,
-          cvd: snap.cvd,
-          cvd_price_corr: snap.cvdPriceCorr,
-          illiq: snap.latestIlliq,
-          setup: snap.setup ? snap.setup.label : undefined,
-          oi_rising: snap.oiChangePct != null ? snap.oiRising : undefined,
-          oi_change_pct: snap.oiChangePct != null ? Number(snap.oiChangePct.toFixed(3)) : undefined
-        };
-
-        Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
-        console.log('[AI Analyze] Payload ready:', payload);
-
-        // 1. 发送信号到 AI 代理
-        console.log('[AI Analyze] Sending POST /api/ai/signals');
-        let res = await fetch('/api/ai/signals', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        
-        if (!res.ok) {
-           const errText = await res.text();
-           console.error('[AI Analyze] Submit failed:', res.status, errText);
-           throw new Error('提交失败: ' + res.status + ' ' + res.statusText);
-        }
-        
-        const created = await res.json();
-        console.log('[AI Analyze] Signal created:', created);
-        const signalId = created.id;
-        
-        if (!signalId) throw new Error('未返回信号 ID');
-
-        // 2. 获取 AI 报告
-        const reportEl = document.getElementById('ai-report-content');
-        if (reportEl) reportEl.textContent = '等待分析报告... / Waiting for report...';
-        
-        console.log('[AI Analyze] Polling for reports, signalId:', signalId);
-        // 简单重试机制获取报告
-        let detail;
-        for (let i = 0; i < 3; i++) {
-          console.log(`[AI Analyze] Polling attempt ${i+1}/3...`);
-          await new Promise(r => setTimeout(r, 2000));
-          res = await fetch(`/api/ai/signals/${signalId}`);
-          if (res.ok) {
-            detail = await res.json();
-            if (detail.reports && detail.reports.length > 0) {
-               console.log('[AI Analyze] Report received');
-               break;
-            }
-          } else {
-             console.warn(`[AI Analyze] Polling failed:`, res.status);
-          }
-        }
-
-        if (reportEl && detail && detail.reports && detail.reports.length > 0) {
-          const report = detail.reports[detail.reports.length - 1];
-          reportEl.textContent = report.content;
-        } else if (reportEl) {
-          console.warn('[AI Analyze] Timeout or no report returned');
-          reportEl.textContent = '报告未生成或已超时 / No report returned or timeout';
-        }
-        
-        btn.textContent = '分析完成 / Done!';
-      } catch (err) {
-        console.error('[AI Analyze] Error caught:', err);
-        alert('AI 分析出错 / AI Analyze error: ' + err.message);
-        btn.textContent = '出错 / Error';
-      } finally {
-        setTimeout(() => {
-          btn.textContent = origText;
-          btn.disabled = false;
-        }, 3000);
-      }
-    });
-  }
+  // 交易信号卡已由「关键价位」面板替代：一键复制 / AI 分析 / 推送按钮随之移除，
+  // 价格复制改为关键价位列表内点击任意价格即复制。
 
   // 启动时拉一下飞书状态；symbol/market 改变时也刷新
   refreshFeishuStatus();

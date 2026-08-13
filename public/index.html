@@ -366,6 +366,48 @@
         color: var(--fg-1);
       }
 
+      /* 📌 关键价位 / Key Levels（点击任意价格复制到剪贴板） */
+      .key-levels { font-size: 12px; margin-bottom: 12px; }
+      .kl-group {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        margin-bottom: 6px;
+        background: var(--bg-2);
+      }
+      .kl-group-title {
+        font-weight: 600;
+        font-size: 12px;
+        margin-bottom: 4px;
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      .kl-group-title .meta { font-weight: normal; font-size: 11px; color: var(--fg-2); }
+      .kl-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+        padding: 2px 0;
+        line-height: 1.5;
+      }
+      .kl-label { color: var(--fg-2); white-space: nowrap; }
+      .kl-val { text-align: right; font-variant-numeric: tabular-nums; }
+      .kl-price {
+        cursor: pointer;
+        padding: 0 4px;
+        border-radius: 4px;
+        color: var(--fg-1);
+        transition: background 0.15s;
+      }
+      .kl-price:hover { background: rgba(96, 165, 250, 0.18); color: #93c5fd; }
+      .kl-price.copied { background: rgba(74, 222, 128, 0.22); color: var(--accent); }
+      .kl-price.up { color: var(--accent); }
+      .kl-price.down { color: var(--accent-down); }
+      .kl-price.up:hover, .kl-price.down:hover { background: rgba(96, 165, 250, 0.18); }
+      .kl-empty { color: var(--fg-2); }
+
       /* 🧲 清算磁极信号卡片 / Liq-Magnet Signal sub-card */
       .liq-signal-card {
         background: linear-gradient(180deg, rgba(255, 235, 59, 0.06), rgba(255, 235, 59, 0.02));
@@ -1136,7 +1178,7 @@
 
       <aside id="signal-card" class="card">
         <div class="card-header">
-          <h2>交易信号 / Trade Signal</h2>
+          <h2>关键价位 & 信号 / Key Levels & Signals</h2>
           <span class="meta" id="signal-meta"></span>
           <button class="min-btn" type="button" data-min-target="signal-card"
                   title="信号面板最小化 / Minimize">⊟</button>
@@ -1144,13 +1186,9 @@
                   title="信号面板全屏 / Fullscreen (Esc 退出)">⛶</button>
         </div>
 
-        <!-- 飞书推送控制 / Feishu push controls -->
+        <!-- 飞书 / 自动交易控制 (Feishu & auto-trade controls) -->
         <div class="feishu-bar" id="feishu-bar">
-          <button id="fs-push" type="button" title="按当前 symbol/market 推送一次（受冷却限制）">推送飞书 / Push</button>
-          <button id="fs-push-force" type="button" class="ghost" title="绕过冷却强制推送">强制推送 / Force</button>
           <button id="fs-test" type="button" class="ghost" title="发送一条测试消息验证 webhook">测试 webhook / Test</button>
-          <button id="btn-copy-signal" type="button" class="ghost" title="复制当前交易信号信息">一键复制 / Copy</button>
-          <button id="btn-ai-analyze" type="button" class="ghost" title="发送数据进行 AI 分析">AI 分析 / AI Analyze</button>
           <!-- 自动交易运行时开关 (Auto-Trade Runtime Kill Switch) -->
           <button id="at-toggle" type="button"
                   title="切换是否发送 webhook 自动下单。关闭后所有信号只推飞书，不下单。重启后回到 .env 默认行为。">
@@ -1227,35 +1265,11 @@
           </div>
         </div>
 
-        <div id="signal-banner" class="signal-banner none">等待信号… / Waiting…</div>
-
-        <div class="kv-grid" id="signal-kv">
-          <div class="label">入场价 / Entry</div><div class="value" id="kv-entry">-</div>
-          <div class="label">止损价 / Stop Loss</div><div class="value" id="kv-sl">-</div>
-          <div class="label">风险金额 / Risk Amount</div><div class="value" id="kv-risk">-</div>
-          <div class="label">仓位大小 / Position Size</div><div class="value" id="kv-size">-</div>
-          <div class="label">名义本金 / Notional</div><div class="value" id="kv-notional">-</div>
+        <!-- ====== 📌 关键价位 / Key Levels（点击任意价格复制）====== -->
+        <div class="section-title">📌 关键价位 / Key Levels
+          <span class="meta" id="kl-meta" style="font-weight:normal;margin-left:6px;"></span>
         </div>
-
-        <div class="section-title">止盈目标 / Take-Profits</div>
-        <div id="tp-list"></div>
-
-        <div class="section-title">条件评估 / Condition Check</div>
-        <div class="section-title" style="margin-top:0;color:var(--accent)">多头 / Long</div>
-        <div id="long-conditions" class="conditions"></div>
-        <div class="section-title" style="margin-top:8px;color:var(--accent-down)">空头 / Short</div>
-        <div id="short-conditions" class="conditions"></div>
-
-        <div class="section-title">流动性预警 / Liquidity Alerts</div>
-        <div id="alerts" class="alerts-list"></div>
-
-        <div class="section-title">指标快照 / Indicators Snapshot</div>
-        <div class="kv-grid" id="snapshot"></div>
-
-        <div class="section-title">AI 分析报告 / AI Analysis Report</div>
-        <div id="ai-report-content" style="font-size:12px;color:var(--fg-1);background:var(--bg-2);padding:10px;border-radius:6px;border:1px solid var(--border);margin-bottom:12px;white-space:pre-wrap;overflow-x:auto;">
-          暂无分析报告 / No report yet
-        </div>
+        <div id="key-levels" class="key-levels">加载中… / Loading…</div>
 
         <!-- ====== 30 天策略回测 / 30-day Backtest ====== -->
         <div class="backtest-card" id="backtest-card">

@@ -887,3 +887,5 @@ function _buildLiqSignalCard(d) {
 }
 
 module.exports = router;
+// 供 keyLevels 路由复用主峰检测（保证与热图/信号的 S↑/L↓ 口径一致）
+module.exports._findPeaks = _findPeaks;

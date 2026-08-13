@@ -121,7 +121,8 @@ npm run dev            # nodemon 热重载
 | GET | `/api/alerts/liquidity` | 综合预警（5 项触发器 + 风险分数） |
 | POST | `/api/alerts/liquidation-cross` | 清算热图实时事件（`eventType=cross` 穿越 / `eventType=reclaim` 假突破收回），声音 + 飞书 |
 | GET | `/api/alerts/liquidation-cross/status` | 各 side+event 最近触发时间、冷却参数、飞书启用状态 |
-| GET | `/api/trade/signal` | **核心**：LONG/SHORT/NONE 信号 + 入场/止损/止盈 |
+| GET | `/api/trade/signal` | LONG/SHORT/NONE 信号 + 入场/止损/止盈（前端面板已由 key-levels 替代，接口保留） |
+| GET | `/api/key-levels` | **核心**：多周期关键价位聚合（15m/1h/4h/1d 的 FVG/POC/VWAP + 15m/1h/4h/24h 清算主峰 S↑/L↓），30s 服务端缓存 |
 | GET | `/api/squeeze/warning` | 扎空/扎多预警评分（资金费率 / OI / 持仓比 / Taker） |
 | GET | `/api/squeeze/confirmation` | 价格-OI 背离 / 爆仓主导 / 资金费率回归 |
 | GET | `/api/squeeze/heatmap` | 清算价位热力图 + 最近多/空爆仓集群 |
@@ -207,7 +208,12 @@ positionSize = riskAmount / |entry - stopLoss|
 - 右下副图：成交量直方图、CVD 累积曲线、持仓量、订单簿水平条形深度图
   - **CVD 副图「合并 / 单一 + Coin / USD」切换**：合并 = USDT-M + USDC-M + 币本位 COIN-M 三类合约主动买卖差相加（对齐 Coinglass 币安口径，按 10s poll 刷新）；单一 = 仅当前 USDT 合约（与主图 K 线实时同源、更即时）。口径 Coin = 币数(BTC)，USD = 报价额/名义价值（对照 Coinglass 选 USD）
   - **持仓量副图「合并 / 单一 + USD / Coin + K线 / 面积」切换**：合并三类合约、口径、合成 K 线（绿增红减）三组开关
-- 右侧信号面板：LONG/SHORT/NONE 标签、入场/止损/止盈、仓位、条件评估、5 项流动性预警、指标快照
+- 右侧面板：**📌 关键价位 / Key Levels**（点击任意价格即复制）——
+  每个周期 (15m/1h/4h/1d) 的看涨/看跌 FVG 区间、POC、VWAP，
+  加上每个清算热图窗口 (15m/1h/4h/24h) 的 S↑ 空头最大清算价与 L↓ 多头最大清算价
+  （主峰算法与清算热图横线同源）；服务端 30s 缓存 + 前端 30s 节流。
+  另含清算磁极信号 v2 与双层共振信号子卡（原「交易信号 / Trade Signal」卡已移除，
+  `/api/trade/signal` 接口保留可直接 curl）
 
 页面纯原生 HTML/CSS/JS，仅通过 CDN 引入：
 
