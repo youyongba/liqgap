@@ -1056,8 +1056,8 @@
       tooltip.innerHTML =
         `<div><b>${fmtBJDateTime(t)} (UTC+8)</b></div>` +
         `<div>价格 / Price: <b>${p.toFixed(p >= 1000 ? 1 : 2)}</b></div>` +
-        `<div>买墙 / Bid: <span style="color:#5dc863">${fmtMoney(bid)} USDT</span></div>` +
-        `<div>卖墙 / Ask: <span style="color:#fde725">${fmtMoney(ask)} USDT</span></div>` +
+        `<div>买墙 / Bid: <span style="color:#4ade80">${fmtMoney(bid)} USDT</span></div>` +
+        `<div>卖墙 / Ask: <span style="color:#f87171">${fmtMoney(ask)} USDT</span></div>` +
         `<div style="opacity:0.7;font-size:10px">合计: ${fmtMoney(bid + ask)} USDT</div>`;
       tooltip.style.display = 'block';
       const rect = canvas.parentElement.getBoundingClientRect();
