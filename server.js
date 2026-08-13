@@ -46,6 +46,7 @@ const autoTradeRoute = require('./routes/autoTrade');
 const cvdRoute = require('./routes/cvd');
 const keyLevelsRoute = require('./routes/keyLevels');
 const orderbookRecorder = require('./services/orderbookRecorder');
+const keyLevelsAlert = require('./services/keyLevelsAlert');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -114,5 +115,12 @@ app.listen(PORT, () => {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[server] orderbook recorder start failed:', err.message);
+  }
+  // 启动关键价位触碰监控（价格触及各周期 FVG/清算主峰/买卖墙 → 飞书推送）
+  try {
+    keyLevelsAlert.start();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[server] key-levels touch monitor start failed:', err.message);
   }
 });

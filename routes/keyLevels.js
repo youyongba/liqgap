@@ -390,38 +390,45 @@ async function _computeKeyLevels(symbol, market) {
   return { symbol, market, ts: Date.now(), latestPrice, intervals, liqWindows, obWalls, entryZones };
 }
 
+/**
+ * 带 30s 缓存的关键价位获取（路由与后台触碰监控共用同一份缓存，
+ * 监控轮询不会带来额外的 K 线请求压力）。
+ */
+async function getKeyLevelsCached(symbol, market) {
+  const key = _cacheKey(symbol, market);
+  const hit = _cache.get(key);
+  if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
+    return { data: await hit.promise, cached: true };
+  }
+
+  const promise = _computeKeyLevels(symbol, market);
+  _cache.set(key, { ts: Date.now(), promise });
+  // 计算失败清缓存，避免把 rejected Promise 缓存 30s
+  promise.catch(() => _cache.delete(key));
+  // 缓存 Map 无界增长防护：超 50 个 key 时清掉过期项
+  if (_cache.size > 50) {
+    const now = Date.now();
+    for (const [k, v] of _cache.entries()) {
+      if (now - v.ts >= CACHE_TTL_MS) _cache.delete(k);
+    }
+  }
+  return { data: await promise, cached: false };
+}
+
 router.get('/key-levels', async (req, res) => {
   try {
     const symbol = (req.query.symbol || 'BTCUSDT').toUpperCase();
     const market = req.query.market === 'spot' ? 'spot' : 'futures';
-    const key = _cacheKey(symbol, market);
-
-    const hit = _cache.get(key);
-    if (hit && Date.now() - hit.ts < CACHE_TTL_MS) {
-      const data = await hit.promise;
-      return res.json({ success: true, data, cached: true });
-    }
-
-    const promise = _computeKeyLevels(symbol, market);
-    _cache.set(key, { ts: Date.now(), promise });
-    // 计算失败清缓存，避免把 rejected Promise 缓存 30s
-    promise.catch(() => _cache.delete(key));
-    // 缓存 Map 无界增长防护：超 50 个 key 时清掉过期项
-    if (_cache.size > 50) {
-      const now = Date.now();
-      for (const [k, v] of _cache.entries()) {
-        if (now - v.ts >= CACHE_TTL_MS) _cache.delete(k);
-      }
-    }
-
-    const data = await promise;
-    res.json({ success: true, data, cached: false });
+    const { data, cached } = await getKeyLevelsCached(symbol, market);
+    res.json({ success: true, data, cached });
   } catch (err) {
     res.json({ success: false, error: err.message });
   }
 });
 
 module.exports = router;
+// 供后台触碰监控复用（同一份 30s 缓存）
+module.exports.getKeyLevelsCached = getKeyLevelsCached;
 // 供冒烟测试 (Exposed for smoke tests)
 module.exports._computeWindowPeaks = _computeWindowPeaks;
 module.exports._computeIntervalLevels = _computeIntervalLevels;
