@@ -4032,10 +4032,9 @@
     // FVG 动态识别：不用后端窗口内的结果，而是对"已加载的全部 K 线"
     // （历史缓冲 + 实时窗口）前端实时检测 —— 拖拽加载更早历史后，
     // 旧区间的上涨/下跌 FVG 会即时补上（与后端 detectFVGs 同一算法）。
-    // 确认制：排除最后一根未收盘 K 线 —— 盘中波动会产生"瞬时缺口"
-    // （出现几分钟又消失），既造成图上闪烁，也与关键价位面板对不上。
-    // K 线收盘后缺口才确认，与 /api/key-levels 完全同口径。
-    const fvgs = detectFVGsClient(merged.length > 1 ? merged.slice(0, -1) : merged);
+    // 注：主图保持实时口径（含未收盘 K 线）；"关键价位"面板则只用
+    // 已收盘 K 线（确认制），两者定位不同，属预期差异。
+    const fvgs = detectFVGsClient(merged);
     // 流动性空白同样对全量已加载 K 线动态识别（不再依赖后端窗口内的结果）
     const liquidityVoids = detectLiquidityVoidsClient(merged);
 
