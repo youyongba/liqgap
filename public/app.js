@@ -4032,7 +4032,10 @@
     // FVG 动态识别：不用后端窗口内的结果，而是对"已加载的全部 K 线"
     // （历史缓冲 + 实时窗口）前端实时检测 —— 拖拽加载更早历史后，
     // 旧区间的上涨/下跌 FVG 会即时补上（与后端 detectFVGs 同一算法）。
-    const fvgs = detectFVGsClient(merged);
+    // 确认制：排除最后一根未收盘 K 线 —— 盘中波动会产生"瞬时缺口"
+    // （出现几分钟又消失），既造成图上闪烁，也与关键价位面板对不上。
+    // K 线收盘后缺口才确认，与 /api/key-levels 完全同口径。
+    const fvgs = detectFVGsClient(merged.length > 1 ? merged.slice(0, -1) : merged);
     // 流动性空白同样对全量已加载 K 线动态识别（不再依赖后端窗口内的结果）
     const liquidityVoids = detectLiquidityVoidsClient(merged);
 
@@ -4814,6 +4817,11 @@
     if (!zone) return '<span class="kl-empty">— 无 / none —</span>';
     return `${_klPrice(zone.lower ?? zone.low, cls)} ~ ${_klPrice(zone.upper ?? zone.high, cls)}`;
   }
+  // FVG 形成时间（缺口确认 = 第三根 K 线收盘时刻），方便到主图上对位置
+  function _klFvgTime(fvg) {
+    if (!fvg || !Number.isFinite(Number(fvg.time))) return '';
+    return ` <span class="meta">@${fmtBJShortDateTime(fvg.time)}</span>`;
+  }
 
   function renderKeyLevels(data) {
     if (!els.keyLevels || !data) return;
@@ -4856,8 +4864,8 @@
       parts.push(`
         <div class="kl-group">
           <div class="kl-group-title">${it.interval}</div>
-          <div class="kl-row"><span class="kl-label" title="最近仍有效（未被价格反向击穿）的看涨缺口，与主图同源">看涨 FVG / Bull</span><span class="kl-val">${_klRange(it.bullFvg, 'up')}</span></div>
-          <div class="kl-row"><span class="kl-label" title="最近仍有效（未被价格反向击穿）的看跌缺口，与主图同源">看跌 FVG / Bear</span><span class="kl-val">${_klRange(it.bearFvg, 'down')}</span></div>
+          <div class="kl-row"><span class="kl-label" title="最近一个已确认（K线收盘）的看涨缺口，与主图同源同口径">看涨 FVG / Bull</span><span class="kl-val">${_klRange(it.bullFvg, 'up')}${_klFvgTime(it.bullFvg)}</span></div>
+          <div class="kl-row"><span class="kl-label" title="最近一个已确认（K线收盘）的看跌缺口，与主图同源同口径">看跌 FVG / Bear</span><span class="kl-val">${_klRange(it.bearFvg, 'down')}${_klFvgTime(it.bearFvg)}</span></div>
           <div class="kl-row"><span class="kl-label">POC</span><span class="kl-val">${_klRange(it.poc, '')}</span></div>
           <div class="kl-row"><span class="kl-label">VWAP</span><span class="kl-val">${_klPrice(it.vwap, '')}</span></div>
         </div>`);

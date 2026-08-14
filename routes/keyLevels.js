@@ -5,8 +5,9 @@
  *
  * 多周期关键价位聚合 (Multi-timeframe key price levels)：
  *   • 每个周期 (15m / 1h / 4h / 1d)：
- *       - 最近"仍有效"的看涨 FVG / 看跌 FVG 区间（lower ~ upper）
- *         已被价格反向击穿（filled）的缺口跳过，与主图上用户关注的缺口一致
+ *       - 最近一个看涨 FVG / 看跌 FVG 区间（lower ~ upper）
+ *         确认制：只在已收盘 K 线上检测（排除未收盘 K 线的瞬时缺口），
+ *         与主图完全同源同口径
  *       - POC（成交量分布主峰价位区间）
  *       - VWAP（该周期窗口的最新值）
  *   • 每个清算热图窗口 (15m / 1h / 4h / 24h · 仅合约)：
@@ -39,8 +40,7 @@ const { BinanceLive } = require('../services/binanceLive');
 const {
   normalizeKlines,
   computeVWAP,
-  detectFVGs,
-  markFVGFillStatus
+  detectFVGs
 } = require('../indicators/klineIndicators');
 const { computeVolumeProfile } = require('../indicators/volumeProfile');
 const { buildPredictiveLiquidationHeatmap } = require('../services/predictiveLiquidations');
@@ -193,16 +193,17 @@ function _computeIntervalLevels(interval, raw) {
   if (candles.length < 5) return { interval, ok: false };
 
   const vwap = computeVWAP(candles);
-  // 与主图一致的三 K 线检测；再标记填补状态 —— 已被价格反向击穿的缺口
-  // （filled=true）不再是有效"关键价位"，跳过它取最近仍有效的缺口。
-  // （否则会出现：面板显示一个早已被涨/跌回穿透的 FVG，与主图上用户
-  //   真正关注的未失效缺口对不上。）
-  const fvgs = markFVGFillStatus(detectFVGs(candles), candles);
+  // FVG 确认制：只在"已收盘"的 K 线上检测（去掉最后一根未收盘 K 线）。
+  // 未收盘 K 线的 high/low 还在变，会产生"瞬时缺口"——下跌过程中当前
+  // K 线 high 暂时低于两根前的 low 就被误判成看跌 FVG，几分钟后又消失。
+  // 配合 30s 缓存会把这种幽灵缺口定格显示，与主图对不上（用户实测踩坑）。
+  // 取"最近一个"看涨/看跌缺口（与主图区间线同一口径，不做失效过滤）。
+  const closed = candles.slice(0, -1);
+  const fvgs = detectFVGs(closed);
   let bull = null;
   let bear = null;
   for (let i = fvgs.length - 1; i >= 0 && (!bull || !bear); i -= 1) {
     const f = fvgs[i];
-    if (f.filled) continue;
     if (!bull && f.type === 'bullish') bull = f;
     else if (!bear && f.type === 'bearish') bear = f;
   }
