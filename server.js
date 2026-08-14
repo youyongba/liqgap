@@ -47,6 +47,7 @@ const cvdRoute = require('./routes/cvd');
 const keyLevelsRoute = require('./routes/keyLevels');
 const orderbookRecorder = require('./services/orderbookRecorder');
 const keyLevelsAlert = require('./services/keyLevelsAlert');
+const signalPoller = require('./services/signalPoller');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -122,5 +123,13 @@ app.listen(PORT, () => {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[server] key-levels touch monitor start failed:', err.message);
+  }
+  // 启动后端信号轮询（前端信号面板已移除；清算磁极 + 共振信号的
+  // 飞书推送 / autoTrade webhook 改由服务端定时自轮询驱动）
+  try {
+    signalPoller.start();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[server] signal poller start failed:', err.message);
   }
 });

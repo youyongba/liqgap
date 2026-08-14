@@ -211,21 +211,20 @@ positionSize = riskAmount / |entry - stopLoss|
 - **流动性热图 / Liquidity Heatmap**（仅 BTCUSDT 合约有录盘）：订单簿 2D 热图 + K 线叠加，
   并自动标注**买/卖墙延伸线**——每侧取行峰值 ≥ P95 的 top3 墙，从墙形成时刻向右延伸虚线，
   直到被 K 线穿过即断开（断点画 ✕）；bid 墙绿色 / ask 墙红色，线首标签为墙厚度（USDT 名义额）
-- 右侧面板：**📌 关键价位 / Key Levels**（点击任意价格即复制）——
-  **历史口径**：每个周期 (15m/1h/4h/1d) 的 FVG / POC / VWAP 全部基于
-  **已收盘 K 线**计算（排除正在走的 K 线，收盘确认后数据才变化），
-  显示最近一个已确认的看涨/看跌 FVG 区间（附确认时间方便对图）、POC、VWAP；
-  主图保持实时口径（含未收盘 K 线），两者定位不同，属预期差异，
-  加上每个清算热图窗口 (15m/1h/4h/24h) 的 S↑ 空头最大清算价与 L↓ 多头最大清算价
-  （主峰算法与清算热图横线同源），
-  以及每个窗口 (15m/1h/4h/24h) 的 🧱 最强买单墙 / 卖单墙价位
-  （流动性热图口径：订单簿录盘按 USDT 名义额跨快照取 max，仅 BTCUSDT 合约有录盘）；
-  面板置顶为 **🎯 建议开仓区 / Entry Zones**——把以上全部价位按现价上下分成
-  支撑 / 阻力两组，贪心聚类（相邻价位间隔 ≤0.5% 归为一簇）+ 加权打分
-  （周期权重 15m=1 → 1d/24h=3，类型系数 清算主峰 1.2 > 挂单墙/FVG 1.0 > POC 0.8 > VWAP 0.6，
-  距现价 >6% 的价位不参与），各取总分最高的一簇作为做多 / 做空开仓价格区间
-  （区间 >1.2% 时围绕加权中心收窄；总分 <2.5 显示"共振不足"），并列出依据因子与总分；
-  服务端 30s 缓存 + 前端 30s 节流。
+- **右侧面板已整体移除（性能优化）**：原「关键价位 & 信号 / Key Levels & Signals」
+  （含清算磁极信号卡 / 双层共振信号卡 / 📌 关键价位列表）与「30 天策略回测」面板
+  不再渲染，主图 / 热图 / 副图改为单列占满全宽。相关能力去向：
+  - `/api/key-levels` 聚合接口保留（多周期 FVG/POC/VWAP + 清算主峰 + 挂单墙 +
+    🎯 建议开仓区 entryZones，30s 缓存），可直接 curl，也继续供触碰推送使用；
+  - 清算磁极 / 共振信号改由后端 `services/signalPoller.js` 定时自轮询驱动（见下）；
+  - 回测接口 `/api/backtest/run` 保留可直接 curl；
+  - 自动交易运行时开关改用 REST：`POST /api/auto-trade/toggle`、`GET /api/auto-trade/status`。
+- **🔄 后端信号轮询**（`services/signalPoller.js`，随 server 启动）：
+  每 60s（`SIGNAL_POLL_MS` 可调）在服务端自轮询
+  `/api/trade/liq-signal` + `/api/trade/resonance-signal`，遍历三阶闸门
+  FULL + NOTIFY 名单里的全部窗口（默认 1h/4h/24h）——飞书推送、autoTrade
+  webhook、二次确认、冷却逻辑全部照旧，且**不再依赖浏览器开着页面才出信号**。
+  `SIGNAL_POLL_ENABLED=false` 可整体关闭。
 - **📍 关键价位触碰推送**（后台服务 `services/keyLevelsAlert.js`，随 server 启动）：
   每 20s 用最新 1m K 线（含影线，插针也算触及）对比各周期关键价位——
   价格**上涨触及看跌 FVG / S↑ 清算主峰 / 卖单墙** → 红色飞书卡片（关注做空）；
@@ -234,8 +233,6 @@ positionSize = riskAmount / |entry - stopLoss|
   须先离开价位 0.15% 才重新武装 + 同价位 30 分钟冷却。复用 key-levels
   的 30s 缓存不加请求压力；`KEY_LEVELS_TOUCH_*` 环境变量可调
   （开关 / 交易对 / 轮询间隔 / 冷却 / 监控类型，详见 `.env.example`）。
-  另含清算磁极信号 v2 与双层共振信号子卡（原「交易信号 / Trade Signal」卡已移除，
-  `/api/trade/signal` 接口保留可直接 curl）
 
 页面纯原生 HTML/CSS/JS，仅通过 CDN 引入：
 
@@ -325,13 +322,16 @@ curl 'http://localhost:3000/api/backtest/run?symbol=BTCUSDT&days=30&initialBalan
 > ⏱️ **耗时与流量提示**：30 天 BTCUSDT 合约 aggTrades 解压后约 5–15 GB，下载流量约 2–4 GB，整体回测时间通常 5–15 分钟（取决于带宽）。`unzipper` + `readline` 流式处理，运行时常驻内存 < 200 MB（按小时聚合后丢弃原始 trade）。
 > 建议先用 `days=2` 跑通流程，再开 30 天。
 
-前端右侧 "30 天策略回测" 面板支持一键运行，并在结果区展示：
-- 资金曲线 (Chart.js)
+前端回测面板已随右侧栏移除（性能优化），直接 curl 接口即可，响应里包含：
 - **真实数据声明 (notes)** —— 显式说明使用了哪些真实数据
 - **未参与回测的指标 (skippedIndicators)** —— 显式标注订单簿类被跳过
 - **警告 (warnings)** —— 例如覆盖率不足
 - **数据源摘要 (dataSources)** —— K线条数、aggTrades 下载量与覆盖率
 - **交易明细表 (trades)** —— 每笔 entry / SL / exit / 持仓 K 线 / 实现盈亏
+
+```bash
+curl "http://localhost:3003/api/backtest/run?symbol=BTCUSDT&market=futures&days=2&initialBalance=1000&riskPercent=1"
+```
 
 ---
 
