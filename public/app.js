@@ -4856,8 +4856,8 @@
       parts.push(`
         <div class="kl-group">
           <div class="kl-group-title">${it.interval}</div>
-          <div class="kl-row"><span class="kl-label">看涨 FVG / Bull</span><span class="kl-val">${_klRange(it.bullFvg, 'up')}</span></div>
-          <div class="kl-row"><span class="kl-label">看跌 FVG / Bear</span><span class="kl-val">${_klRange(it.bearFvg, 'down')}</span></div>
+          <div class="kl-row"><span class="kl-label" title="最近仍有效（未被价格反向击穿）的看涨缺口，与主图同源">看涨 FVG / Bull</span><span class="kl-val">${_klRange(it.bullFvg, 'up')}</span></div>
+          <div class="kl-row"><span class="kl-label" title="最近仍有效（未被价格反向击穿）的看跌缺口，与主图同源">看跌 FVG / Bear</span><span class="kl-val">${_klRange(it.bearFvg, 'down')}</span></div>
           <div class="kl-row"><span class="kl-label">POC</span><span class="kl-val">${_klRange(it.poc, '')}</span></div>
           <div class="kl-row"><span class="kl-label">VWAP</span><span class="kl-val">${_klPrice(it.vwap, '')}</span></div>
         </div>`);

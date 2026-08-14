@@ -5,7 +5,8 @@
  *
  * 多周期关键价位聚合 (Multi-timeframe key price levels)：
  *   • 每个周期 (15m / 1h / 4h / 1d)：
- *       - 最近的看涨 FVG / 看跌 FVG 区间（lower ~ upper）
+ *       - 最近"仍有效"的看涨 FVG / 看跌 FVG 区间（lower ~ upper）
+ *         已被价格反向击穿（filled）的缺口跳过，与主图上用户关注的缺口一致
  *       - POC（成交量分布主峰价位区间）
  *       - VWAP（该周期窗口的最新值）
  *   • 每个清算热图窗口 (15m / 1h / 4h / 24h · 仅合约)：
@@ -38,7 +39,8 @@ const { BinanceLive } = require('../services/binanceLive');
 const {
   normalizeKlines,
   computeVWAP,
-  detectFVGs
+  detectFVGs,
+  markFVGFillStatus
 } = require('../indicators/klineIndicators');
 const { computeVolumeProfile } = require('../indicators/volumeProfile');
 const { buildPredictiveLiquidationHeatmap } = require('../services/predictiveLiquidations');
@@ -52,7 +54,8 @@ const ONE_HOUR_MS = 3600_000;
 
 // FVG / POC / VWAP 的周期集合
 const LEVEL_INTERVALS = ['15m', '1h', '4h', '1d'];
-const LEVEL_KLINE_LIMIT = 120;
+// 与主图初始加载的 200 根对齐，保证"最近未失效 FVG"与主图同源同窗
+const LEVEL_KLINE_LIMIT = 200;
 
 // 清算热图窗口集合：src 指定切片来源（1m 或 5m 共享缓存）
 const LIQ_WINDOWS = [
@@ -190,11 +193,16 @@ function _computeIntervalLevels(interval, raw) {
   if (candles.length < 5) return { interval, ok: false };
 
   const vwap = computeVWAP(candles);
-  const fvgs = detectFVGs(candles);
+  // 与主图一致的三 K 线检测；再标记填补状态 —— 已被价格反向击穿的缺口
+  // （filled=true）不再是有效"关键价位"，跳过它取最近仍有效的缺口。
+  // （否则会出现：面板显示一个早已被涨/跌回穿透的 FVG，与主图上用户
+  //   真正关注的未失效缺口对不上。）
+  const fvgs = markFVGFillStatus(detectFVGs(candles), candles);
   let bull = null;
   let bear = null;
   for (let i = fvgs.length - 1; i >= 0 && (!bull || !bear); i -= 1) {
     const f = fvgs[i];
+    if (f.filled) continue;
     if (!bull && f.type === 'bullish') bull = f;
     else if (!bear && f.type === 'bearish') bear = f;
   }
