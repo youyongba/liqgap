@@ -37,6 +37,9 @@ const _num = (env, dflt) => {
 
 // 价位状态：key → { armed, lastFiredAt, lastSeen }
 const _state = new Map();
+// 记录墙的最近出现时间，防抖防重复推送
+const _wallSeenTime = new Map();
+let _startupWallInit = false;
 let _timer = null;
 let _polling = false;
 
@@ -245,6 +248,38 @@ function _buildTouchCard(symbol, market, price, touches) {
   };
 }
 
+/** 新墙形成推送卡片 */
+function _buildNewWallCard(symbol, market, price, walls) {
+  const ups = walls.filter((t) => t.side === 'above');
+  const downs = walls.filter((t) => t.side === 'below');
+  const template = ups.length && !downs.length ? 'red'
+    : downs.length && !ups.length ? 'green' : 'blue';
+
+  const lines = walls.map((w) => {
+    const icon = w.side === 'above' ? '🧱 卖单墙 (阻力)' : '🧱 买单墙 (支撑)';
+    return `**${w.label}**  ${_fmtP(w.low)} · ${icon}`;
+  });
+
+  return {
+    config: { wide_screen_mode: true },
+    header: {
+      template,
+      title: { tag: 'plain_text', content: `🆕 新挂单墙形成 · ${symbol} ${market}` }
+    },
+    elements: [
+      { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
+      { tag: 'hr' },
+      {
+        tag: 'note',
+        elements: [{
+          tag: 'lark_md',
+          content: `现价 ${_fmtP(price)} · ${new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })} (UTC+8)`
+        }]
+      }
+    ]
+  };
+}
+
 async function _poll() {
   if (_polling || !isEnabled()) return;
   _polling = true;
@@ -270,6 +305,35 @@ async function _poll() {
     const rearmPct = _num('KEY_LEVELS_TOUCH_REARM_PCT', 0.15) / 100;
     const levels = _buildWatchList(data, _types());
 
+    // ---- 1. 新挂单墙形成推送 (New Wall Appearance) ----
+    const newWalls = [];
+    for (const lv of levels) {
+      if (lv.key.startsWith('wall-')) {
+        const lastSeen = _wallSeenTime.get(lv.key) || 0;
+        // 如果是启动后首次见到，或者是 1 小时以前见过的旧墙重新出现，算作新墙
+        if (_startupWallInit && (lastSeen === 0 || now - lastSeen > 3600_000)) {
+          newWalls.push(lv);
+        }
+        _wallSeenTime.set(lv.key, now);
+      }
+    }
+    _startupWallInit = true;
+
+    // 清理过期的墙状态防内存泄漏
+    if (_wallSeenTime.size > 500) {
+      for (const [k, t] of _wallSeenTime.entries()) {
+        if (now - t > 24 * 3600_000) _wallSeenTime.delete(k);
+      }
+    }
+
+    if (newWalls.length > 0) {
+      const card = _buildNewWallCard(symbol, market, candle.close, newWalls);
+      const r = await feishu.sendCard(card);
+      // eslint-disable-next-line no-console
+      console.log(`[klTouch] pushed ${newWalls.length} new wall(s) appearance · feishu ok=${r && r.ok}`);
+    }
+
+    // ---- 2. 价格触碰关键价位推送 (Price Touches) ----
     const touches = [];
     for (const lv of levels) {
       if (_evalTouch(lv, candle, now, cooldownMs, rearmPct)) touches.push(lv);
