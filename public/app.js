@@ -2931,11 +2931,11 @@
         if (t.chart === srcChart) continue;
         try { t.chart.clearCrosshairPosition(); } catch (_) { /* noop */ }
       }
-      // 主图离开 → 复位 baseline / heatmap 锚点
+      // 主图离开 → 复位 baseline 锚点 (取消热图的联动)
       if (srcChart === mainChart) {
         if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(null);
-        if (heatmap && heatmap.setAnchor) heatmap.setAnchor(null);
-        if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(null);
+        // if (heatmap && heatmap.setAnchor) heatmap.setAnchor(null);
+        // if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(null);
       }
     } finally {
       _syncingCrosshair = false;
@@ -2976,13 +2976,13 @@
           // 同时缓存联动到的 chart 当前位置
           _lastHover.set(t.chart, { time, price, series: t.series });
         }
-        // 主图 hover → 把订单簿基线 + 热图锚点都锁到该时刻
+        // 主图 hover → 把订单簿基线锁到该时刻 (取消热图的联动)
         // time 单位是秒（lightweight-charts UTC seconds），转回毫秒
         if (src.chart === mainChart) {
           const ms = Number(time) * 1000;
           if (typeof setObBaselineHoverAnchor === 'function') setObBaselineHoverAnchor(ms);
-          if (heatmap && heatmap.setAnchor) heatmap.setAnchor(ms);
-          if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(ms);
+          // if (heatmap && heatmap.setAnchor) heatmap.setAnchor(ms);
+          // if (liqHeatmap && liqHeatmap.setAnchor) liqHeatmap.setAnchor(ms);
         }
       } finally {
         _syncingCrosshair = false;
