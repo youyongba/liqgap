@@ -59,6 +59,47 @@
   };
 
   // ============================================================
+  // 图表 loading 遮罩 (Per-chart loading overlay)
+  // 切换周期 / 时间窗时盖住对应图表，等该图表的新数据渲染完成后各自揭开。
+  // 兜底：请求失败时 20s 后自动隐藏，避免永远转圈。
+  // ============================================================
+  const _chartLoadings = new Map(); // host 元素 → overlay 节点
+  const CHART_LOADING_MAX_MS = 20_000;
+  function showChartLoading(host, text) {
+    if (!host) return;
+    let ov = _chartLoadings.get(host);
+    if (!ov) {
+      ov = document.createElement('div');
+      ov.className = 'chart-loading';
+      ov.innerHTML = '<div class="spinner"></div><div class="txt"></div>';
+      try {
+        // overlay 用 absolute 定位，宿主必须是定位上下文
+        if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+      } catch (_) { /* noop */ }
+      host.appendChild(ov);
+      _chartLoadings.set(host, ov);
+    }
+    ov.querySelector('.txt').textContent = text || '加载中… / Loading…';
+    ov.classList.add('on');
+    clearTimeout(ov._hideTimer);
+    ov._hideTimer = setTimeout(() => ov.classList.remove('on'), CHART_LOADING_MAX_MS);
+  }
+  function hideChartLoading(host) {
+    const ov = host && _chartLoadings.get(host);
+    if (!ov) return;
+    clearTimeout(ov._hideTimer);
+    ov.classList.remove('on');
+  }
+  // 主图周期（顶部 interval 下拉）影响的全部图表一起盖 loading
+  function showIntervalLoading() {
+    showChartLoading(els.mainChart);
+    showChartLoading(els.volumePane);
+    showChartLoading(els.oiPane);
+    showChartLoading(els.cvdPane);
+    if (els.orderbookCanvas) showChartLoading(els.orderbookCanvas.parentElement);
+  }
+
+  // ============================================================
   // 全局警报模块（"清算热图"卡）
   // - 一个 alertEnabled 开关 + 一个 localStorage key，所有按钮联动
   // - 价格穿越主峰 = 清算热图 _checkCross() 触发（声音 + 后端飞书 cross 卡）
@@ -1300,6 +1341,9 @@
         // eslint-disable-next-line no-console
         console.warn('[heatmap] fetch err:', err.message);
         _updateMeta('错误 / Error: ' + err.message);
+      } finally {
+        // 成功 / 失败都揭开 loading（失败时 meta 已显示原因）
+        hideChartLoading(canvas.parentElement);
       }
     }
 
@@ -1311,12 +1355,13 @@
       }, delay != null ? delay : 250);
     }
 
-    // 控件变化 → 立即刷新
+    // 控件变化 → 立即刷新（盖 loading，_fetch 完成后揭开）
     if (els.heatmapWindow) {
       els.heatmapWindow.addEventListener('change', () => {
         state.windowMs = Number(els.heatmapWindow.value) || 3_600_000;
         state.dragPanMs = 0; // 切换窗口大小时，重置拖动平移，回到实时或锚定位置
         state.lastFetchKey = ''; // 强制重拉
+        showChartLoading(canvas.parentElement);
         scheduleFetch(0);
       });
     }
@@ -1324,6 +1369,7 @@
       els.heatmapKlineInterval.addEventListener('change', () => {
         state.klineInterval = els.heatmapKlineInterval.value || '5m';
         state.lastFetchKey = ''; // 强制重拉
+        showChartLoading(canvas.parentElement);
         scheduleFetch(0);
       });
     }
@@ -2150,6 +2196,8 @@
         // eslint-disable-next-line no-console
         console.warn('[liqHeatmap] fetch err:', err.message);
         _updateMeta('错误 / Error: ' + err.message);
+      } finally {
+        hideChartLoading(canvas.parentElement);
       }
     }
 
@@ -2166,6 +2214,7 @@
         state.windowMs = Number(els.liqHeatmapWindow.value) || 86_400_000;
         state.lastFetchKey = '';
         if (typeof _clearCurrentMeasure === 'function') _clearCurrentMeasure();
+        showChartLoading(canvas.parentElement);
         scheduleFetch(0);
       });
     }
@@ -4035,6 +4084,9 @@
       color: c.close >= c.open ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)'
     }));
     _smartUpdateSeries(volumeSeries, volumeData);
+    // 新周期 K 线 + 成交量已渲染 → 揭开这两个图的 loading
+    hideChartLoading(els.mainChart);
+    hideChartLoading(els.volumePane);
 
     // CVD 副图：合并模式用后端多合约 delta，单一模式与主图 K 线同源派生
     // (Merged: backend multi-contract delta; Single: derive from same candles.)
@@ -4237,6 +4289,8 @@
   function renderOpenInterest(resp, candles) {
     _lastOiResp = resp || _lastOiResp;
     if (!resp) return;
+    // 有响应就揭开 loading（unsupported 也算：现货无 OI，清空即最终状态）
+    hideChartLoading(els.oiPane);
     if (!resp.supported) {
       _smartUpdateSeries(oiSeries, []);
       _smartUpdateSeries(oiCandleSeries, []);
@@ -4474,6 +4528,7 @@
     } else {
       renderCvdFromCandles(candles);
     }
+    hideChartLoading(els.cvdPane);
   }
 
   // 用后端返回的每根 delta 累加成 CVD 曲线；口径随 _cvdUnit 取 delta 或 deltaUsd
@@ -4556,6 +4611,7 @@
   function renderOrderBook(book) {
     const chart = ensureOrderbookChart();
     _lastObBook = book;
+    if (els.orderbookCanvas) hideChartLoading(els.orderbookCanvas.parentElement);
 
     chart.data.datasets[0].data = _accumulateOrderBookSide(book.bids, 'bid');
     chart.data.datasets[1].data = _accumulateOrderBookSide(book.asks, 'ask');
@@ -5326,9 +5382,13 @@
     enforceIntervalMarketCompat('interval');
     refreshSubTitles();
     // 换周期后旧的合并 CVD delta（按旧 interval 的 openTime）失效，先清缓存；
-    // 历史 K 线缓冲同理（openTime 网格完全不同）
+    // 历史 K 线缓冲同理（openTime 网格完全不同）；OI 缓存也是旧周期网格，
+    // 一并清掉 —— 否则 renderMain 会立刻用旧数据渲染并提前揭开 loading。
     _lastCvdMerged = null;
+    _lastOiResp = null;
     _histReset();
+    // 受周期影响的每个图表盖上 loading，各自的新数据渲染完成后揭开
+    showIntervalLoading();
     markChartsNeedFit();
     poll();
     restartSSE();

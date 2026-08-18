@@ -345,6 +345,38 @@
       }
       #status.error { color: var(--accent-down); }
 
+      /* 图表 loading 遮罩：切换周期 / 时间窗时盖住对应图表，数据渲染后揭开。
+       * pointer-events:none 保证遮罩期间图表仍可拖拽缩放，不阻塞交互。 */
+      .chart-loading {
+        position: absolute;
+        inset: 0;
+        z-index: 40;
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        background: rgba(13, 17, 23, 0.45);
+        pointer-events: none;
+        border-radius: 6px;
+      }
+      .chart-loading.on { display: flex; }
+      .chart-loading .spinner {
+        width: 26px;
+        height: 26px;
+        border: 3px solid rgba(148, 163, 184, 0.35);
+        border-top-color: var(--accent-blue, #60a5fa);
+        border-radius: 50%;
+        animation: chart-loading-spin 0.8s linear infinite;
+      }
+      .chart-loading .txt {
+        font-size: 11px;
+        color: #e2e8f0;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+        letter-spacing: 0.3px;
+      }
+      @keyframes chart-loading-spin { to { transform: rotate(360deg); } }
+
       ::-webkit-scrollbar { width: 8px; height: 8px; }
       ::-webkit-scrollbar-thumb {
         background: var(--bg-2);
