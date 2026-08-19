@@ -322,11 +322,13 @@ router.get('/trade/resonance-signal', async (req, res) => {
     // ---- 主峰（与 liq-signal 共用算法 row-max）----
     const priceRangeRaw = req.query.priceRange;
     const priceCtx = _resolvePriceRange(priceRangeRaw, midPrice, hmCandles);
+    // sweepMode='invalidate'：信号口径，矩阵只留活墙（见 liqSignal.js 注释）
     const heat = buildPredictiveLiquidationHeatmap(hmCandles, {
       fromMs, toMs, bucketMs,
       priceMin: priceCtx.priceMin,
       priceMax: priceCtx.priceMax,
-      priceBucket: priceCtx.priceBucket
+      priceBucket: priceCtx.priceBucket,
+      sweepMode: 'invalidate'
     });
     const peaks = _findPeaks(heat, midPrice);
 

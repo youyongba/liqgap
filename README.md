@@ -123,6 +123,7 @@ npm run dev            # nodemon 热重载
 | GET | `/api/alerts/liquidation-cross/status` | 各 side+event 最近触发时间、冷却参数、飞书启用状态 |
 | GET | `/api/trade/signal` | LONG/SHORT/NONE 信号 + 入场/止损/止盈（前端面板已由 key-levels 替代，接口保留） |
 | GET | `/api/key-levels` | **核心**：多周期关键价位聚合（15m/1h/4h/1d 的 FVG/POC/VWAP + 15m/1h/4h/24h 清算主峰 S↑/L↓ + 15m/1h/4h/24h 买单墙/卖单墙 + 🎯 建议开仓区 entryZones），30s 服务端缓存 |
+| GET | `/api/predictive/liquidations` | **清算热力图**：K线×杠杆分布反推的预测性清算矩阵（CoinGlass 风格）。`sweepMode='clip'`：K 线扫穿上方空头带 / 下方多头带后，该带从被扫时刻**断开**（清算被消耗），历史轨迹保留；信号路由内部用 `'invalidate'` 只留活墙，两套口径互不影响 |
 | GET | `/api/squeeze/warning` | 扎空/扎多预警评分（资金费率 / OI / 持仓比 / Taker） |
 | GET | `/api/squeeze/confirmation` | 价格-OI 背离 / 爆仓主导 / 资金费率回归 |
 | GET | `/api/squeeze/heatmap` | 清算价位热力图 + 最近多/空爆仓集群 |

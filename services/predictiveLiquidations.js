@@ -17,11 +17,15 @@
  *      mmr = 维持保证金率 (Maintenance Margin Rate)，BTC 永续约 0.4~0.5%。
  *   5. 把"清算线"从开仓时间一直延续到当前 (cumulative 累加到所有未来时间桶)，
  *      再做时间衰减让远古的仓位不会过度堆积。
- *   6. **已扫则整批作废 (Sweep-invalidates)**：开仓后**任何一根**未来 K 线
- *      low ≤ 多头清算价 或 high ≥ 空头清算价，则这批仓位的整段贡献作废
- *      （包括左侧"被扫之前"的桶）—— 因为既然结局是被扫穿，那条横线就是
- *      失效信号，画出来反而误导：还活着的清算墙才是未来价格可能停留的支撑/阻力。
- *      实现：开仓时 lookahead 整段未来极值，被扫则整批 skip，不写入任何桶。
+ *   6. **已扫处理 (Sweep handling)** —— 两种模式，由 opts.sweepMode 控制：
+ *      • 'clip'（默认 · CoinGlass 视觉）：清算带从开仓时刻画到**首次被扫的
+ *        时间桶**为止，然后断开 —— K 线 low ≤ 多头清算价（或 high ≥ 空头
+ *        清算价）的那一刻，该批清算被"消耗"，横带终止但历史轨迹保留。
+ *        这就是 CoinGlass 上"K 线扫过亮带后带子断掉"的效果。
+ *      • 'invalidate'（信号口径）：开仓后任何未来 K 线触到清算价 → 整批
+ *        作废（连"被扫之前"的左侧也不画）。矩阵里只剩"还活着的墙"，
+ *        任何时间桶取 max 都是活墙 —— 信号/关键价位的 S↑/L↓ 主峰检测
+ *        (_findPeaks 对全时间轴取 max) 依赖这一性质，必须用此模式。
  *
  * 局限 (Limitations)：
  *   - 这是经验估算模型，不是真实持仓；杠杆分布、留仓时间都是假设。
@@ -109,7 +113,8 @@ function _gaussianWeights(spread) {
  * @param {{
  *   fromMs:number, toMs:number, bucketMs:number,
  *   priceMin:number, priceMax:number, priceBucket:number,
- *   mmr?:number, halfLifeMs?:number, leverageBuckets?:Array
+ *   mmr?:number, halfLifeMs?:number, leverageBuckets?:Array,
+ *   sweepMode?:'clip'|'invalidate'
  * }} opts
  */
 function buildPredictiveLiquidationHeatmap(candles, opts) {
@@ -117,6 +122,7 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
   const mmr = Number.isFinite(opts.mmr) ? opts.mmr : DEFAULT_MMR;
   const halfLife = Number.isFinite(opts.halfLifeMs) ? opts.halfLifeMs : DECAY_HALF_LIFE_MS;
   const leverages = opts.leverageBuckets || _readLeverageBuckets();
+  const sweepMode = opts.sweepMode === 'invalidate' ? 'invalidate' : 'clip';
   const spreadBuckets = Number.isFinite(opts.priceSpreadBuckets)
     ? Math.max(0, Math.min(10, Math.floor(opts.priceSpreadBuckets)))
     : DEFAULT_PRICE_SPREAD_BUCKETS;
@@ -204,23 +210,38 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
       totalLong  += longContrib;
       totalShort += shortContrib;
 
-      // 累加策略：
-      //   1) lookahead：开仓后任何未来桶 K 线会触到清算价 → 整批 skip
-      //      (既不画"左侧 = 被扫之前"，也不画"右侧 = 被扫之后"，整条作废)
-      //   2) 否则：从 tiStart 一直累加到 tCount-1，每过一个桶 × decay；
-      //      把贡献按高斯核扩散到 piLong±spreadBuckets 个相邻价位。
+      // 累加策略（按 sweepMode 分两种）：
       //
-      // 关键：右侧"被扫之后"如果有别的 K 线开仓在同一价位，那是另一根 K 线
-      // 的独立循环 + 独立 lookahead，不受当前这根被扫的影响 → 自动保留。
-      // 开仓桶 tiStart 自身不参与判定（仓位按 close 开，K 线的 high/low 在
-      // 开仓之前发生，不能算"未来"扫过）。
+      //   'invalidate'（信号口径）：
+      //     lookahead：开仓后任何未来桶 K 线会触到清算价 → 整批 skip
+      //     (既不画"左侧 = 被扫之前"，也不画"右侧 = 被扫之后"，整条作废)。
+      //     矩阵里任何非零格都属于"还活着的墙" → _findPeaks 全时间轴取 max 安全。
+      //
+      //   'clip'（CoinGlass 视觉 · 默认）：
+      //     从 tiStart 逐桶累加；从开仓后的第一个桶起，一旦该桶 K 线触到
+      //     清算价（多头：bucketLow ≤ 清算价；空头：bucketHigh ≥ 清算价）
+      //     → 就地 break。清算带画到被扫时刻为止然后"断开"，历史轨迹保留
+      //     —— 这正是 CoinGlass 上 K 线扫过亮带后带子断掉的效果。
+      //
+      // 共同点：
+      //   • 每过一个桶 × decay；贡献按高斯核扩散到 ±spreadBuckets 相邻价位。
+      //   • 被扫之后若有别的 K 线在同一价位重新开仓，那是另一根 K 线的
+      //     独立循环 + 独立判定 → 新带自动出现（断带右侧可以长出新带）。
+      //   • 开仓桶 tiStart 自身不参与判定（仓位按 close 开，K 线的 high/low
+      //     在开仓之前发生，不能算"未来"扫过）。
       if (longContrib > 0) {
-        const longSwept = (tiStart + 1 < tCount) && (futureMinLow[tiStart + 1] <= longLiqPrice);
+        const longSwept = sweepMode === 'invalidate'
+          && (tiStart + 1 < tCount) && (futureMinLow[tiStart + 1] <= longLiqPrice);
         if (longSwept) {
           sweptLong += longContrib;
         } else {
           let w = 1;
           for (let ti = tiStart; ti < tCount; ti += 1) {
+            // clip：本桶 K 线向下触到多头清算价 → 该批被消耗，从此桶断开
+            if (sweepMode === 'clip' && ti > tiStart && bucketLow[ti] <= longLiqPrice) {
+              sweptLong += longContrib;
+              break;
+            }
             for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
               const pIdx = piLong + s;
               if (pIdx < 0 || pIdx >= pCount) continue;
@@ -235,12 +256,18 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
         }
       }
       if (shortContrib > 0) {
-        const shortSwept = (tiStart + 1 < tCount) && (futureMaxHigh[tiStart + 1] >= shortLiqPrice);
+        const shortSwept = sweepMode === 'invalidate'
+          && (tiStart + 1 < tCount) && (futureMaxHigh[tiStart + 1] >= shortLiqPrice);
         if (shortSwept) {
           sweptShort += shortContrib;
         } else {
           let w = 1;
           for (let ti = tiStart; ti < tCount; ti += 1) {
+            // clip：本桶 K 线向上触到空头清算价 → 该批被消耗，从此桶断开
+            if (sweepMode === 'clip' && ti > tiStart && bucketHigh[ti] >= shortLiqPrice) {
+              sweptShort += shortContrib;
+              break;
+            }
             for (let s = -spreadBuckets; s <= spreadBuckets; s += 1) {
               const pIdx = piShort + s;
               if (pIdx < 0 || pIdx >= pCount) continue;
@@ -296,7 +323,8 @@ function buildPredictiveLiquidationHeatmap(candles, opts) {
     leverageBuckets: leverages,
     mmr,
     halfLifeMs: halfLife,
-    priceSpreadBuckets: spreadBuckets
+    priceSpreadBuckets: spreadBuckets,
+    sweepMode
   };
 }
 

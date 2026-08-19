@@ -1704,11 +1704,14 @@
       //
       // 同时计算两种代表强度，让用户能对比：
       //   • row-max  = 该价位"最强单格"，等价于图上视觉最亮的横线 / tooltip 数值最大
-      //                lookahead-skip 后 ≈ last-cell ≈ "当前还活着的最强清算墙"
       //   • row-sum  = 该价位所有时间桶的累计 USDT，反映"清算池长期堆积深度"
       //
       // 警报判定和后端信号触发墙都跟 row-max（活墙最适合做反转/触墙判定）；
       // row-sum 仅做视觉对比，标在图上和 meta 行供参考。
+      //
+      // ⚠️ 存活闸门：后端 sweepMode='clip' 后，被 K 线扫穿的清算带会以
+      // "断带"形式留在历史列里（CoinGlass 视觉）。这些已消耗的残段不能再
+      // 参与 S↑/L↓ 主峰候选 —— 只有"最后一个时间桶仍非零"的价位才是活墙。
       {
         const Tlen = d.times.length;
         const Plen = d.prices.length;
@@ -1733,6 +1736,16 @@
             shortSumRow[pi] += sv;
             if (lv > 0) longHits[pi]  += 1;
             if (sv > 0) shortHits[pi] += 1;
+          }
+        }
+        // 存活闸门：最后一列为 0 的价位 = 已被扫断/从未有墙 → 清零出局，
+        // 保证 S↑/L↓ 标线和警报只锚定"当前还活着"的清算墙。
+        {
+          const lastLr = (Tlen > 0 && d.longMatrix[Tlen - 1])  || [];
+          const lastSr = (Tlen > 0 && d.shortMatrix[Tlen - 1]) || [];
+          for (let pi = 0; pi < Plen; pi += 1) {
+            if (!(lastLr[pi] > 0)) { longMaxRow[pi] = 0;  longSumRow[pi] = 0;  longHits[pi] = 0; }
+            if (!(lastSr[pi] > 0)) { shortMaxRow[pi] = 0; shortSumRow[pi] = 0; shortHits[pi] = 0; }
           }
         }
         // 优先用主图 SSE 推送的最新 K 线 close 作为 mid（更新最高频），

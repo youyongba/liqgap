@@ -269,8 +269,12 @@ router.get('/trade/liq-signal', async (req, res) => {
     const factor = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
     const priceBucket = Math.max(0.01, factor * exp);
 
+    // sweepMode='invalidate'：矩阵里只留"还活着的墙"，_findPeaks 全时间轴
+    // 取 max 才不会把已被 K 线扫穿消耗的历史残段当成触发墙。
+    // （热图路由用 'clip' 画 CoinGlass 式断带，两套口径互不影响。）
     const heat = buildPredictiveLiquidationHeatmap(hmCandles, {
-      fromMs, toMs, bucketMs, priceMin, priceMax, priceBucket
+      fromMs, toMs, bucketMs, priceMin, priceMax, priceBucket,
+      sweepMode: 'invalidate'
     });
     const peaks = _findPeaks(heat, midPrice);
     if (!peaks.peakLong && !peaks.peakShort) {

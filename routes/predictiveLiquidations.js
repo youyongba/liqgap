@@ -5,8 +5,9 @@
  *
  * CoinGlass 风格的"预测性"清算热力图数据。
  * 基于历史 K 线 × 杠杆估算反推出"如果价格走到 X 价位，预计会触发的清算量"，
- * 并加入"已扫消耗"——价格已穿过的清算线在那一刻起从矩阵剔除。
- * 输出形态接近 CoinGlass Liquidation Heatmap 的"横向亮带"。
+ * 并加入"已扫消耗"（sweepMode='clip'）——K 线扫过上方空头清算带 / 下方多头
+ * 清算带后，该带从被扫时刻起断开（清算被消耗），历史轨迹保留。
+ * 输出形态接近 CoinGlass Liquidation Heatmap 的"横向亮带 + 被扫断带"。
  *
  * 查询参数 (Query):
  *   symbol      默认 'BTCUSDT'
@@ -150,9 +151,13 @@ router.get('/predictive/liquidations', async (req, res) => {
       priceBucket = Math.max(0.01, factor * exp);
     }
 
+    // sweepMode='clip'（CoinGlass 视觉）：清算带画到被 K 线扫穿的时刻断开，
+    // 历史轨迹保留。信号路由 (liqSignal / resonance / keyLevels) 用 'invalidate'
+    // 只留活墙，两套口径互不影响。
     const matrix = buildPredictiveLiquidationHeatmap(candles, {
       fromMs, toMs, bucketMs,
-      priceMin, priceMax, priceBucket
+      priceMin, priceMax, priceBucket,
+      sweepMode: 'clip'
     });
 
     let p50 = 0, p95 = 0;

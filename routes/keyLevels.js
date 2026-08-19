@@ -108,8 +108,10 @@ function _computeWindowPeaks(srcCandles, win, midPrice, toMs) {
   const factor = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
   const priceBucket = Math.max(0.01, factor * exp);
 
+  // sweepMode='invalidate'：信号口径，矩阵只留活墙（见 liqSignal.js 注释）
   const heat = buildPredictiveLiquidationHeatmap(wc, {
-    fromMs, toMs, bucketMs: win.bucketMs, priceMin, priceMax, priceBucket
+    fromMs, toMs, bucketMs: win.bucketMs, priceMin, priceMax, priceBucket,
+    sweepMode: 'invalidate'
   });
   return _findPeaks(heat, midPrice);
 }
