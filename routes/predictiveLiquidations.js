@@ -23,10 +23,27 @@ const express = require('express');
 const { BinanceService } = require('../services/binance');
 const { normalizeKlines } = require('../indicators/klineIndicators');
 const { buildPredictiveLiquidationHeatmap } = require('../services/predictiveLiquidations');
+const swrCache = require('../services/swrCache');
 
 const router = express.Router();
 const ONE_HOUR_MS = 3600_000;
 const ONE_MIN_MS = 60_000;
+
+// 矩阵数值压缩到 4 位有效数字：清算量本来就是经验估算，4 位精度绰绰有余，
+// 但 JSON 里 "123456789.12345678" 这类 18 字符的浮点会被缩成 "1.235e+8" 级
+// 的短数字 → 未压缩体积直接减半，gzip 后进一步受益（重复模式更多）。
+function _compactMatrix(matrix) {
+  for (let i = 0; i < matrix.length; i += 1) {
+    const row = matrix[i];
+    for (let j = 0; j < row.length; j += 1) {
+      if (row[j] !== 0) row[j] = Number(row[j].toPrecision(4));
+    }
+  }
+}
+
+function _compact(v) {
+  return Number.isFinite(v) && v !== 0 ? Number(v.toPrecision(6)) : v;
+}
 
 // 把 windowMs 映射成合理的 (sourceInterval, bucketMs)
 // 设计目标：源 K 线 ≤ 1500 根（Binance 单次拉取上限），时间桶 ≤ ~120 个，
@@ -45,28 +62,32 @@ function _autoSampling(windowMs) {
 }
 
 router.get('/predictive/liquidations', async (req, res) => {
-  try {
-    const symbol = String(req.query.symbol || 'BTCUSDT').toUpperCase();
-    // 现货无杠杆 → 强制 futures
-    const market = 'futures';
+  const symbol = String(req.query.symbol || 'BTCUSDT').toUpperCase();
+  // 现货无杠杆 → 强制 futures
+  const market = 'futures';
 
+  let windowMs = Number(req.query.windowMs);
+  if (!Number.isFinite(windowMs) || windowMs < 15 * ONE_MIN_MS) windowMs = 24 * ONE_HOUR_MS;
+  // 上限放宽到 31 天，覆盖前端 48h / 3d / 1w / 2w / 3w / 1月 选项
+  if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
+
+  const auto = _autoSampling(windowMs);
+  const sourceInterval = (req.query.sourceInterval || auto.source);
+  let bucketMs = Number(req.query.bucketMs);
+  if (!Number.isFinite(bucketMs) || bucketMs < ONE_MIN_MS) bucketMs = auto.bucketMs;
+  // 长窗口（>= 1 周）需要更大的时间桶（4h/6h/8h），不再硬封顶到 1h，
+  // 否则 1月窗口会出现 744 桶而把热图压得糊成一片。
+  const MAX_BUCKET_MS = 12 * ONE_HOUR_MS;
+  if (bucketMs > MAX_BUCKET_MS) bucketMs = MAX_BUCKET_MS;
+
+  const priceRangeRaw = req.query.priceRange;
+  const priceBucketRaw = Number(req.query.priceBucket);
+
+  // 真实取数 + 重算矩阵（仅在 SWR 缓存需要刷新时执行）
+  const buildPayload = async () => {
     const now = Date.now();
-    let windowMs = Number(req.query.windowMs);
-    if (!Number.isFinite(windowMs) || windowMs < 15 * ONE_MIN_MS) windowMs = 24 * ONE_HOUR_MS;
-    // 上限放宽到 31 天，覆盖前端 48h / 3d / 1w / 2w / 3w / 1月 选项
-    if (windowMs > 31 * 24 * ONE_HOUR_MS) windowMs = 31 * 24 * ONE_HOUR_MS;
-
     const toMs = now;
     const fromMs = toMs - windowMs;
-
-    const auto = _autoSampling(windowMs);
-    const sourceInterval = (req.query.sourceInterval || auto.source);
-    let bucketMs = Number(req.query.bucketMs);
-    if (!Number.isFinite(bucketMs) || bucketMs < ONE_MIN_MS) bucketMs = auto.bucketMs;
-    // 长窗口（>= 1 周）需要更大的时间桶（4h/6h/8h），不再硬封顶到 1h，
-    // 否则 1月窗口会出现 744 桶而把热图压得糊成一片。
-    const MAX_BUCKET_MS = 12 * ONE_HOUR_MS;
-    if (bucketMs > MAX_BUCKET_MS) bucketMs = MAX_BUCKET_MS;
 
     // 拉 K 线（最大 1500 根；如果 windowMs 需要更多就分批）
     // 这里做单次拉取覆盖：windowMs / sourceMs ≤ 1500 时直接一次拉。
@@ -81,27 +102,23 @@ router.get('/predictive/liquidations', async (req, res) => {
     const candles = normalizeKlines(raw).filter((c) => c.openTime >= fromMs - sourceMs);
 
     if (!candles.length) {
-      return res.json({
-        success: true,
-        data: {
-          symbol, market, fromMs, toMs, bucketMs,
-          midPrice: null, priceMin: null, priceMax: null, priceBucket: null,
-          priceRange: null, autoRange: true,
-          times: [], prices: [],
-          longMatrix: [], shortMatrix: [],
-          maxValue: 0, p50: 0, p95: 0,
-          totalLong: 0, totalShort: 0, candleCount: 0, eventCount: 0,
-          generatedAt: now, empty: true,
-          mode: 'predicted',
-          reason: '尚无 K 线 / no klines available'
-        }
-      });
+      return {
+        symbol, market, fromMs, toMs, bucketMs,
+        midPrice: null, priceMin: null, priceMax: null, priceBucket: null,
+        priceRange: null, autoRange: true,
+        times: [], prices: [],
+        longMatrix: [], shortMatrix: [],
+        maxValue: 0, p50: 0, p95: 0,
+        totalLong: 0, totalShort: 0, candleCount: 0, eventCount: 0,
+        generatedAt: now, empty: true,
+        mode: 'predicted',
+        reason: '尚无 K 线 / no klines available'
+      };
     }
 
     const midPrice = Number(candles[candles.length - 1].close);
 
     // 价格窗
-    const priceRangeRaw = req.query.priceRange;
     let priceRange = NaN;
     let autoRange = false;
     if (priceRangeRaw === undefined || priceRangeRaw === '' || priceRangeRaw === 'auto') {
@@ -137,7 +154,7 @@ router.get('/predictive/liquidations', async (req, res) => {
     }
 
     // 价格桶自适应：约 200 桶
-    let priceBucket = Number(req.query.priceBucket);
+    let priceBucket = priceBucketRaw;
     if (!Number.isFinite(priceBucket) || priceBucket <= 0) {
       const targetBuckets = 240;
       const raw = (priceMax - priceMin) / targetBuckets;
@@ -184,33 +201,47 @@ router.get('/predictive/liquidations', async (req, res) => {
       .filter((c) => c.openTime >= fromMs - sourceMs && c.openTime <= toMs)
       .map((c) => ({ t: c.openTime, o: c.open, h: c.high, l: c.low, c: c.close }));
 
-    res.json({
-      success: true,
-      data: {
-        symbol, market,
-        fromMs, toMs, bucketMs,
-        midPrice, priceMin, priceMax, priceBucket, priceRange, autoRange,
-        sourceInterval,
-        times: matrix.times,
-        prices: matrix.prices,
-        longMatrix: matrix.longMatrix,
-        shortMatrix: matrix.shortMatrix,
-        maxValue: matrix.maxValue,
-        p50, p95,
-        totalLong: matrix.totalLong,
-        totalShort: matrix.totalShort,
-        candleCount: matrix.candleCount,
-        eventCount: matrix.candleCount, // 兼容前端字段
-        leverageBuckets: matrix.leverageBuckets,
-        mmr: matrix.mmr,
-        halfLifeMs: matrix.halfLifeMs,
-        candles: slimCandles,
-        candleInterval: sourceInterval,
-        generatedAt: now,
-        empty: matrix.maxValue === 0,
-        mode: 'predicted'
-      }
+    // 矩阵数值压缩到 4 位有效数字：未压缩 JSON 体积直接减半（详见 _compactMatrix）
+    _compactMatrix(matrix.longMatrix);
+    _compactMatrix(matrix.shortMatrix);
+
+    return {
+      symbol, market,
+      fromMs, toMs, bucketMs,
+      midPrice, priceMin, priceMax, priceBucket, priceRange, autoRange,
+      sourceInterval,
+      times: matrix.times,
+      prices: matrix.prices,
+      longMatrix: matrix.longMatrix,
+      shortMatrix: matrix.shortMatrix,
+      maxValue: _compact(matrix.maxValue),
+      p50: _compact(p50),
+      p95: _compact(p95),
+      totalLong: _compact(matrix.totalLong),
+      totalShort: _compact(matrix.totalShort),
+      candleCount: matrix.candleCount,
+      eventCount: matrix.candleCount, // 兼容前端字段
+      leverageBuckets: matrix.leverageBuckets,
+      mmr: matrix.mmr,
+      halfLifeMs: matrix.halfLifeMs,
+      candles: slimCandles,
+      candleInterval: sourceInterval,
+      generatedAt: now,
+      empty: matrix.maxValue === 0,
+      mode: 'predicted'
+    };
+  };
+
+  try {
+    // SWR：命中缓存毫秒级返回；过期先回旧值后台刷新（前端 30s 自动刷新
+    // 因此除首次冷启动外永远即时）；冷启动最多等 8s（远离网关 15s 红线）
+    const cacheKey = `predliq|${symbol}|${windowMs}|${sourceInterval}|${bucketMs}|`
+      + `${priceRangeRaw === undefined || priceRangeRaw === '' ? 'auto' : priceRangeRaw}|`
+      + `${Number.isFinite(priceBucketRaw) && priceBucketRaw > 0 ? priceBucketRaw : 'auto'}`;
+    const { value } = await swrCache.swr(cacheKey, buildPayload, {
+      ttlMs: 20_000, staleMaxMs: 10 * 60_000, budgetMs: 8_000
     });
+    res.json({ success: true, data: value });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

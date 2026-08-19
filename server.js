@@ -21,6 +21,7 @@ require('dotenv').config();
 
 const path = require('path');
 const express = require('express');
+const compression = require('compression');
 
 const klinesRoute = require('./routes/klines');
 const orderbookRoute = require('./routes/orderbook');
@@ -58,6 +59,18 @@ app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();
 });
+
+// gzip 压缩：清算热力图等接口返回大矩阵 JSON（未压缩可超 1MB，全是 0 和
+// 重复数字，压缩率 >10x），跨境链路上传输时间是加载慢的主因之一。
+// SSE (text/event-stream) 必须排除：compression 会缓冲响应，破坏实时推送。
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    const ct = String(res.getHeader('Content-Type') || '');
+    if (ct.includes('text/event-stream')) return false;
+    return compression.filter(req, res);
+  }
+}));
 
 app.use(express.json());
 
