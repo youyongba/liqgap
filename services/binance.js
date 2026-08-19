@@ -22,13 +22,40 @@
  */
 
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
 
 const SPOT_BASE_URL = 'https://api.binance.com';
 const FUTURES_BASE_URL = 'https://fapi.binance.com';
 // 币本位合约 (COIN-M Futures)，持仓量聚合时用到 (BTCUSD_PERP 等)
 const COINM_BASE_URL = 'https://dapi.binance.com';
 
-const DEFAULT_TIMEOUT_MS = 15000;
+// ---------------------------------------------------------------------------
+// 抗抖动网络层 (Network resilience layer · 针对跨境/高丢包链路优化)
+// ---------------------------------------------------------------------------
+// 韩国等跨境主机到 Binance 的链路常见丢包/RST，四项加固：
+//   1. keep-alive 连接池：复用 TCP+TLS 连接，省掉每次 2-3 个 RTT 的握手
+//      （丢包链路上握手阶段最容易失败，这是稳定性的最大单项提升）
+//   2. 快速超时 + 自动重试：单次尝试 6s 超时（默认），网络错误/5xx 自动
+//      重试 1 次（默认）；总耗时 ≈ 12.5s，仍在前端 15s soft-timeout 之内
+//   3. 并发去重：同一 URL+参数在途时共享同一个 Promise，避免慢链路下
+//      轮询请求堆积放大拥塞
+//   4. stale 兜底：全部重试失败时回退最近一次成功响应（默认 3min 内），
+//      面板显示略旧的数据而不是空窗报错
+// 环境变量：BINANCE_TIMEOUT_MS / BINANCE_RETRIES / BINANCE_STALE_TTL_MS
+const DEFAULT_TIMEOUT_MS = (() => {
+  const v = Number(process.env.BINANCE_TIMEOUT_MS);
+  return Number.isFinite(v) && v >= 1000 ? v : 6000;
+})();
+const RETRIES = (() => {
+  const v = Number(process.env.BINANCE_RETRIES);
+  return Number.isFinite(v) && v >= 0 && v <= 5 ? Math.floor(v) : 1;
+})();
+const STALE_TTL_MS = (() => {
+  const v = Number(process.env.BINANCE_STALE_TTL_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 180_000; // 0 = 关闭 stale 兜底
+})();
+const RETRY_BACKOFF_MS = 250;
 
 // 用浏览器风格的 headers 避免被 Cloudflare 当作 bot 拦截 (返回 403)。
 // (Browser-like headers prevent Cloudflare from flagging us as a bot.)
@@ -42,9 +69,27 @@ const BROWSER_HEADERS = {
   Connection: 'keep-alive'
 };
 
+// 配置了 HTTP(S)_PROXY 时不挂自定义 agent（axios 走自己的 proxy 通道，
+// 两者同时设置会冲突）；直连时启用 keep-alive 连接池。
+const _proxyConfigured = !!(
+  process.env.HTTPS_PROXY || process.env.https_proxy ||
+  process.env.HTTP_PROXY || process.env.http_proxy
+);
+const _keepAliveOpts = {
+  keepAlive: true,
+  keepAliveMsecs: 15_000,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  // 空闲连接留 30s：Binance/Cloudflare 侧 idle timeout 更长，30s 内复用安全
+  timeout: 30_000
+};
 const httpClient = axios.create({
   timeout: DEFAULT_TIMEOUT_MS,
-  headers: BROWSER_HEADERS
+  headers: BROWSER_HEADERS,
+  ...(_proxyConfigured ? {} : {
+    httpAgent: new http.Agent(_keepAliveOpts),
+    httpsAgent: new https.Agent(_keepAliveOpts)
+  })
 });
 
 // ---------------------------------------------------------------------------
@@ -120,6 +165,51 @@ function resolveTickerPath(marketType) {
   return marketType === 'futures' ? '/fapi/v1/ticker/price' : '/api/v3/ticker/price';
 }
 
+// ---------------------------------------------------------------------------
+// 并发去重 + stale 兜底缓存
+// ---------------------------------------------------------------------------
+// _inflight：同一 URL+参数在途时后来的调用共享同一个 Promise。
+//   慢链路下 10s 轮询 + 12s 响应会造成请求堆积，去重后同 key 永远只有 1 个
+//   在途请求，还顺带合并了多个模块对同一份 K 线的重复拉取。
+// _staleCache：每个 key 记住最近一次成功响应。全部重试失败时若缓存仍在
+//   TTL 内则回退返回（console.warn 提示），面板保持有数据而不是报错空窗。
+const _inflight = new Map();
+const _staleCache = new Map(); // key → { at, data }
+const STALE_MAX_ENTRIES = 150; // 安全阀：历史翻页 endTime 会产生一次性 key
+
+function _cacheKey(url, params) {
+  return `${url}?${JSON.stringify(params || {})}`;
+}
+
+function _staleSet(key, data) {
+  if (STALE_TTL_MS <= 0) return;
+  if (_staleCache.size >= STALE_MAX_ENTRIES && !_staleCache.has(key)) {
+    // 淘汰最老条目（Map 迭代顺序 = 插入顺序）
+    const oldest = _staleCache.keys().next().value;
+    if (oldest !== undefined) _staleCache.delete(oldest);
+  }
+  _staleCache.delete(key); // 重新插入到队尾，近似 LRU
+  _staleCache.set(key, { at: Date.now(), data });
+}
+
+function _staleGet(key) {
+  if (STALE_TTL_MS <= 0) return null;
+  const hit = _staleCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > STALE_TTL_MS) { _staleCache.delete(key); return null; }
+  return hit;
+}
+
+// 网络错误（无 HTTP 状态码：ECONNRESET / 超时 / DNS 等）和 5xx 可重试；
+// 4xx（参数错/限流/封禁）重试无意义且可能加重限流。
+function _isRetryable(err) {
+  const status = err.response && err.response.status;
+  if (status == null) return true;
+  return status >= 500;
+}
+
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // 通用 GET 请求 + 错误包装 (Generic GET with error wrapping)
 //   错误信息里附带 HTTP 状态码与 URL 路径，便于排查
 //   ECONNRESET / 403 / 451 / 429 等具体原因。
@@ -128,7 +218,11 @@ function resolveTickerPath(marketType) {
 //   "rate-limit cooldown" 不再发起网络请求，避免雪崩。
 async function get(url, params) {
   const market = _market(url);
+  const key = _cacheKey(url, params);
   if (_isCoolingDown(market)) {
+    // 冷却期内优先回 stale（有总比没有强），否则抛错让上层兜底
+    const stale = _staleGet(key);
+    if (stale) return stale.data;
     const remainMs = cooldown[market] - Date.now();
     const path = (url || '').replace(/^https?:\/\/[^/]+/, '');
     const err = new Error(
@@ -138,42 +232,80 @@ async function get(url, params) {
     err.status = 429;
     throw err;
   }
-  try {
-    const response = await httpClient.get(url, { params });
-    return response.data;
-  } catch (err) {
-    const status = err.response && err.response.status;
-    const reason =
-      (err.response && err.response.data && err.response.data.msg) ||
-      err.message ||
-      'Unknown Binance API error';
-    let hint = '';
-    if (status === 403 || status === 451) {
-      // 地理限制 / Cloudflare 拦截常见提示
-      // (Geographic / Cloudflare restriction hint.)
-      hint = '（疑似地理限制或 Cloudflare 拦截，请尝试在 .env 配置 HTTPS_PROXY；' +
-             ' likely geo-block / Cloudflare bot challenge — try HTTPS_PROXY in .env）';
-    } else if (status === 429 || status === 418) {
-      hint = '（被币安限流 rate-limited，请降低轮询频率）';
-      // 触发对应市场冷却期：优先尊重 Retry-After header，否则用默认值
-      // (Prefer Retry-After header; fall back to default cooldown.)
-      const retryAfter = err.response && err.response.headers
-        ? err.response.headers['retry-after']
-        : null;
-      const seconds = Number(retryAfter);
-      const ms = Number.isFinite(seconds) && seconds > 0
-        ? seconds * 1000
-        : DEFAULT_COOLDOWN_MS;
-      _setCooldown(market, ms);
+  const pending = _inflight.get(key);
+  if (pending) return pending;
+  const p = _getWithRetry(url, params, key, market)
+    .finally(() => { _inflight.delete(key); });
+  _inflight.set(key, p);
+  return p;
+}
+
+async function _getWithRetry(url, params, key, market) {
+  const path = (url || '').replace(/^https?:\/\/[^/]+/, '');
+  let lastErr = null;
+  for (let attempt = 0; attempt <= RETRIES; attempt += 1) {
+    if (attempt > 0) {
+      await _sleep(RETRY_BACKOFF_MS * attempt);
+      // 重试前再查一次冷却：上一次尝试可能刚触发 429
+      if (_isCoolingDown(market)) break;
     }
-    const path = (url || '').replace(/^https?:\/\/[^/]+/, '');
-    const wrapped = new Error(
-      `Binance API ${path} failed (HTTP ${status || 'NETERR'}): ${reason}${hint}`
-    );
-    wrapped.cause = err;
-    wrapped.status = status;
-    throw wrapped;
+    try {
+      const response = await httpClient.get(url, { params });
+      _staleSet(key, response.data);
+      return response.data;
+    } catch (err) {
+      lastErr = err;
+      if (!_isRetryable(err)) break;
+      if (attempt < RETRIES) {
+        // eslint-disable-next-line no-console
+        console.warn(`[binance] ${path} attempt ${attempt + 1} failed (${err.message}), retrying…`);
+      }
+    }
   }
+
+  const err = lastErr || new Error('Unknown Binance API error');
+  const status = err.response && err.response.status;
+  const reason =
+    (err.response && err.response.data && err.response.data.msg) ||
+    err.message ||
+    'Unknown Binance API error';
+  let hint = '';
+  if (status === 403 || status === 451) {
+    // 地理限制 / Cloudflare 拦截常见提示
+    // (Geographic / Cloudflare restriction hint.)
+    hint = '（疑似地理限制或 Cloudflare 拦截，请尝试在 .env 配置 HTTPS_PROXY；' +
+           ' likely geo-block / Cloudflare bot challenge — try HTTPS_PROXY in .env）';
+  } else if (status === 429 || status === 418) {
+    hint = '（被币安限流 rate-limited，请降低轮询频率）';
+    // 触发对应市场冷却期：优先尊重 Retry-After header，否则用默认值
+    // (Prefer Retry-After header; fall back to default cooldown.)
+    const retryAfter = err.response && err.response.headers
+      ? err.response.headers['retry-after']
+      : null;
+    const seconds = Number(retryAfter);
+    const ms = Number.isFinite(seconds) && seconds > 0
+      ? seconds * 1000
+      : DEFAULT_COOLDOWN_MS;
+    _setCooldown(market, ms);
+  }
+
+  // stale 兜底：重试全部失败但最近成功过 → 返回旧数据保面板不空窗
+  const stale = _staleGet(key);
+  if (stale) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[binance] ${path} failed after ${RETRIES + 1} attempt(s) (${reason}); ` +
+      `serving stale copy from ${Math.round((Date.now() - stale.at) / 1000)}s ago`
+    );
+    return stale.data;
+  }
+
+  const wrapped = new Error(
+    `Binance API ${path} failed (HTTP ${status || 'NETERR'}): ${reason}${hint}`
+  );
+  wrapped.cause = err;
+  wrapped.status = status;
+  throw wrapped;
 }
 
 const BinanceService = {
