@@ -3250,7 +3250,16 @@
   // 单次软请求超时（毫秒）。超过即 abort，避免请求挂死到网关 504 才返回
   // HTML 错误页（那会让 r.json() 抛 "Unexpected token '<'" 这种难懂的报错）。
   const SOFT_FETCH_TIMEOUT_MS = 15000;
-  async function fetchJsonSoft(url) {
+  // 瞬时网关错误（502/504 非 JSON 响应、网络断连）在同一轮内立即重试一次，
+  // 而不是把"部分失败"晾给用户等下一轮 10s 轮询。仅重试网关/网络层错误；
+  // 应用层 success:false 与 15s abort（说明链路本身很慢）不重试。
+  const SOFT_FETCH_RETRY_DELAY_MS = 600;
+  async function fetchJsonSoft(url, _attempt = 0) {
+    const canRetry = _attempt < 1;
+    const retry = async () => {
+      await new Promise((resolve) => setTimeout(resolve, SOFT_FETCH_RETRY_DELAY_MS));
+      return fetchJsonSoft(url, _attempt + 1);
+    };
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     const timer = ctrl ? setTimeout(() => ctrl.abort(), SOFT_FETCH_TIMEOUT_MS) : null;
     try {
@@ -3261,7 +3270,8 @@
       if (!ct.includes('json')) {
         const msg = `HTTP ${r.status} 非 JSON 响应（可能超时/网关错误，稍后自动重试）`;
         // eslint-disable-next-line no-console
-        console.warn('soft-fetch non-json:', url, msg);
+        console.warn('soft-fetch non-json:', url, msg, canRetry ? '→ retrying' : '');
+        if (canRetry) return retry();
         fetchJsonSoft.lastErrors[url] = msg;
         return null;
       }
@@ -3275,7 +3285,13 @@
       delete fetchJsonSoft.lastErrors[url];
       return j.data;
     } catch (err) {
-      const msg = err && err.name === 'AbortError'
+      const isAbort = err && err.name === 'AbortError';
+      if (!isAbort && canRetry) {
+        // eslint-disable-next-line no-console
+        console.warn('soft-fetch threw:', url, (err && err.message) || 'fetch error', '→ retrying');
+        return retry();
+      }
+      const msg = isAbort
         ? `请求超时 (>${SOFT_FETCH_TIMEOUT_MS / 1000}s，已中止，稍后自动重试)`
         : (err && err.message) || 'fetch error';
       // eslint-disable-next-line no-console

@@ -32,6 +32,7 @@
 
 const express = require('express');
 const { BinanceService } = require('../services/binance');
+const swrCache = require('../services/swrCache');
 
 const router = express.Router();
 
@@ -102,30 +103,19 @@ router.get('/cvd', async (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit) || 200, 1000));
   const aggregate = /^(binance|1|true|all)$/i.test(String(req.query.aggregate || ''));
 
-  try {
-    // 单一模式（含 spot）：只取当前 symbol
-    if (!aggregate) {
+  // 真实取数（仅在 SWR 缓存需要刷新时执行）
+  const buildPayload = async () => {
+    // 单一模式（含 spot / 聚合对现货无意义）：只取当前 symbol
+    if (!aggregate || market !== 'futures') {
       const rows = await BinanceService.getKlines(symbol, interval, limit, market);
-      return res.json({
-        success: true,
-        data: {
-          supported: true,
-          symbol,
-          market,
-          interval,
-          aggregated: false,
-          data: _deltasFapi(rows)
-        }
-      });
-    }
-
-    // 聚合模式仅对合约有意义
-    if (market !== 'futures') {
-      const rows = await BinanceService.getKlines(symbol, interval, limit, market);
-      return res.json({
-        success: true,
-        data: { supported: true, symbol, market, interval, aggregated: false, data: _deltasFapi(rows) }
-      });
+      return {
+        supported: true,
+        symbol,
+        market,
+        interval,
+        aggregated: false,
+        data: _deltasFapi(rows)
+      };
     }
 
     const base = parseBaseAsset(symbol);
@@ -146,25 +136,36 @@ router.get('/cvd', async (req, res) => {
     ];
     const data = _mergeDeltas(sources);
     const okCount = sources.filter((s) => s.ok && s.count > 0).length;
+    // 三源全挂 → 抛错（不落 SWR 缓存），见 openInterest.js 同款守卫
+    if (okCount === 0 && data.length === 0) {
+      throw new Error('CVD 三类合约源全部拉取失败 (all CVD sources failed)');
+    }
 
-    res.json({
-      success: true,
-      data: {
-        supported: true,
-        symbol,
-        market,
-        interval,
-        aggregated: true,
-        sources: sources.map((s) => ({
-          label: s.label,
-          ok: s.ok,
-          count: s.count,
-          error: s.ok ? null : 'fetch failed (可能该合约不存在或被限流)'
-        })),
-        notes: `已合并 ${okCount}/3 类合约 CVD (USDT-M + USDC-M + COIN-M 永续)`,
-        data
-      }
+    return {
+      supported: true,
+      symbol,
+      market,
+      interval,
+      aggregated: true,
+      sources: sources.map((s) => ({
+        label: s.label,
+        ok: s.ok,
+        count: s.count,
+        error: s.ok ? null : 'fetch failed (可能该合约不存在或被限流)'
+      })),
+      notes: `已合并 ${okCount}/3 类合约 CVD (USDT-M + USDC-M + COIN-M 永续)`,
+      data
+    };
+  };
+
+  try {
+    // SWR：命中缓存毫秒级返回；过期先回旧值后台刷新；
+    // 冷启动最多等 8s（远离网关 15s 红线）
+    const cacheKey = `cvd|${symbol}|${market}|${interval}|${limit}|${aggregate ? 1 : 0}`;
+    const { value } = await swrCache.swr(cacheKey, buildPayload, {
+      ttlMs: 10_000, staleMaxMs: 10 * 60_000, budgetMs: 8_000
     });
+    res.json({ success: true, data: value });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[cvd] failed:', err.message);

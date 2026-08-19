@@ -32,6 +32,7 @@
 
 const express = require('express');
 const { BinanceService } = require('../services/binance');
+const swrCache = require('../services/swrCache');
 
 const router = express.Router();
 
@@ -191,28 +192,31 @@ router.get('/openInterest', async (req, res) => {
   // aggregate=binance / 1 / true → 合并 USDT-M + USDC-M + COIN-M
   const aggregate = /^(binance|1|true|all)$/i.test(String(req.query.aggregate || ''));
 
-  try {
+  // 真实取数（仅在 SWR 缓存需要刷新时执行）
+  const buildPayload = async () => {
     if (aggregate) {
       const { data: series, sources } = await _aggregateOpenInterest(symbol, period, limit);
       const okCount = sources.filter((s) => s.ok && s.count > 0).length;
-      return res.json({
-        success: true,
-        data: {
-          supported: true,
-          symbol,
-          market,
-          interval: intervalRaw,
-          period,
-          fellBack,
-          aggregated: true,
-          sources,
-          notes: [
-            fellBack ? `OI 接口不支持 ${intervalRaw}，已回退到 ${period}` : null,
-            `已合并 ${okCount}/3 类合约 (USDT-M + USDC-M + COIN-M 永续)`
-          ].filter(Boolean).join('；') || null,
-          data: series
-        }
-      });
+      // 三源全挂 → 抛错（不落 SWR 缓存），否则空数据会被缓存住，
+      // 网络恢复后面板还要多空窗一个 TTL
+      if (okCount === 0 && series.length === 0) {
+        throw new Error('OI 三类合约源全部拉取失败 (all OI sources failed)');
+      }
+      return {
+        supported: true,
+        symbol,
+        market,
+        interval: intervalRaw,
+        period,
+        fellBack,
+        aggregated: true,
+        sources,
+        notes: [
+          fellBack ? `OI 接口不支持 ${intervalRaw}，已回退到 ${period}` : null,
+          `已合并 ${okCount}/3 类合约 (USDT-M + USDC-M + COIN-M 永续)`
+        ].filter(Boolean).join('；') || null,
+        data: series
+      };
     }
 
     const raw = await BinanceService.getOpenInterestHist(symbol, period, limit);
@@ -224,22 +228,29 @@ router.get('/openInterest', async (req, res) => {
       Number.isFinite(p.openTime) && Number.isFinite(p.openInterest)
     ).sort((a, b) => a.openTime - b.openTime);
 
-    res.json({
-      success: true,
-      data: {
-        supported: true,
-        symbol,
-        market,
-        interval: intervalRaw,
-        period,
-        fellBack,
-        aggregated: false,
-        notes: fellBack
-          ? `OI 接口不支持 ${intervalRaw}，已回退到 ${period}`
-          : null,
-        data: series
-      }
+    return {
+      supported: true,
+      symbol,
+      market,
+      interval: intervalRaw,
+      period,
+      fellBack,
+      aggregated: false,
+      notes: fellBack
+        ? `OI 接口不支持 ${intervalRaw}，已回退到 ${period}`
+        : null,
+      data: series
+    };
+  };
+
+  try {
+    // SWR：OI 数据粒度 ≥5m，30s 新鲜期足够；命中缓存毫秒级返回，
+    // 过期先回旧值后台刷新，冷启动最多等 8s（远离网关 15s 红线）
+    const cacheKey = `oi|${symbol}|${market}|${intervalRaw}|${limit}|${aggregate ? 1 : 0}`;
+    const { value } = await swrCache.swr(cacheKey, buildPayload, {
+      ttlMs: 30_000, staleMaxMs: 10 * 60_000, budgetMs: 8_000
     });
+    res.json({ success: true, data: value });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[openInterest] failed:', err.message);

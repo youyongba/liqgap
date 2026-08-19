@@ -16,9 +16,30 @@
 const { BinanceService } = require('./binance');
 const stream = require('./binanceStream');
 
+// stream 路径时间上限：缓存命中是同步级别的（<1ms），只有冷启动 seed 会
+// 走 REST 拉历史。若 seed 在慢链路上挂死，这里不设上限的话
+// "stream 等待 + REST fallback" 会串联成 20s+，超过网关超时（~15s），
+// 网关就会替我们返回 502 HTML 错误页 → 前端报"非 JSON 响应"。
+// 上限内没出结果就立刻切 REST fallback；seed 仍在后台继续，下一轮直接命中缓存。
+const STREAM_PATH_TIMEOUT_MS = (() => {
+  const v = Number(process.env.BINANCE_STREAM_PATH_TIMEOUT_MS);
+  return Number.isFinite(v) && v >= 500 ? v : 2500;
+})();
+
+function _withTimeout(promise, ms) {
+  let timer = null;
+  const gate = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`stream path timed out after ${ms}ms`)),
+      ms
+    );
+  });
+  return Promise.race([promise, gate]).finally(() => clearTimeout(timer));
+}
+
 async function _withFallback(label, useStream, useRest) {
   try {
-    return await useStream();
+    return await _withTimeout(useStream(), STREAM_PATH_TIMEOUT_MS);
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn(`[binanceLive] ${label} stream miss → fallback REST: ${err.message}`);

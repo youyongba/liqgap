@@ -42,6 +42,7 @@ const {
 } = require('../indicators/klineIndicators');
 const feishu = require('../services/feishu');
 const regime = require('../services/regime');
+const swrCache = require('../services/swrCache');
 
 const router = express.Router();
 
@@ -56,56 +57,76 @@ router.get('/klines', async (req, res) => {
     // endTime（毫秒）：只取该时刻之前的历史 K 线（前端向左拖拽动态加载）。
     // WS 缓存只保留最近窗口，历史翻页必须直连 REST。
     const endTime = Number(req.query.endTime) || 0;
+    const notify = req.query.notify !== 'false';
 
-    const raw = endTime > 0
-      ? await BinanceRest.getKlines(symbol, interval, limit, market, endTime)
-      : await BinanceService.getKlines(symbol, interval, limit, market);
-    const candles = normalizeKlines(raw);
-    const vwap = computeVWAP(candles);
-    const mfi = computeMFI(candles, 14);
+    // 真实取数 + 指标 + FVG 派发（仅在需要真正刷新时执行，
+    // SWR 顺带把 Feishu FVG 推送去重了：命中缓存的请求不会重复派发）
+    const buildResult = async () => {
+      const raw = endTime > 0
+        ? await BinanceRest.getKlines(symbol, interval, limit, market, endTime)
+        : await BinanceService.getKlines(symbol, interval, limit, market);
+      const candles = normalizeKlines(raw);
+      const vwap = computeVWAP(candles);
+      const mfi = computeMFI(candles, 14);
 
-    // 把 vwap / mfi 附加到对应 K 线上 (Attach VWAP / MFI to each candle)
-    const decorated = candles.map((c, i) => ({
-      ...c,
-      vwap: vwap[i],
-      mfi: mfi[i]
-    }));
+      // 把 vwap / mfi 附加到对应 K 线上 (Attach VWAP / MFI to each candle)
+      const decorated = candles.map((c, i) => ({
+        ...c,
+        vwap: vwap[i],
+        mfi: mfi[i]
+      }));
 
-    const result = {
-      candles: decorated,
-      summary: { count: decorated.length, interval, market, symbol }
-    };
+      const result = {
+        candles: decorated,
+        summary: { count: decorated.length, interval, market, symbol }
+      };
 
-    if (detectPatterns) {
-      result.fvgs = detectFVGs(candles);
-      result.liquidityVoids = detectLiquidityVoids(candles);
+      if (detectPatterns) {
+        result.fvgs = detectFVGs(candles);
+        result.liquidityVoids = detectLiquidityVoids(candles);
 
-      // ---- 新 FVG 派发：飞书卡片 + regime 接口 ----
-      // (Dispatch newly-appeared FVGs to Feishu + regime API.)
-      //
-      // 设计要点：
-      //   - 飞书与 regime **共用一次** pickNewFvgs 调用，避免任一方推进 baseline
-      //     另一方收不到（两端共享 lastFvgNotified 状态）。
-      //   - regime 仅在 **1h** K 线上触发（用户需求：当一小时 K 线出现 long/short FVG）。
-      //   - 通过 ?notify=false 显式关闭所有 FVG 派发（前端 fetch 时可用）。
-      //   - fire-and-forget，不阻塞响应。
-      // 历史翻页请求（endTime）不推送：那些 FVG 是旧的，不是"新出现"
-      if (req.query.notify !== 'false' && !endTime) {
-        const latestPrice = decorated.length ? decorated[decorated.length - 1].close : null;
-        const picked = feishu.pickNewFvgs(symbol, market, result.fvgs);
+        // ---- 新 FVG 派发：飞书卡片 + regime 接口 ----
+        // (Dispatch newly-appeared FVGs to Feishu + regime API.)
+        //
+        // 设计要点：
+        //   - 飞书与 regime **共用一次** pickNewFvgs 调用，避免任一方推进 baseline
+        //     另一方收不到（两端共享 lastFvgNotified 状态）。
+        //   - regime 仅在 **1h** K 线上触发（用户需求：当一小时 K 线出现 long/short FVG）。
+        //   - 通过 ?notify=false 显式关闭所有 FVG 派发（前端 fetch 时可用）。
+        //   - fire-and-forget，不阻塞响应。
+        // 历史翻页请求（endTime）不推送：那些 FVG 是旧的，不是"新出现"
+        if (notify && !endTime) {
+          const latestPrice = decorated.length ? decorated[decorated.length - 1].close : null;
+          const picked = feishu.pickNewFvgs(symbol, market, result.fvgs);
 
-        if (picked.baseline) {
-          // eslint-disable-next-line no-console
-          console.log(`[klines] FVG baseline established for ${symbol} ${market} (${result.fvgs.length} historical FVGs · 不推送)`);
-        } else if (picked.toPush.length > 0) {
-          dispatchNewFvgs(picked.toPush, {
-            symbol,
-            market,
-            interval,
-            latestPrice
-          });
+          if (picked.baseline) {
+            // eslint-disable-next-line no-console
+            console.log(`[klines] FVG baseline established for ${symbol} ${market} (${result.fvgs.length} historical FVGs · 不推送)`);
+          } else if (picked.toPush.length > 0) {
+            dispatchNewFvgs(picked.toPush, {
+              symbol,
+              market,
+              interval,
+              latestPrice
+            });
+          }
         }
       }
+      return result;
+    };
+
+    // 历史翻页 (endTime) 的 key 是一次性的，缓存无意义 → 直连；
+    // 常规请求走 SWR：命中缓存毫秒级返回，过期先回旧值后台刷新，
+    // 冷启动最多等 8s（远离网关 15s 红线）。
+    let result;
+    if (endTime > 0) {
+      result = await buildResult();
+    } else {
+      const cacheKey =
+        `kl|${symbol}|${market}|${interval}|${limit}|${detectPatterns ? 1 : 0}|${notify ? 1 : 0}`;
+      ({ value: result } = await swrCache.swr(cacheKey, buildResult, {
+        ttlMs: 5_000, staleMaxMs: 10 * 60_000, budgetMs: 8_000
+      }));
     }
 
     res.json({ success: true, data: result });

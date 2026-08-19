@@ -61,6 +61,39 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
+// ---------------------------------------------------------------------------
+// /api 看门狗 (API watchdog)
+// ---------------------------------------------------------------------------
+// 上游 (Binance) 偶发挂死时，若本服务迟迟不响应，前置网关/反向代理会在
+// ~15s 处直接返回 502/504 的 HTML 错误页，前端拿到非 JSON 响应只能报
+// "HTTP 502 非 JSON 响应"。这里保证任何 /api 请求在 API_WATCHDOG_MS 内
+// 一定响应 JSON：到点未响应就先回兜底错误（HTTP 200 + success:false），
+// 迟到的路由响应会被安全丢弃（不会触发 ERR_HTTP_HEADERS_SENT）。
+// SSE (/api/stream) 一建立连接就已发送 headers，天然不受看门狗影响。
+const API_WATCHDOG_MS = (() => {
+  const v = Number(process.env.API_WATCHDOG_MS);
+  return Number.isFinite(v) && v >= 3000 ? v : 13000;
+})();
+app.use('/api', (req, res, next) => {
+  const origJson = res.json.bind(res);
+  res.json = (body) => {
+    if (res.headersSent) return res; // 看门狗已兜底 → 丢弃迟到的路由响应
+    return origJson(body);
+  };
+  const timer = setTimeout(() => {
+    if (res.headersSent) return;
+    res.status(200);
+    origJson({
+      success: false,
+      error: `服务端处理超时 (>${Math.round(API_WATCHDOG_MS / 1000)}s，上游数据源缓慢，稍后自动重试)`,
+      watchdogTimeout: true
+    });
+  }, API_WATCHDOG_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  res.on('close', () => clearTimeout(timer));
+  next();
+});
+
 // 把 8 + 1 个路由模块挂到 /api 下 (Mount every route under /api)
 app.use('/api', klinesRoute);
 app.use('/api', orderbookRoute);

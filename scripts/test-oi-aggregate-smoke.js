@@ -57,6 +57,8 @@ function _mockBinance(opts = {}) {
 }
 
 function _freshRoute() {
+  // 路由带 SWR 响应缓存（模块级单例），各用例参数相同会互相命中 → 重置隔离
+  require(path.join(__dirname, '..', 'services', 'swrCache'))._resetForTest();
   const abs = require.resolve(path.join(__dirname, '..', 'routes', 'openInterest.js'));
   delete require.cache[abs];
   return require(abs);

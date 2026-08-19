@@ -36,8 +36,9 @@ const COINM_BASE_URL = 'https://dapi.binance.com';
 // 韩国等跨境主机到 Binance 的链路常见丢包/RST，四项加固：
 //   1. keep-alive 连接池：复用 TCP+TLS 连接，省掉每次 2-3 个 RTT 的握手
 //      （丢包链路上握手阶段最容易失败，这是稳定性的最大单项提升）
-//   2. 快速超时 + 自动重试：单次尝试 6s 超时（默认），网络错误/5xx 自动
-//      重试 1 次（默认）；总耗时 ≈ 12.5s，仍在前端 15s soft-timeout 之内
+//   2. 快速超时 + 自动重试：单次尝试 5s 超时（默认），网络错误/5xx 自动
+//      重试 1 次（默认）；最坏总耗时 ≈ 10.25s，留出余量给 server.js 的
+//      13s API 看门狗与网关 ~15s 超时（否则网关会先一步返回 502 HTML）
 //   3. 并发去重：同一 URL+参数在途时共享同一个 Promise，避免慢链路下
 //      轮询请求堆积放大拥塞
 //   4. stale 兜底：全部重试失败时回退最近一次成功响应（默认 3min 内），
@@ -45,7 +46,7 @@ const COINM_BASE_URL = 'https://dapi.binance.com';
 // 环境变量：BINANCE_TIMEOUT_MS / BINANCE_RETRIES / BINANCE_STALE_TTL_MS
 const DEFAULT_TIMEOUT_MS = (() => {
   const v = Number(process.env.BINANCE_TIMEOUT_MS);
-  return Number.isFinite(v) && v >= 1000 ? v : 6000;
+  return Number.isFinite(v) && v >= 1000 ? v : 5000;
 })();
 const RETRIES = (() => {
   const v = Number(process.env.BINANCE_RETRIES);
