@@ -1462,11 +1462,12 @@
       windowMs: Number((els.liqHeatmapWindow && els.liqHeatmapWindow.value) || 86_400_000),
       priceRange: _readPriceRange(),
       // 流动性阈值 (CoinGlass 风格)：只显示 v / max ≥ threshold 的 cell。
-      // 用户拖滑块即时过滤，0 = 显示全部（默认，与 CoinGlass 一致），
-      // 0.85 = 突出关键清算墙。
+      // 滑块与右侧数字框双向同步；默认 0.5，0 = 显示全部，0.85 = 仅强清算墙。
       threshold: (() => {
-        const v = els.liqHeatmapThreshold ? Number(els.liqHeatmapThreshold.value) : 0;
-        return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0;
+        const v = els.liqHeatmapThresholdVal
+          ? Number(els.liqHeatmapThresholdVal.value)
+          : (els.liqHeatmapThreshold ? Number(els.liqHeatmapThreshold.value) : 0.5);
+        return Number.isFinite(v) && v >= 0 && v < 1 ? v : 0.5;
       })(),
       anchorMs: null,
       data: null,
@@ -2239,20 +2240,46 @@
         scheduleFetch(0);
       });
     }
-    if (els.liqHeatmapThreshold) {
-      const sync = () => {
-        const v = Number(els.liqHeatmapThreshold.value);
-        if (!Number.isFinite(v)) return;
-        state.threshold = Math.max(0, Math.min(0.99, v));
-        if (els.liqHeatmapThresholdVal) {
-          els.liqHeatmapThresholdVal.textContent = state.threshold.toFixed(2);
+    if (els.liqHeatmapThreshold || els.liqHeatmapThresholdVal) {
+      const applyThreshold = (raw, { rewriteInput } = {}) => {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) return false;
+        state.threshold = Math.max(0, Math.min(0.99, n));
+        const shown = state.threshold.toFixed(2);
+        if (els.liqHeatmapThreshold) els.liqHeatmapThreshold.value = shown;
+        if (rewriteInput && els.liqHeatmapThresholdVal) {
+          els.liqHeatmapThresholdVal.value = shown;
         }
         // 纯本地过滤：不重新 fetch，仅重绘 + 同步 meta
         _updateMeta();
         _draw();
+        return true;
       };
-      els.liqHeatmapThreshold.addEventListener('input', sync);
-      els.liqHeatmapThreshold.addEventListener('change', sync);
+      if (els.liqHeatmapThreshold) {
+        els.liqHeatmapThreshold.addEventListener('input', () => {
+          applyThreshold(els.liqHeatmapThreshold.value, { rewriteInput: true });
+        });
+      }
+      if (els.liqHeatmapThresholdVal) {
+        // 输入中只更新图和滑块，不改写文本（否则小数点打不进去）
+        els.liqHeatmapThresholdVal.addEventListener('input', () => {
+          applyThreshold(els.liqHeatmapThresholdVal.value, { rewriteInput: false });
+        });
+        const commit = () => {
+          if (!applyThreshold(els.liqHeatmapThresholdVal.value, { rewriteInput: true })) {
+            applyThreshold(state.threshold, { rewriteInput: true });
+          }
+        };
+        els.liqHeatmapThresholdVal.addEventListener('change', commit);
+        els.liqHeatmapThresholdVal.addEventListener('blur', commit);
+        els.liqHeatmapThresholdVal.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            commit();
+            els.liqHeatmapThresholdVal.blur();
+          }
+        });
+      }
     }
 
     let _roPending = false;

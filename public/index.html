@@ -205,13 +205,25 @@
         font-size: 11px;
         color: var(--fg-2);
       }
-      .heatmap-toolbar select {
+      .heatmap-toolbar select,
+      .heatmap-toolbar input[type="number"] {
         font-size: 11px;
         padding: 2px 6px;
         background: var(--bg-2);
         color: var(--fg-1);
         border: 1px solid var(--border);
         border-radius: 4px;
+      }
+      .heatmap-toolbar input[type="number"] {
+        width: 52px;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+        -moz-appearance: textfield;
+      }
+      .heatmap-toolbar input[type="number"]::-webkit-outer-spin-button,
+      .heatmap-toolbar input[type="number"]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
       }
       .heatmap-legend {
         display: inline-flex;
@@ -750,10 +762,12 @@
               <label for="liq-heatmap-threshold" title="提高阈值以仅显示最强的流动性集群（最大 / 最关键的清算区域）；降低则展示更多细节。">
                 流动性阈值 / Threshold:
               </label>
-              <input id="liq-heatmap-threshold" type="range" min="0" max="0.99" step="0.01" value="0"
+              <input id="liq-heatmap-threshold" type="range" min="0" max="0.99" step="0.01" value="0.5"
                      style="width:100px; accent-color: var(--accent-yellow);"
-                     title="只显示强度 ≥ 阈值 × max 的格子。0 = 全部（CoinGlass 默认）· 0.85 = 仅强清算墙 · 0.99 = 仅极值。" />
-              <span id="liq-heatmap-threshold-val" class="meta" style="min-width:38px; text-align:right; font-variant-numeric: tabular-nums;">0.00</span>
+                     title="只显示强度 ≥ 阈值 × max 的格子。0 = 全部 · 0.5 = 默认 · 0.85 = 仅强清算墙 · 0.99 = 仅极值。" />
+              <input id="liq-heatmap-threshold-val" type="number" min="0" max="0.99" step="0.01" value="0.5"
+                     inputmode="decimal"
+                     title="手动输入 0~0.99。提高阈值只显示更强的流动性集群；降低则展示更多细节。" />
               <button id="liq-heatmap-measure" class="ghost tool-btn" type="button"
                       title="点击开启拖拽测量：在画面上按住左键拖动，松开后显示 ΔPrice / ΔPercent / 时间长度。Esc 清除。"
                       style="font-size:11px; padding:2px 8px;">📏 测量 / Measure</button>
