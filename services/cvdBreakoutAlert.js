@@ -45,8 +45,12 @@ const _num = (env, dflt) => {
 
 // symbol → { baselined, lastFiredAt: { high, low } }
 const _state = new Map();
+// symbol → 最近一轮检测快照（/api/cvd-breakout/status 自诊断用）
+const _lastPoll = new Map();
 let _timer = null;
 let _polling = false;
+let _startedAt = 0;
+let _pollCount = 0;
 
 function isEnabled() {
   if (process.env.CVD_BREAKOUT_NOTIFY_ENABLED === 'false') return false;
@@ -259,6 +263,7 @@ async function _fetchDeltas(symbol) {
 async function _poll() {
   if (_polling || !isEnabled()) return;
   _polling = true;
+  _pollCount += 1;
   try {
     const measure = _measure();
     const windowMs = _windowMs();
@@ -267,11 +272,42 @@ async function _poll() {
     const now = Date.now();
 
     for (const symbol of _symbols()) {
+      const snap = { at: now, gate: 'none', direction: null, error: null, feishuOk: null };
       try {
         const points = await _fetchDeltas(symbol);
         const info = _detectBreakout(points, { windowMs, intervalMs, measure });
-        if (!info) continue;
-        if (!_shouldFire(symbol, info.direction, now, cooldownMs)) continue;
+        if (!info) {
+          snap.gate = 'insufficient-data';
+          snap.error = `样本不足（收到 ${Array.isArray(points) ? points.length : 0} 根，需覆盖窗口一半以上）`;
+          continue;
+        }
+        snap.direction = info.direction;
+        snap.current = info.current;
+        snap.prevHigh = info.prevHigh;
+        snap.prevLow = info.prevLow;
+        snap.bars = info.bars;
+
+        const stBefore = _state.get(symbol); // _shouldFire 之前的状态（判定拦截原因用）
+        const fire = _shouldFire(symbol, info.direction, now, cooldownMs);
+        if (!fire) {
+          if (!info.direction) {
+            snap.gate = 'no-breakout';
+          } else if (!stBefore || !stBefore.baselined) {
+            snap.gate = 'baseline';
+          } else {
+            const left = cooldownMs - (now - (stBefore.lastFiredAt[info.direction] || 0));
+            snap.gate = 'cooldown';
+            snap.cooldownLeftSec = Math.max(0, Math.ceil(left / 1000));
+          }
+          if (info.direction) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[cvdBreakout] ${symbol} 检测到 ${info.direction === 'high' ? '↑破前高' : '↓破前低'} `
+              + `但被闸门拦截 (${snap.gate}${snap.gate === 'cooldown' ? ` 剩 ${Math.ceil((snap.cooldownLeftSec || 0) / 60)}min` : ''})`
+            );
+          }
+          continue;
+        }
 
         const price = await BinanceLive.getCurrentPrice(symbol, 'futures').catch(() => null);
         const card = _buildBreakoutCard({
@@ -280,20 +316,65 @@ async function _poll() {
           price, aggregated: _aggregate(), cooldownMs
         });
         const r = await feishu.sendCard(card);
+        snap.gate = 'sent';
+        snap.feishuOk = !!(r && r.ok);
+        if (!snap.feishuOk) snap.error = (r && r.error) || 'feishu send failed';
         // eslint-disable-next-line no-console
         console.log(
           `[cvdBreakout] ${symbol} ${info.direction === 'high' ? '↑ 突破前高' : '↓ 跌破前低'} `
           + `cvd=${measure === 'coin' ? info.currentCoin.toFixed(2) : info.currentUsd.toFixed(0)} `
-          + `· feishu ok=${r && r.ok}`
+          + `· feishu ok=${snap.feishuOk}`
         );
       } catch (err) {
+        snap.gate = 'error';
+        snap.error = err.message;
         // eslint-disable-next-line no-console
         console.warn(`[cvdBreakout] ${symbol} poll failed:`, err.message);
+      } finally {
+        _lastPoll.set(symbol, snap);
       }
     }
   } finally {
     _polling = false;
   }
+}
+
+/**
+ * 自诊断状态（挂在 GET /api/cvd-breakout/status）：
+ * 远端排查"为什么没推送"时一条 curl 就能看到监控是否在跑、
+ * 最近一轮检测到什么、被哪道闸门拦住。
+ */
+function getStatus() {
+  const now = Date.now();
+  const symbols = _symbols();
+  return {
+    enabled: isEnabled(),
+    feishuConfigured: feishu.isEnabled(),
+    running: !!_timer,
+    startedAt: _startedAt || null,
+    uptimeSec: _startedAt ? Math.round((now - _startedAt) / 1000) : 0,
+    pollCount: _pollCount,
+    config: {
+      symbols,
+      windowHours: Math.round(_windowMs() / 3_600_000),
+      interval: _interval(),
+      measure: _measure(),
+      aggregate: _aggregate(),
+      pollMs: _num('CVD_BREAKOUT_POLL_MS', 60_000),
+      cooldownMs: _num('CVD_BREAKOUT_COOLDOWN_MS', 1_800_000)
+    },
+    symbolsState: symbols.map((s) => {
+      const st = _state.get(s);
+      const lp = _lastPoll.get(s);
+      return {
+        symbol: s,
+        baselined: !!(st && st.baselined),
+        lastFiredAt: st ? st.lastFiredAt : { high: 0, low: 0 },
+        lastPoll: lp || null,
+        lastPollAgoSec: lp ? Math.round((now - lp.at) / 1000) : null
+      };
+    })
+  };
 }
 
 function start() {
@@ -304,6 +385,7 @@ function start() {
     return;
   }
   const pollMs = _num('CVD_BREAKOUT_POLL_MS', 60_000);
+  _startedAt = Date.now();
   _timer = setInterval(_poll, pollMs);
   if (typeof _timer.unref === 'function') _timer.unref();
   // 等服务器就绪（自轮询本机端口）再跑首轮建基线
@@ -323,7 +405,9 @@ module.exports = {
   start,
   stop,
   isEnabled,
+  getStatus,
   // 冒烟测试用 (for smoke tests)
+  _poll,
   _detectBreakout,
   _shouldFire,
   _buildBreakoutCard,

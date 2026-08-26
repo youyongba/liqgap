@@ -136,6 +136,10 @@ app.use('/api/ai', aiRoute);
 app.get('/api/health', (_req, res) => {
   res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } });
 });
+// CVD 突破监控自诊断（排查"为什么没推送"：是否在跑 / 最近检测到什么 / 被哪道闸门拦住）
+app.get('/api/cvd-breakout/status', (_req, res) => {
+  res.json({ success: true, data: cvdBreakoutAlert.getStatus() });
+});
 
 // 静态资源 (Static assets)
 app.use(express.static(path.join(__dirname, 'public')));
