@@ -25,7 +25,8 @@
  *   CVD_BREAKOUT_POLL_MS         轮询间隔毫秒，默认 60000
  *   CVD_BREAKOUT_COOLDOWN_MS     同方向冷却毫秒，默认 1800000 (30min)
  *   CVD_BREAKOUT_INTERVAL        采样 K 线周期，默认 '5m'（24h=288 根，够细且省流）
- *   CVD_BREAKOUT_MEASURE         突破判定口径 'usd'(默认·名义美元) | 'coin'(币数)
+ *   CVD_BREAKOUT_MEASURE         突破判定口径：'both'(默认·USD 或币数任一破位即推，
+ *                                卡片标明触发口径) | 'usd'(名义美元) | 'coin'(币数)
  *   CVD_BREAKOUT_AGGREGATE       'false' 只看当前合约；默认合并三类合约
  */
 
@@ -72,7 +73,12 @@ function _windowMs() {
 }
 
 function _measure() {
-  return process.env.CVD_BREAKOUT_MEASURE === 'coin' ? 'coin' : 'usd';
+  const v = process.env.CVD_BREAKOUT_MEASURE;
+  if (v === 'coin' || v === 'usd') return v;
+  // 默认双口径：USD 或 币数 任一破位即推送。
+  // 两者会分歧：币价下跌时同样的币数卖压折算成 USD 更少 → 币数口径
+  // 可能已破 24h 前低而 USD 口径还没破（仪表盘副图显示的是币数口径）。
+  return 'both';
 }
 
 function _aggregate() {
@@ -90,20 +96,29 @@ function _baseAsset(symbol) {
 // ---------------------------------------------------------------------------
 // 突破检测（纯函数 · 冒烟测试直接调用）
 // ---------------------------------------------------------------------------
+// 口径 → delta 字段名
+const _FIELD_OF = { usd: 'deltaUsd', coin: 'delta' };
+
 /**
  * @param {Array<{openTime:number, delta:number, deltaUsd:number}>} points 时间升序
- * @param {{windowMs:number, intervalMs:number, measure:'usd'|'coin'}} opts
+ * @param {{windowMs:number, intervalMs:number, measure:'usd'|'coin'|'both'}} opts
  * @returns {null | {
  *   direction: 'high'|'low'|null,
- *   current:number, prevHigh:number, prevLow:number,
+ *   trigger: 'usd'|'coin',              // 哪个口径触发（无突破时 = 首选口径）
+ *   measures: { usd?:object, coin?:object },  // 每口径 {current,prevHigh,prevLow,direction}
+ *   current:number, prevHigh:number, prevLow:number,  // 触发口径的值（向后兼容）
  *   currentUsd:number, currentCoin:number, bars:number, lastOpenTime:number
  * }} 数据不足（覆盖率 < 窗口一半）时返回 null
  */
 function _detectBreakout(points, opts) {
   const { windowMs, intervalMs } = opts;
-  const field = opts.measure === 'coin' ? 'delta' : 'deltaUsd';
+  const fields = opts.measure === 'both'
+    ? ['usd', 'coin']
+    : [opts.measure === 'coin' ? 'coin' : 'usd'];
+
   const pts = (Array.isArray(points) ? points : [])
-    .filter((p) => p && Number.isFinite(p.openTime) && Number.isFinite(p[field]));
+    .filter((p) => p && Number.isFinite(p.openTime)
+      && fields.every((f) => Number.isFinite(p[_FIELD_OF[f]])));
   if (pts.length < 3) return null;
 
   const lastOpenTime = pts[pts.length - 1].openTime;
@@ -112,27 +127,40 @@ function _detectBreakout(points, opts) {
   // 覆盖率守卫：窗口内样本要至少覆盖一半时长，否则"24h 高点"没有意义
   if (win.length < 3 || win.length * intervalMs < windowMs / 2) return null;
 
-  let cum = 0;
+  const acc = {};
+  for (const f of fields) acc[f] = { cum: 0, prevHigh: -Infinity, prevLow: Infinity, current: 0 };
   let cumUsd = 0;
   let cumCoin = 0;
-  let prevHigh = -Infinity;
-  let prevLow = Infinity;
-  let current = 0;
   for (let i = 0; i < win.length; i += 1) {
-    cum += win[i][field];
     cumUsd += Number.isFinite(win[i].deltaUsd) ? win[i].deltaUsd : 0;
     cumCoin += Number.isFinite(win[i].delta) ? win[i].delta : 0;
-    if (i < win.length - 1) {
-      if (cum > prevHigh) prevHigh = cum;
-      if (cum < prevLow) prevLow = cum;
-    } else {
-      current = cum;
+    for (const f of fields) {
+      const a = acc[f];
+      a.cum += win[i][_FIELD_OF[f]];
+      if (i < win.length - 1) {
+        if (a.cum > a.prevHigh) a.prevHigh = a.cum;
+        if (a.cum < a.prevLow) a.prevLow = a.cum;
+      } else {
+        a.current = a.cum;
+      }
     }
   }
 
-  const direction = current > prevHigh ? 'high' : current < prevLow ? 'low' : null;
+  const measures = {};
+  let direction = null;
+  let trigger = fields[0];
+  for (const f of fields) {
+    const a = acc[f];
+    const dir = a.current > a.prevHigh ? 'high' : a.current < a.prevLow ? 'low' : null;
+    measures[f] = { current: a.current, prevHigh: a.prevHigh, prevLow: a.prevLow, direction: dir };
+    // 任一口径破位即触发；两口径同时破位时取先声明的（usd 优先）
+    if (!direction && dir) { direction = dir; trigger = f; }
+  }
+
+  const t = measures[trigger];
   return {
-    direction, current, prevHigh, prevLow,
+    direction, trigger, measures,
+    current: t.current, prevHigh: t.prevHigh, prevLow: t.prevLow,
     currentUsd: cumUsd, currentCoin: cumCoin,
     bars: win.length, lastOpenTime
   };
@@ -282,6 +310,8 @@ async function _poll() {
           continue;
         }
         snap.direction = info.direction;
+        snap.trigger = info.trigger;
+        snap.measures = info.measures;
         snap.current = info.current;
         snap.prevHigh = info.prevHigh;
         snap.prevLow = info.prevLow;
@@ -310,8 +340,9 @@ async function _poll() {
         }
 
         const price = await BinanceLive.getCurrentPrice(symbol, 'futures').catch(() => null);
+        // 卡片按"触发口径"展示前高/前低/幅度（双口径模式下二者可能不同步破位）
         const card = _buildBreakoutCard({
-          symbol, info, measure,
+          symbol, info, measure: info.trigger,
           windowHours: Math.round(windowMs / 3_600_000),
           price, aggregated: _aggregate(), cooldownMs
         });
@@ -322,7 +353,8 @@ async function _poll() {
         // eslint-disable-next-line no-console
         console.log(
           `[cvdBreakout] ${symbol} ${info.direction === 'high' ? '↑ 突破前高' : '↓ 跌破前低'} `
-          + `cvd=${measure === 'coin' ? info.currentCoin.toFixed(2) : info.currentUsd.toFixed(0)} `
+          + `(口径 ${info.trigger}) `
+          + `cvd=${info.trigger === 'coin' ? info.currentCoin.toFixed(2) : info.currentUsd.toFixed(0)} `
           + `· feishu ok=${snap.feishuOk}`
         );
       } catch (err) {

@@ -127,6 +127,30 @@ async function run() {
   });
 
   // ==========================================================================
+  await test('7. 双口径 both：USD 未破但币数破前低 → direction=low, trigger=coin', async () => {
+    const now = Date.now();
+    const pts = [];
+    for (let i = 0; i < 288; i += 1) {
+      pts.push({
+        openTime: now - (287 - i) * M5,
+        deltaUsd: i % 2 === 0 ? 500 : -400, // USD 锯齿缓升：最新值不破极值
+        delta: -1                            // 币数单调下行：每根都在创新低
+      });
+    }
+    // USD 末根拉回区间中部，确保 USD 口径无突破
+    pts[pts.length - 1].deltaUsd = -30;
+    const both = svc._detectBreakout(pts, { ...OPTS, measure: 'both' });
+    assert.ok(both, '不应返回 null');
+    assert.equal(both.direction, 'low', `应为 low，实际 ${both.direction}`);
+    assert.equal(both.trigger, 'coin', `触发口径应为 coin，实际 ${both.trigger}`);
+    assert.equal(both.measures.usd.direction, null, 'USD 口径应无突破');
+    assert.equal(both.measures.coin.direction, 'low', '币数口径应破前低');
+    // 单 USD 口径下同样的数据不触发（回归旧行为）
+    const usdOnly = svc._detectBreakout(pts, { ...OPTS, measure: 'usd' });
+    assert.equal(usdOnly.direction, null, '单 USD 口径应无突破');
+  });
+
+  // ==========================================================================
   await test('6. 卡片结构：标题/颜色/关键字段齐全', async () => {
     const info = {
       direction: 'high', current: 5_200_000, prevHigh: 5_000_000, prevLow: -2_000_000,
