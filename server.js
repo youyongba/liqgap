@@ -49,6 +49,7 @@ const keyLevelsRoute = require('./routes/keyLevels');
 const orderbookRecorder = require('./services/orderbookRecorder');
 const keyLevelsAlert = require('./services/keyLevelsAlert');
 const signalPoller = require('./services/signalPoller');
+const cvdBreakoutAlert = require('./services/cvdBreakoutAlert');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -177,5 +178,12 @@ app.listen(PORT, () => {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[server] signal poller start failed:', err.message);
+  }
+  // 启动 CVD 24h 突破监控（CVD 创 24h 新高/新低 → 飞书推送）
+  try {
+    cvdBreakoutAlert.start();
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[server] cvd breakout monitor start failed:', err.message);
   }
 });
