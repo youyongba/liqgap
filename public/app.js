@@ -639,10 +639,9 @@
     }
 
     function _isApplicable() {
-      // 仅 BTCUSDT futures 有录盘，其它情况直接折叠区块
-      const sym = els.symbol ? els.symbol.value.toUpperCase() : '';
+      // 只要是 futures 就可以尝试拉取，如果没有录盘数据会返回空并显示拉取失败
       const mkt = els.market ? els.market.value : '';
-      return sym === 'BTCUSDT' && mkt === 'futures';
+      return mkt === 'futures';
     }
 
     function _setVisibility() {
@@ -1500,9 +1499,8 @@
     }
 
     function _isApplicable() {
-      const sym = els.symbol ? els.symbol.value.toUpperCase() : '';
       const mkt = els.market ? els.market.value : '';
-      return sym === 'BTCUSDT' && mkt === 'futures';
+      return mkt === 'futures';
     }
     function _setVisibility() {
       card.style.display = _isApplicable() ? '' : 'none';
@@ -5140,9 +5138,14 @@
 
   // ---- 主轮询循环 (Main poll cycle) ----
   let inFlight = false;
+  let pollPending = false;
   async function poll() {
-    if (inFlight) return;
+    if (inFlight) {
+      pollPending = true;
+      return;
+    }
     inFlight = true;
+    pollPending = false;
     const symbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
     const market = els.market.value;
     const interval = els.interval.value;
@@ -5182,6 +5185,14 @@
         oiFetch,
         cvdFetch
       ]);
+
+      // 防御并发竞争：如果等待过程中参数发生了改变（例如用户切换了 symbol），则丢弃当前请求结果，避免串图
+      const currentSymbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
+      const currentMarket = els.market.value;
+      const currentInterval = els.interval.value;
+      if (symbol !== currentSymbol || market !== currentMarket || interval !== currentInterval) {
+        return;
+      }
 
       const failed = [];
       if (kData) {
@@ -5234,6 +5245,9 @@
       console.error(err);
     } finally {
       inFlight = false;
+      if (pollPending) {
+        poll();
+      }
     }
   }
 
