@@ -249,6 +249,46 @@
         vertical-align: middle;
       }
 
+      /* 币种搜索下拉框 / Symbol Search Dropdown */
+      .symbol-wrapper {
+        position: relative;
+        display: inline-block;
+      }
+      #symbol-dropdown {
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        width: 180px;
+        background: var(--bg-1);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        max-height: 320px;
+        overflow-y: auto;
+        z-index: 100;
+        box-shadow: var(--shadow);
+        display: none;
+      }
+      #symbol-dropdown.show {
+        display: block;
+      }
+      .dropdown-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        color: var(--fg-0);
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .dropdown-item:hover, .dropdown-item.active {
+        background: var(--bg-2);
+        color: var(--accent-blue);
+      }
+      .dropdown-item .vol {
+        font-size: 10px;
+        color: var(--fg-2);
+      }
+
       #main-chart, #sub-charts {
         flex: 1;
         min-height: 0;
@@ -645,8 +685,11 @@
       <h1>Liquidity Gap · 流动性缺口</h1>
       <span class="pill">Binance · 实时流动性仪表盘 (Real-time Liquidity Dashboard)</span>
       <div class="controls">
-        <input id="symbol" type="text" value="BTCUSDT" maxlength="20"
-               placeholder="交易对 / Symbol" title="交易对 / Symbol" />
+        <div class="symbol-wrapper">
+          <input id="symbol" type="text" value="BTCUSDT" maxlength="20"
+                 placeholder="搜索币种 / Search" title="交易对 / Symbol" autocomplete="off" />
+          <div id="symbol-dropdown"></div>
+        </div>
         <select id="market" title="市场 / Market">
           <option value="spot">现货 / Spot</option>
           <option value="futures" selected>合约 / Futures</option>

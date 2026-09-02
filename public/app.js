@@ -5430,6 +5430,13 @@
     setObBaselineWindow(_obBaselineState.windowMs);
     if (heatmap) heatmap.onSymbolMarketChange();
     if (liqHeatmap) liqHeatmap.onSymbolMarketChange();
+    
+    // 如果下拉框显示，更新下拉框列表
+    const dropdown = document.getElementById('symbol-dropdown');
+    if (dropdown && dropdown.classList.contains('show')) {
+      fetchSymbols().then(symbols => renderDropdown(symbols, els.symbol.value));
+    }
+
     markChartsNeedFit();
     poll();
     restartSSE();
@@ -5460,6 +5467,92 @@
   if (els.obBaseline) {
     setObBaselineWindow(Number(els.obBaseline.value) || 0);
   }
+
+  // ============================================================
+  // 币种模糊搜索与切换 (Symbol Search & Switch)
+  // ============================================================
+  const dropdown = document.getElementById('symbol-dropdown');
+  let cachedSymbols = null;
+
+  async function fetchSymbols() {
+    const market = els.market ? els.market.value : 'futures';
+    if (cachedSymbols && cachedSymbols[market]) return cachedSymbols[market];
+    
+    try {
+      const url = market === 'futures' 
+        ? 'https://fapi.binance.com/fapi/v1/ticker/24hr' 
+        : 'https://api.binance.com/api/v3/ticker/24hr';
+      
+      const res = await fetch(url);
+      const data = await res.json();
+      
+      // 筛选 USDT/USDC 对并按 24h 成交额排序
+      let symbols = data
+        .filter(t => t.symbol.endsWith('USDT') || t.symbol.endsWith('USDC') || t.symbol === 'BTCUSD_PERP')
+        .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+        .map(t => ({
+          symbol: t.symbol,
+          vol: (Number(t.quoteVolume) / 1000000).toFixed(1) + 'M'
+        }));
+        
+      if (!cachedSymbols) cachedSymbols = {};
+      cachedSymbols[market] = symbols;
+      return symbols;
+    } catch (err) {
+      console.error('Failed to fetch symbols', err);
+      return [];
+    }
+  }
+
+  function renderDropdown(list, query) {
+    if (!list || list.length === 0) {
+      dropdown.classList.remove('show');
+      return;
+    }
+    
+    const q = (query || '').toUpperCase();
+    const filtered = q ? list.filter(item => item.symbol.includes(q)) : list.slice(0, 100);
+    
+    if (filtered.length === 0) {
+      dropdown.innerHTML = '<div class="dropdown-item" style="color:var(--fg-2);cursor:default;">无匹配结果</div>';
+    } else {
+      dropdown.innerHTML = filtered.slice(0, 50).map(item => {
+        const regex = new RegExp(`(${q})`, 'gi');
+        const highlighted = q ? item.symbol.replace(regex, '<span style="color:var(--accent-blue)">$1</span>') : item.symbol;
+        return `<div class="dropdown-item" data-symbol="${item.symbol}">
+          <span>${highlighted}</span>
+          <span class="vol">Vol: ${item.vol}</span>
+        </div>`;
+      }).join('');
+    }
+    dropdown.classList.add('show');
+  }
+
+  els.symbol.addEventListener('focus', async () => {
+    els.symbol.select();
+    const symbols = await fetchSymbols();
+    renderDropdown(symbols, els.symbol.value);
+  });
+
+  els.symbol.addEventListener('input', async (e) => {
+    const symbols = await fetchSymbols();
+    renderDropdown(symbols, e.target.value);
+  });
+
+  dropdown.addEventListener('mousedown', (e) => {
+    // 使用 mousedown 而不是 click，因为 mousedown 发生在 input 的 blur 之前
+    const item = e.target.closest('.dropdown-item');
+    if (!item || !item.dataset.symbol) return;
+    
+    els.symbol.value = item.dataset.symbol;
+    dropdown.classList.remove('show');
+    // 手动触发 change 事件，触发原有的更新逻辑
+    els.symbol.dispatchEvent(new Event('change'));
+  });
+
+  els.symbol.addEventListener('blur', () => {
+    dropdown.classList.remove('show');
+  });
 
   // 飞书状态栏 / 自动交易开关 / 30 天回测面板已随右侧栏移除（性能优化）。
   // 自动交易运行时开关仍可通过 REST 控制：
