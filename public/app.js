@@ -5076,6 +5076,8 @@
     sseState.es = null;
     sseState.active = false;
     sseState.ready = false;
+    sseState.everReady = false; // 重置接管状态
+    sseState.candles = [];      // 清空旧的 K 线缓存
     if (sseState.renderTimer) {
       clearTimeout(sseState.renderTimer);
       sseState.renderTimer = null;
@@ -5417,11 +5419,19 @@
     e.preventDefault();
     toggleMinimize(target, btn);
   });
+  function _clearMainChart() {
+    _smartUpdateSeries(candleSeries, []);
+    _smartUpdateSeries(vwapSeries, []);
+    _smartUpdateSeries(volumeSeries, []);
+    if (candleSeries) candleSeries.setMarkers([]);
+  }
+
   els.symbol.addEventListener('change', () => {
     // 换 symbol 时也要清空 OI / CVD 合并缓存与历史 K 线缓冲，下一次 poll 才会拉新值
     _lastOiResp = null;
     _lastCvdMerged = null;
     _histReset();
+    _clearMainChart();
     _smartUpdateSeries(oiSeries, []);
     _smartUpdateSeries(oiCandleSeries, []);
     // 订单簿基线只对 BTCUSDT futures 录盘；切到其他 symbol 时清空基线
@@ -5429,8 +5439,8 @@
     if (heatmap) heatmap.onSymbolMarketChange();
     if (liqHeatmap) liqHeatmap.onSymbolMarketChange();
     markChartsNeedFit();
-    poll();
     restartSSE();
+    poll();
   });
   els.market.addEventListener('change', () => {
     enforceIntervalMarketCompat('market');
@@ -5439,6 +5449,7 @@
     _lastOiResp = null;
     _lastCvdMerged = null;
     _histReset();
+    _clearMainChart();
     _smartUpdateSeries(oiSeries, []);
     _smartUpdateSeries(oiCandleSeries, []);
     setObBaselineWindow(_obBaselineState.windowMs);
@@ -5452,8 +5463,8 @@
     }
 
     markChartsNeedFit();
-    poll();
     restartSSE();
+    poll();
   });
   els.interval.addEventListener('change', () => {
     enforceIntervalMarketCompat('interval');
@@ -5464,11 +5475,12 @@
     _lastCvdMerged = null;
     _lastOiResp = null;
     _histReset();
+    _clearMainChart();
     // 受周期影响的每个图表盖上 loading，各自的新数据渲染完成后揭开
     showIntervalLoading();
     markChartsNeedFit();
-    poll();
     restartSSE();
+    poll();
   });
   // 订单簿基线选择 → 切窗口 / 关闭
   if (els.obBaseline) {
