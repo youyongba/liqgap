@@ -4492,6 +4492,7 @@
     if (!_cvdAggregate) {
       // 切回单一：丢弃合并缓存，立即用主图 K 线重绘
       _lastCvdMerged = null;
+      _seriesPrev.delete(cvdSeries);
       refreshCvdDisplay(lastCandles);
       return;
     }
@@ -4503,6 +4504,7 @@
       if (market !== 'futures') {
         // 现货无合并意义，回退单一
         _lastCvdMerged = null;
+        _seriesPrev.delete(cvdSeries);
         refreshCvdDisplay(lastCandles);
         return;
       }
@@ -4510,10 +4512,12 @@
         `/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}&aggregate=binance`
       );
       _lastCvdMerged = (resp && resp.supported && Array.isArray(resp.data)) ? resp.data : null;
+      _seriesPrev.delete(cvdSeries);
       refreshCvdDisplay(lastCandles);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.warn('[cvd-scope] refetch failed:', err.message);
+      _seriesPrev.delete(cvdSeries);
       refreshCvdDisplay(lastCandles);
     }
   }
@@ -4536,6 +4540,7 @@
         : '当前：Coin 币数(BTC)。点击切到 USD 报价额/名义价值。对照 Coinglass 时选 USD。';
     }
     refreshSubTitles();
+    _seriesPrev.delete(cvdSeries);
     refreshCvdDisplay(lastCandles);
   }
 
@@ -4553,6 +4558,7 @@
     if (btn) {
       btn.textContent = _cvdReverse ? 'CVD反向:开' : 'CVD反向:关';
     }
+    _seriesPrev.delete(cvdSeries);
     refreshCvdDisplay(lastCandles);
   }
 
