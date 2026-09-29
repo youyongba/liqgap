@@ -25,7 +25,7 @@ const path = require('path');
 const { getHub } = require('./binanceStream');
 
 // ---- 配置 (Configuration) ----------------------------------------------
-const DEFAULT_DIR = path.join(__dirname, '..', '.cache', 'orderbook-snapshots');
+const DEFAULT_DIR = path.join(process.cwd(), '.cache', 'orderbook-snapshots');
 const RECORD_DIR = process.env.OB_SNAPSHOT_DIR || DEFAULT_DIR;
 const RECORD_INTERVAL_MS = 60_000;       // 每分钟一次
 const RETENTION_HOURS = 25;              // 保留 25h

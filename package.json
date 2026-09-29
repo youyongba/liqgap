@@ -5,8 +5,18 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "build:linux": "PKG_CACHE_PATH=./.pkg-cache node scripts/build-obfuscate.js linux && PKG_CACHE_PATH=./.pkg-cache pkg package.json -t node18-linux-x64 --output liq-gap-linux",
+    "build:macos": "PKG_CACHE_PATH=./.pkg-cache node scripts/build-obfuscate.js macos && PKG_CACHE_PATH=./.pkg-cache pkg package.json -t node18-macos-arm64 --output liq-gap-macos"
   },
+  "pkg": {
+    "scripts": [],
+    "assets": [
+      "dist/public/**/*",
+      "dist/**/*.jsc"
+    ]
+  },
+  "bin": "dist/entry.js",
   "keywords": [
     "binance",
     "liquidity",
@@ -28,6 +38,9 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "bytenode": "^1.6.0",
+    "esbuild": "^0.28.2",
+    "nodemon": "^3.1.7",
+    "pkg": "^5.8.1"
   }
 }
