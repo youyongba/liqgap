@@ -366,6 +366,13 @@
     color: '#60a5fa',
     priceFormat: { type: 'volume' }
   });
+  const volumeMASeries = volumeChart.addLineSeries({
+    color: 'rgba(250, 204, 21, 0.8)', // 黄色均线
+    lineWidth: 1.5,
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: false
+  });
 
   // ---- 副图：持仓量(上) + CVD(下) 上下拆分 (Stacked OI-over-CVD charts) ----
   // 同一个副图模块内两张图上下排列：上 = 持仓量 OI（隐藏时间轴省空间），
@@ -4137,7 +4144,26 @@
       value: c.volume,
       color: c.close >= c.open ? 'rgba(74, 222, 128, 0.6)' : 'rgba(248, 113, 113, 0.6)'
     }));
+
+    // 计算成交量 20 周期均线 (Volume MA20)
+    const volMaPoints = [];
+    const MA_PERIOD = 20;
+    let sumVol = 0;
+    for (let i = 0; i < merged.length; i++) {
+      sumVol += merged[i].volume;
+      if (i >= MA_PERIOD) {
+        sumVol -= merged[i - MA_PERIOD].volume;
+      }
+      if (i >= MA_PERIOD - 1) {
+        volMaPoints.push({
+          time: toLwSeconds(merged[i].openTime),
+          value: sumVol / MA_PERIOD
+        });
+      }
+    }
+
     _smartUpdateSeries(volumeSeries, volumeData);
+    _smartUpdateSeries(volumeMASeries, volMaPoints);
     // 新周期 K 线 + 成交量已渲染 → 揭开这两个图的 loading
     hideChartLoading(els.mainChart);
     hideChartLoading(els.volumePane);
@@ -5449,6 +5475,7 @@
     _smartUpdateSeries(candleSeries, []);
     _smartUpdateSeries(vwapSeries, []);
     _smartUpdateSeries(volumeSeries, []);
+    _smartUpdateSeries(volumeMASeries, []);
     if (candleSeries) candleSeries.setMarkers([]);
   }
 
