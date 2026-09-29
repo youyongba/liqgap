@@ -4312,6 +4312,7 @@
   // CVD 口径：'coin' = 币数(BTC)；'usd' = 报价额/名义价值（对照 Coinglass 选 USD）
   // 默认 USD，与持仓量 OI 口径保持一致、对齐 Coinglass 币安聚合口径
   let _cvdUnit = 'usd';
+  let _cvdReverse = false;
 
   // 取单条 OI 样本在当前口径下的数值；互为缺失时用 close 价互算兜底。
   function _oiSampleValue(sample, close) {
@@ -4545,6 +4546,23 @@
     }
   }
 
+  // CVD 反向切换：纯前端，重绘即可
+  function setCvdReverse(rev) {
+    _cvdReverse = !!rev;
+    const btn = document.getElementById('cvd-reverse-toggle');
+    if (btn) {
+      btn.textContent = _cvdReverse ? 'CVD反向:开' : 'CVD反向:关';
+    }
+    refreshCvdDisplay(lastCandles);
+  }
+
+  {
+    const cvdReverseBtn = document.getElementById('cvd-reverse-toggle');
+    if (cvdReverseBtn) {
+      cvdReverseBtn.addEventListener('click', () => setCvdReverse(!_cvdReverse));
+    }
+  }
+
   // OI 显示模式切换 (K 线 ⟷ 面积)：纯前端，切 series 可见性即可，无需重新请求
   function setOiMode(mode) {
     _oiMode = mode === 'area' ? 'area' : 'candle';
@@ -4591,8 +4609,9 @@
     let cum = 0;
     let lastTs = -Infinity;
     for (const d of series || []) {
-      const delta = _cvdUnit === 'usd' ? Number(d.deltaUsd) : Number(d.delta);
+      let delta = _cvdUnit === 'usd' ? Number(d.deltaUsd) : Number(d.delta);
       if (!Number.isFinite(delta)) continue;
+      if (_cvdReverse) delta = -delta;
       cum += delta;
       const ts = toLwSeconds(d.openTime);
       if (ts > lastTs) {
@@ -4623,6 +4642,7 @@
         if (!Number.isFinite(tb) || !Number.isFinite(v)) continue;
         delta = 2 * tb - v;
       }
+      if (_cvdReverse) delta = -delta;
       cum += delta;
       const ts = toLwSeconds(c.openTime);
       if (ts > lastTs) {
