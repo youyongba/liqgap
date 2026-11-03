@@ -29,12 +29,20 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@walletconnect/ethereum-provider": "^2.26.0",
+    "@walletconnect/modal": "^2.7.0",
+    "@x402/core": "^2.29.0",
+    "@x402/evm": "^2.29.0",
+    "@x402/express": "^2.29.0",
+    "@x402/fetch": "^2.29.0",
     "axios": "^1.7.7",
     "compression": "^1.8.1",
     "dotenv": "^17.4.2",
     "express": "^4.21.0",
     "https-proxy-agent": "^6.2.1",
+    "undici": "^5.29.0",
     "unzipper": "^0.12.3",
+    "viem": "^2.57.16",
     "ws": "^8.20.0"
   },
   "devDependencies": {

@@ -46,6 +46,7 @@ const resonanceSignalRoute = require('./routes/resonanceSignal');
 const autoTradeRoute = require('./routes/autoTrade');
 const cvdRoute = require('./routes/cvd');
 const keyLevelsRoute = require('./routes/keyLevels');
+const paymentRoute = require('./routes/payment');
 const orderbookRecorder = require('./services/orderbookRecorder');
 const keyLevelsAlert = require('./services/keyLevelsAlert');
 const signalPoller = require('./services/signalPoller');
@@ -131,6 +132,7 @@ app.use('/api', resonanceSignalRoute);
 app.use('/api', autoTradeRoute);
 app.use('/api', cvdRoute);
 app.use('/api', keyLevelsRoute);
+app.use('/api/payment', paymentRoute);
 app.use('/api/ai', aiRoute);
 // 健康检查 (Health-check endpoint)
 app.get('/api/health', (_req, res) => {

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>Liquidity Gap - 管理后台</title>
+  <style>
+    body { background: #0b0e11; color: #E0E3EB; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { border-bottom: 1px solid #2B3139; padding-bottom: 15px; margin-bottom: 30px; color: #FCD535; }
+    h3 { margin-top: 0; color: #fff; }
+    .card { background: #181A20; padding: 24px; border-radius: 8px; margin-bottom: 24px; border: 1px solid #2B3139; }
+    input[type="password"] { background: #2B3139; border: 1px solid #474D57; color: #fff; padding: 12px; border-radius: 6px; width: 250px; font-size: 14px; outline: none; }
+    input[type="password"]:focus { border-color: #FCD535; }
+    button { background: #FCD535; color: #181A20; border: none; padding: 12px 20px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 14px; transition: background 0.2s; }
+    button:hover { background: #FDE06A; }
+    button.danger { background: rgba(246, 70, 93, 0.1); color: #F6465D; border: 1px solid #F6465D; }
+    button.danger:hover { background: #F6465D; color: #fff; }
+    button.outline { background: transparent; border: 1px solid #474D57; color: #E0E3EB; }
+    button.outline:hover { border-color: #E0E3EB; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+    th, td { text-align: left; padding: 16px 12px; border-bottom: 1px solid #2B3139; }
+    th { color: #848E9C; font-weight: 500; }
+    .flex-row { display: flex; gap: 12px; align-items: center; }
+    .status-badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+    .status-active { background: rgba(14, 203, 129, 0.1); color: #0ECB81; }
+    .status-expired { background: rgba(246, 70, 93, 0.1); color: #F6465D; }
+    a.back-link { color: #848E9C; text-decoration: none; display: inline-block; margin-bottom: 20px; font-size: 14px; }
+    a.back-link:hover { color: #fff; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back-link">← 返回行情仪表盘</a>
+    <h1>🛡️ 系统管理后台</h1>
+    
+    <div id="login-section" class="card">
+      <h3>管理员登录</h3>
+      <p style="color:#848E9C; font-size:14px; margin-bottom:20px;">请输入系统管理员密码以继续操作。(默认: admin123)</p>
+      <div class="flex-row">
+        <input type="password" id="admin-secret" placeholder="输入管理员密码">
+        <button onclick="login()">登录</button>
+      </div>
+    </div>
+
+    <div id="admin-section" style="display:none;">
+      <div class="card">
+        <h3>🔑 快捷免支付通道</h3>
+        <p style="color:#848E9C; font-size:14px; margin-bottom:20px;">为当前设备生成一枚有效期为 1 年的最高权限凭证，并直接免支付进入系统。</p>
+        <button onclick="grantAccess()">一键生成并进入系统</button>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3>👥 用户访问凭证管理</h3>
+          <button class="outline" onclick="fetchTokens()">🔄 刷新列表</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Token 标识</th>
+              <th>授权类型</th>
+              <th>签发时间</th>
+              <th>到期时间</th>
+              <th>状态</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="token-list">
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let secret = localStorage.getItem('liq_gap_admin_secret') || '';
+    if (secret) {
+      document.getElementById('admin-secret').value = secret;
+      fetchTokens(true);
+    }
+    
+    function login() {
+      secret = document.getElementById('admin-secret').value;
+      if (!secret) return alert('请输入密码');
+      fetchTokens();
+    }
+
+    async function fetchTokens(silent = false) {
+      try {
+        const res = await fetch('/api/payment/admin/tokens', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret })
+        });
+        const data = await res.json();
+        
+        if (!data.success) {
+          if (!silent) alert('密码错误或请求失败');
+          localStorage.removeItem('liq_gap_admin_secret');
+          return;
+        }
+        
+        localStorage.setItem('liq_gap_admin_secret', secret);
+        document.getElementById('login-section').style.display = 'none';
+        document.getElementById('admin-section').style.display = 'block';
+        
+        const tbody = document.getElementById('token-list');
+        tbody.innerHTML = '';
+        const now = Date.now();
+        
+        const tokensArray = Object.entries(data.tokens).sort((a, b) => b[1].createdAt - a[1].createdAt);
+        
+        if (tokensArray.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#848E9C; padding:30px;">暂无已支付或已授权的访问凭证</td></tr>';
+          return;
+        }
+        
+        for (const [token, info] of tokensArray) {
+          const tr = document.createElement('tr');
+          const created = new Date(info.createdAt).toLocaleString();
+          const expires = new Date(info.expiresAt).toLocaleString();
+          const isExpired = info.expiresAt < now;
+          
+          let typeText = info.type === 'admin' ? '👑 管理员通道' : (info.type === 'daily' ? '⏳ 24小时权限' : '📅 包月权限');
+          let statusHtml = isExpired 
+            ? '<span class="status-badge status-expired">已过期</span>' 
+            : '<span class="status-badge status-active">生效中</span>';
+          
+          tr.innerHTML = `
+            <td style="font-family:monospace; color:#FCD535;">${token.substring(0, 10)}...</td>
+            <td>${typeText}</td>
+            <td style="color:#848E9C;">${created}</td>
+            <td style="${isExpired ? 'color:#848E9C;' : 'color:#E0E3EB;'}">${expires}</td>
+            <td>${statusHtml}</td>
+            <td>
+              <button class="danger" onclick="revoke('${token}')">撤销权限</button>
+            </td>
+          `;
+          tbody.appendChild(tr);
+        }
+      } catch (e) {
+        if (!silent) alert('网络错误: ' + e.message);
+      }
+    }
+
+    async function grantAccess() {
+      try {
+        const res = await fetch('/api/payment/admin/grant', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret })
+        });
+        const data = await res.json();
+        if (data.success) {
+          localStorage.setItem('liq_gap_x402_token', data.token);
+          alert('免支付凭证已生效！即将为您跳转到行情仪表盘...');
+          window.location.href = '/';
+        } else {
+          alert(data.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+
+    async function revoke(token) {
+      if (!confirm('警告：确定要强制撤销该用户的访问权限吗？\n撤销后该用户将立即失去行情系统的使用权，并需要重新支付。')) return;
+      try {
+        const res = await fetch('/api/payment/admin/revoke', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret, token })
+        });
+        const data = await res.json();
+        if (data.success) {
+          fetchTokens();
+        } else {
+          alert(data.error);
+        }
+      } catch (e) {
+        alert('请求失败: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>
