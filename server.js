@@ -110,6 +110,11 @@ app.use('/api', (req, res, next) => {
 });
 
 // 把 8 + 1 个路由模块挂到 /api 下 (Mount every route under /api)
+app.use('/api/payment', paymentRoute);
+
+// 核心数据接口鉴权：如果没有有效 Token，直接拒绝访问
+app.use('/api', paymentRoute.checkAuth);
+
 app.use('/api', klinesRoute);
 app.use('/api', orderbookRoute);
 app.use('/api', tradesRoute);
@@ -132,7 +137,6 @@ app.use('/api', resonanceSignalRoute);
 app.use('/api', autoTradeRoute);
 app.use('/api', cvdRoute);
 app.use('/api', keyLevelsRoute);
-app.use('/api/payment', paymentRoute);
 app.use('/api/ai', aiRoute);
 // 健康检查 (Health-check endpoint)
 app.get('/api/health', (_req, res) => {

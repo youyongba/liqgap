@@ -35,7 +35,7 @@
     
     <div id="login-section" class="card">
       <h3>管理员登录</h3>
-      <p style="color:#848E9C; font-size:14px; margin-bottom:20px;">请输入系统管理员密码以继续操作。(默认: admin123)</p>
+      <p style="color:#848E9C; font-size:14px; margin-bottom:20px;">请输入系统管理员密码 </p>
       <div class="flex-row">
         <input type="password" id="admin-secret" placeholder="输入管理员密码">
         <button onclick="login()">登录</button>
@@ -153,6 +153,7 @@
         const data = await res.json();
         if (data.success) {
           localStorage.setItem('liq_gap_x402_token', data.token);
+          document.cookie = `liq_gap_token=${data.token}; path=/; max-age=31536000`;
           alert('免支付凭证已生效！即将为您跳转到行情仪表盘...');
           window.location.href = '/';
         } else {
@@ -173,6 +174,11 @@
         });
         const data = await res.json();
         if (data.success) {
+          // If we are revoking our own token, clear the cookie
+          if (localStorage.getItem('liq_gap_x402_token') === token) {
+             localStorage.removeItem('liq_gap_x402_token');
+             document.cookie = 'liq_gap_token=; path=/; max-age=0';
+          }
           fetchTokens();
         } else {
           alert(data.error);

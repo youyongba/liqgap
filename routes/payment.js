@@ -16,7 +16,7 @@ if (proxyUrl) {
 
 const router = express.Router();
 const RECIPIENT_ADDRESS = "0x5c8E2fd639AaBa1DdB76504fC33A608528c6f975"; 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "admin123";
+const ADMIN_SECRET = process.env.AUTO_TRADE_API_TOKEN || "admin123";
 
 const facilitatorClient = new HTTPFacilitatorClient({
   url: "https://x402.org/facilitator"
@@ -148,3 +148,25 @@ router.get('/status', (req, res) => {
 });
 
 module.exports = router;
+  
+  module.exports.checkAuth = (req, res, next) => {
+    // extract token from query or headers or cookie
+    let token = req.query.token || (req.headers['authorization'] || '').split(' ')[1];
+    if (!token && req.headers.cookie) {
+      const match = req.headers.cookie.match(/liq_gap_token=([^;]+)/);
+      if (match) token = match[1];
+    }
+  
+    if (token && tokens[token] && Date.now() < tokens[token].expiresAt) {
+      return next();
+    }
+    
+    // allow SSE to close gracefully if unauthorized
+    if (req.path.includes('/stream/sse')) {
+      res.writeHead(401, { 'Content-Type': 'text/event-stream' });
+      res.end('event: error\ndata: Unauthorized\n\n');
+      return;
+    }
+  
+    res.status(401).json({ success: false, error: 'Payment required' });
+  };

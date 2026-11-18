@@ -12,10 +12,12 @@ export async function initPaymentUI() {
       const res = await fetch(`/api/payment/status?token=${token}`);
       const data = await res.json();
       if (data.hasAccess) {
+        document.cookie = `liq_gap_token=${token}; path=/; max-age=31536000`; // Set cookie for API requests
         unlockDashboard();
         return;
       } else {
         localStorage.removeItem('liq_gap_x402_token');
+        document.cookie = 'liq_gap_token=; path=/; max-age=0';
       }
     } catch (e) {
       console.error(e);
@@ -198,7 +200,13 @@ async function handlePayment(type, useWalletConnect, btnElement) {
       const data = await res.json();
       if (data.success && data.token) {
         localStorage.setItem('liq_gap_x402_token', data.token);
+        document.cookie = `liq_gap_token=${data.token}; path=/; max-age=31536000`; // Set cookie
         unlockDashboard();
+        
+        // Optionally refresh the page or restart the app stream if needed, 
+        // but the app.js will automatically retry failing requests.
+        // Easiest is to reload the page to ensure all charts start fresh with valid token
+        window.location.reload();
       }
     } else {
       alert(`支付校验失败 (HTTP ${res.status})`);

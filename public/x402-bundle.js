@@ -121337,10 +121337,12 @@ ${t45.length}`);
         const res = await fetch(`/api/payment/status?token=${token}`);
         const data = await res.json();
         if (data.hasAccess) {
+          document.cookie = `liq_gap_token=${token}; path=/; max-age=31536000`;
           unlockDashboard();
           return;
         } else {
           localStorage.removeItem("liq_gap_x402_token");
+          document.cookie = "liq_gap_token=; path=/; max-age=0";
         }
       } catch (e11) {
         console.error(e11);
@@ -121496,7 +121498,9 @@ ${t45.length}`);
         const data = await res.json();
         if (data.success && data.token) {
           localStorage.setItem("liq_gap_x402_token", data.token);
+          document.cookie = `liq_gap_token=${data.token}; path=/; max-age=31536000`;
           unlockDashboard();
+          window.location.reload();
         }
       } else {
         alert(`\u652F\u4ED8\u6821\u9A8C\u5931\u8D25 (HTTP ${res.status})`);
