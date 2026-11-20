@@ -119,17 +119,20 @@ router.get('/klines', async (req, res) => {
     // 常规请求走 SWR：命中缓存毫秒级返回，过期先回旧值后台刷新，
     // 冷启动最多等 8s（远离网关 15s 红线）。
     let result;
+    let cache = { stale: false, ageMs: 0 };
     if (endTime > 0) {
       result = await buildResult();
     } else {
       const cacheKey =
         `kl|${symbol}|${market}|${interval}|${limit}|${detectPatterns ? 1 : 0}|${notify ? 1 : 0}`;
-      ({ value: result } = await swrCache.swr(cacheKey, buildResult, {
+      const cached = await swrCache.swr(cacheKey, buildResult, {
         ttlMs: 5_000, staleMaxMs: 10 * 60_000, budgetMs: 8_000
-      }));
+      });
+      result = cached.value;
+      cache = { stale: cached.stale, ageMs: cached.ageMs };
     }
 
-    res.json({ success: true, data: result });
+    res.json({ success: true, data: result, cache });
   } catch (err) {
     // 统一以 200 + {success:false} 返回，前端永远能解析 JSON
     // (Always return {success:false} so the dashboard can render an error

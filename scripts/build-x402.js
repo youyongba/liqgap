@@ -1,7 +1,7 @@
 const esbuild = require('esbuild');
 
 esbuild.build({
-  entryPoints: ['public/x402-client.js'],
+  entryPoints: ['public/payment-client.js'],
   bundle: true,
   outfile: 'public/x402-bundle.js',
   format: 'iife',

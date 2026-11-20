@@ -86,6 +86,27 @@ router.get('/stream/sse', async (req, res) => {
   const hub = getHub(symbol, market);
   const connStartedAt = Date.now();
   const connTag = `[sse ${symbol}/${market}/${interval}]`;
+  let closed = false;
+  let bookTimer = null;
+  let pingTimer = null;
+  let initTimer = null;
+  let klineCount = 0;
+  let bookCount = 0;
+  let onKline, onBook, onTrade;
+  function cleanup() {
+    if (closed) return;
+    closed = true;
+    clearInterval(pingTimer);
+    clearTimeout(initTimer);
+    clearTimeout(bookTimer);
+    if (onKline) hub.off('kline', onKline);
+    if (onBook) hub.off('book', onBook);
+    if (onTrade) hub.off('trade', onTrade);
+    if (!res.writableEnded) res.end();
+  }
+  // Register before awaiting upstream data: disconnects during seed must not leak listeners.
+  res.once('close', cleanup);
+  res.once('error', cleanup);
   // eslint-disable-next-line no-console
   console.info(`${connTag} open · klineLimit=${klineLimit} depth=${depth} aggLimit=${aggLimit}`);
 
@@ -95,28 +116,41 @@ router.get('/stream/sse', async (req, res) => {
     }
   }
   function send(eventName, payload) {
-    if (res.writableEnded) return;
+    if (closed || res.writableEnded || res.destroyed) return;
+    // Disconnect slow readers instead of growing an unbounded write buffer.
+    if (res.writableLength > 1024 * 1024) { cleanup(); return; }
     res.write(`event: ${eventName}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
     flushSafe();
   }
   function sendComment(text) {
-    if (res.writableEnded) return;
+    if (closed || res.writableEnded || res.destroyed) return;
     res.write(`: ${text}\n\n`);
     flushSafe();
   }
 
+  pingTimer = setInterval(() => {
+    send('heartbeat', { time: Date.now() });
+  }, 5000);
+  pingTimer.unref();
   // 1) 触发订阅 + seed 三类缓存
   let initialKlines, initialBook, initialAgg;
   try {
-    [initialKlines, initialBook, initialAgg] = await Promise.all([
-      hub.getKlines(interval, klineLimit),
-      hub.getOrderBook(depth),
-      hub.getAggTrades(aggLimit)
+    [initialKlines, initialBook, initialAgg] = await Promise.race([
+      Promise.all([
+        hub.getKlines(interval, klineLimit),
+        hub.getOrderBook(depth).catch(() => ({ bids: [], asks: [], lastUpdateId: null })),
+        hub.getAggTrades(aggLimit).catch(() => [])
+      ]),
+      new Promise((_, reject) => {
+        initTimer = setTimeout(() => reject(new Error('行情初始化超时，稍后重试')), 20000);
+      })
     ]);
+    clearTimeout(initTimer);
+    if (closed) return;
   } catch (err) {
     send('error', { message: 'init failed: ' + err.message });
-    res.end();
+    cleanup();
     return;
   }
 
@@ -138,13 +172,10 @@ router.get('/stream/sse', async (req, res) => {
   });
 
   // 3) 注册事件监听
-  let bookTimer = null;
   let bookDirty = false;
-  let klineCount = 0;
-  let bookCount = 0;
   let firstKlineLogged = false;
 
-  const onKline = (evt) => {
+  onKline = (evt) => {
     if (evt.interval !== interval) return; // 这条 SSE 只关心当前 interval
     klineCount += 1;
     if (!firstKlineLogged) {
@@ -154,7 +185,7 @@ router.get('/stream/sse', async (req, res) => {
     }
     send('kline', evt);
   };
-  const onBook = () => {
+  onBook = () => {
     bookDirty = true;
     if (bookTimer) return;
     bookTimer = setTimeout(async () => {
@@ -172,7 +203,7 @@ router.get('/stream/sse', async (req, res) => {
       } catch (_) { /* swallow; next event will retry */ }
     }, BOOK_THROTTLE_MS);
   };
-  const onTrade = (t) => {
+  onTrade = (t) => {
     send('trade', t);
   };
 
@@ -180,29 +211,7 @@ router.get('/stream/sse', async (req, res) => {
   hub.on('book', onBook);
   hub.on('trade', onTrade);
 
-  // 4) keep-alive ping (10s)，避免反代 / 浏览器关掉空闲连接
-  // 同时附带轻量统计，浏览器通过 EventSource 默认忽略注释行，但日志可通过
-  // server-side console / 网络抓包看到。
-  const pingTimer = setInterval(() => {
-    sendComment(`ping t=${Date.now()} k=${klineCount} b=${bookCount}`);
-  }, 10_000);
-
-  // 5) 客户端断开 / server.end → 清理
-  function cleanup() {
-    clearInterval(pingTimer);
-    if (bookTimer) { clearTimeout(bookTimer); bookTimer = null; }
-    hub.off('kline', onKline);
-    hub.off('book', onBook);
-    hub.off('trade', onTrade);
-    // eslint-disable-next-line no-console
-    console.info(
-      `${connTag} close · uptime=${Date.now() - connStartedAt}ms `
-      + `klineEvents=${klineCount} bookEvents=${bookCount}`
-    );
-    if (!res.writableEnded) res.end();
-  }
-  req.on('close', cleanup);
-  req.on('error', cleanup);
+  sendComment('stream ready');
 });
 
 module.exports = router;

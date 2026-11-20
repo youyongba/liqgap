@@ -247,10 +247,10 @@ router.get('/openInterest', async (req, res) => {
     // SWR：OI 数据粒度 ≥5m，30s 新鲜期足够；命中缓存毫秒级返回，
     // 过期先回旧值后台刷新，冷启动最多等 8s（远离网关 15s 红线）
     const cacheKey = `oi|${symbol}|${market}|${intervalRaw}|${limit}|${aggregate ? 1 : 0}`;
-    const { value } = await swrCache.swr(cacheKey, buildPayload, {
+    const { value, stale, ageMs } = await swrCache.swr(cacheKey, buildPayload, {
       ttlMs: 30_000, staleMaxMs: 10 * 60_000, budgetMs: 8_000
     });
-    res.json({ success: true, data: value });
+    res.json({ success: true, data: value, cache: { stale, ageMs } });
   } catch (err) {
     // eslint-disable-next-line no-console
     console.warn('[openInterest] failed:', err.message);

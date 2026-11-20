@@ -460,10 +460,10 @@
 
   // 窗口尺寸变化重排 (Resize handlers) -------------------------------------
   function fitCharts() {
-    mainChart.resize(els.mainChart.clientWidth, els.mainChart.clientHeight);
-    volumeChart.resize(els.volumePane.clientWidth, els.volumePane.clientHeight);
-    cvdChart.resize(els.cvdPane.clientWidth, els.cvdPane.clientHeight);
-    oiChart.resize(els.oiPane.clientWidth, els.oiPane.clientHeight);
+    _safeResize(mainChart, els.mainChart.clientWidth, els.mainChart.clientHeight);
+    _safeResize(volumeChart, els.volumePane.clientWidth, els.volumePane.clientHeight);
+    _safeResize(cvdChart, els.cvdPane.clientWidth, els.cvdPane.clientHeight);
+    _safeResize(oiChart, els.oiPane.clientWidth, els.oiPane.clientHeight);
   }
   window.addEventListener('resize', fitCharts);
 
@@ -490,8 +490,13 @@
   // 防御：grid 重排 race 中可能瞬时拿到 0 宽/高，给 chart resize(0,0) 会让
   // 内部 state 记录为 0 → 下次再 resize 到正常值前会渲染异常 / canvas
   // attribute 残留旧值进而把 grid 列撑大。低于 8px 直接跳过本次。
+  const chartSizes = new WeakMap();
   function _safeResize(chart, w, h) {
-    if (w >= 8 && h >= 8) chart.resize(w, h);
+    const previous = chartSizes.get(chart);
+    if (w >= 8 && h >= 8 && (!previous || previous.w !== w || previous.h !== h)) {
+      chartSizes.set(chart, { w, h });
+      chart.resize(w, h);
+    }
   }
   _attachChartResizeObserver(els.mainChart,  () => _safeResize(mainChart,  els.mainChart.clientWidth,   els.mainChart.clientHeight));
   _attachChartResizeObserver(els.volumePane, () => _safeResize(volumeChart, els.volumePane.clientWidth, els.volumePane.clientHeight));
@@ -511,7 +516,7 @@
   }
 
   // ---- 时间轴联动 (Time-scale sync across main + sub charts) ----
-  // 主图拖动 / 缩放 → 三个副图跟随；副图也能反向触发，实现"群联动"。
+  // 主图拖动 / 缩放 → 三个副图跟随，副图数据变化不反向修改主图。
   // (Keep volume / CVD / OI panes locked to the same visible range as the
   //  main chart so reading three indicators side-by-side is intuitive.)
   //
@@ -530,7 +535,10 @@
     oiChart.timeScale()  // 时间轴隐藏但仍参与联动
   ];
   let _syncingTime = false;
+  let _timeSyncFrame = null;
   function _broadcastTimeRange(srcScale, range) {
+    // Data changes in a shorter subchart must never change the main viewport.
+    if (srcScale !== mainChart.timeScale()) return;
     if (_syncingTime || !range || range.from == null || range.to == null) return;
     _syncingTime = true;
     try {
@@ -544,7 +552,8 @@
       // 下一帧异步触发。如果立刻 reset _syncingTime=false，副图的反向回调
       // 跑到时锁已开 → 反向 broadcast 回主图 → setVisibleRange 修改主图
       // width → 视觉上"拖动时横向放大"。延迟到下一帧 reset 阻断该回环。
-      requestAnimationFrame(() => { _syncingTime = false; });
+      if (_timeSyncFrame) cancelAnimationFrame(_timeSyncFrame);
+      _timeSyncFrame = requestAnimationFrame(() => { _syncingTime = false; _timeSyncFrame = null; });
     }
   }
   for (const ts of allTimeScales) {
@@ -565,7 +574,8 @@
         try { ts.setVisibleRange(range); } catch (_) { /* empty data */ }
       }
     } finally {
-      requestAnimationFrame(() => { _syncingTime = false; });
+      if (_timeSyncFrame) cancelAnimationFrame(_timeSyncFrame);
+      _timeSyncFrame = requestAnimationFrame(() => { _syncingTime = false; _timeSyncFrame = null; });
     }
   }
 
@@ -3279,6 +3289,7 @@
   // (Soft fetch: returns null on failure and stashes the reason on
   //  fetchJsonSoft.lastErrors so the status bar can display it.)
   fetchJsonSoft.lastErrors = {};
+  fetchJsonSoft.cacheInfo = {};
   // 单次软请求超时（毫秒）。超过即 abort，避免请求挂死到网关 504 才返回
   // HTML 错误页（那会让 r.json() 抛 "Unexpected token '<'" 这种难懂的报错）。
   const SOFT_FETCH_TIMEOUT_MS = 15000;
@@ -3308,6 +3319,10 @@
         return null;
       }
       const j = await r.json();
+      if (r.status === 401) {
+        window.dispatchEvent(new Event('payment-access-revoked'));
+        return null;
+      }
       if (!j || !j.success) {
         // eslint-disable-next-line no-console
         console.warn('soft-fetch failed:', url, j && j.error);
@@ -3315,6 +3330,7 @@
         return null;
       }
       delete fetchJsonSoft.lastErrors[url];
+      fetchJsonSoft.cacheInfo[url] = j.cache || null;
       return j.data;
     } catch (err) {
       const isAbort = err && err.name === 'AbortError';
@@ -4843,6 +4859,7 @@
   }
 
   function setObBaselineWindow(windowMs) {
+    if (_obBaselineState.hoverDebounce) clearTimeout(_obBaselineState.hoverDebounce);
     _obBaselineState.windowMs = Number(windowMs) || 0;
     _obBaselineState.anchorMs = null; // 切窗口时回到 now 锚定
     _scheduleObBaselineAuto();
@@ -4856,9 +4873,11 @@
   function setObBaselineHoverAnchor(hoverMs) {
     const s = _obBaselineState;
     if (!s.windowMs) return; // 关闭状态不响应 hover
+    const nextAnchor = (hoverMs && Number.isFinite(hoverMs)) ? hoverMs : null;
+    if (s.anchorMs === nextAnchor) return;
     if (s.hoverDebounce) clearTimeout(s.hoverDebounce);
     s.hoverDebounce = setTimeout(() => {
-      s.anchorMs = (hoverMs && Number.isFinite(hoverMs)) ? hoverMs : null;
+      s.anchorMs = nextAnchor;
       _fetchObBaseline();
     }, 200);
   }
@@ -4880,8 +4899,9 @@
   const KLINE_STALE_MS = 30_000;
   // watchdog 检查频率
   const WATCHDOG_INTERVAL_MS = 5_000;
-  // 建立连接后多久内必须收到 snapshot；超时即视为初始化失败重连
-  const SSE_INIT_TIMEOUT_MS = 8_000;
+  // 覆盖服务端 20s 初始化预算，避免客户端抢先反复打断 seed。
+  const SSE_INIT_TIMEOUT_MS = 25_000;
+  let dataGeneration = 0;
 
   const sseState = {
     supported: typeof EventSource !== 'undefined',
@@ -4893,6 +4913,7 @@
     summary: null,
     renderTimer: null,
     lastBookAt: 0,
+    lastHeartbeatAt: 0,
     lastKlineAt: 0,
     lastErrorAt: 0,
     reconnectTimer: null,
@@ -4976,17 +4997,21 @@
     setStatus(`实时 / Live · ${nowBJTimeHMS()} (UTC+8) · 服务端推送${tag}${extra}`);
   }
 
-  function startSSE() {
+  function startSSE(preserveData = false) {
     if (!sseState.supported) return false;
-    stopSSE();
+    stopSSE(preserveData);
     sseState.active = true;
     sseState.ready = false;
-    sseState.candles = [];
-    sseState.summary = null;
+    if (!preserveData) {
+      sseState.candles = [];
+      sseState.summary = null;
+    }
     sseState.klineEventCount = 0;
     sseState.bookEventCount = 0;
     sseState.snapshotCount = 0;
     sseState.openedAt = Date.now();
+    sseState.lastHeartbeatAt = 0;
+    sseState.lastBookAt = 0;
     setStatus('建立实时连接… / Connecting SSE…');
 
     const url = buildSSEUrl();
@@ -5009,7 +5034,7 @@
         // eslint-disable-next-line no-console
         console.warn(`[sse] init timeout (${SSE_INIT_TIMEOUT_MS}ms) — no snapshot received, force reconnect`);
         setStatus('实时连接超时，重连中… / SSE init timeout, retrying', true);
-        restartSSE();
+        scheduleSSEReconnect();
       }
     }, SSE_INIT_TIMEOUT_MS);
 
@@ -5019,6 +5044,7 @@
     });
 
     es.addEventListener('snapshot', (ev) => {
+      if (sseState.es !== es) return;
       try {
         const d = JSON.parse(ev.data);
         sseState.candles = Array.isArray(d.klines) ? d.klines.slice() : [];
@@ -5056,6 +5082,7 @@
     });
 
     es.addEventListener('kline', (ev) => {
+      if (sseState.es !== es) return;
       try {
         const d = JSON.parse(ev.data);
         const c = d.candle;
@@ -5078,6 +5105,7 @@
     });
 
     es.addEventListener('book', (ev) => {
+      if (sseState.es !== es) return;
       try {
         const d = JSON.parse(ev.data);
         renderOrderBookFromSSE(d);
@@ -5086,7 +5114,16 @@
       } catch (_) { /* swallow */ }
     });
 
+    es.addEventListener('access-revoked', () => {
+      stopSSE();
+      stopAutoPoll();
+      window.dispatchEvent(new Event('payment-access-revoked'));
+    });
+    es.addEventListener('heartbeat', () => {
+      if (sseState.es === es) sseState.lastHeartbeatAt = Date.now();
+    });
     es.addEventListener('error', (ev) => {
+      if (sseState.es !== es) return;
       // 任何 error 都立刻 ready=false，停掉 pending 渲染。
       // 主图不再降级到 poll —— 等 EventSource 自动重连成功后 snapshot 会再来。
       sseState.ready = false;
@@ -5108,28 +5145,26 @@
       );
       // 状态文本节流，避免每秒刷屏
       const nowMs = Date.now();
-      if (nowMs - sseState.lastErrorAt < 3000) return;
-      sseState.lastErrorAt = nowMs;
-      if (es.readyState === EventSource.CLOSED) {
-        sseState.active = false;
-        setStatus('实时连接断开，重连中… / SSE disconnected, reconnecting', true);
-        scheduleSSEReconnect();
-      } else {
-        setStatus('实时连接抖动，自动重连中 / SSE blip, auto-retry', true);
+      if (nowMs - sseState.lastErrorAt >= 3000) {
+        sseState.lastErrorAt = nowMs;
+        setStatus('实时连接暂断，保留最近数据并稍后重连', true);
       }
+      scheduleSSEReconnect();
     });
     return true;
   }
 
-  function stopSSE() {
+  function stopSSE(preserveData = false) {
     if (sseState.es) {
       try { sseState.es.close(); } catch (_) { /* noop */ }
     }
     sseState.es = null;
     sseState.active = false;
     sseState.ready = false;
-    sseState.everReady = false; // 重置接管状态
-    sseState.candles = [];      // 清空旧的 K 线缓存
+    if (!preserveData) {
+      sseState.everReady = false;
+      sseState.candles = [];
+    }
     if (sseState.renderTimer) {
       clearTimeout(sseState.renderTimer);
       sseState.renderTimer = null;
@@ -5155,12 +5190,14 @@
     stopWatchdog();
     sseState.watchdogTimer = setInterval(() => {
       if (!sseState.active || !sseState.ready) return;
-      const idle = Date.now() - (sseState.lastKlineAt || 0);
+      const idle = Date.now() - Math.max(sseState.lastKlineAt || 0, sseState.lastBookAt || 0, sseState.lastHeartbeatAt || 0);
       if (idle > KLINE_STALE_MS) {
         // eslint-disable-next-line no-console
         console.warn(`[sse] watchdog: K-line idle ${idle}ms, forcing reconnect`);
         setStatus(`实时静默 ${Math.round(idle / 1000)}s，强制重连 / SSE idle, force reconnect`, true);
-        restartSSE();
+        scheduleSSEReconnect();
+      } else if (Date.now() - sseState.lastKlineAt > KLINE_STALE_MS) {
+        setStatus('行情源 K 线更新延迟，保留最近数据；连接仍正常', true);
       }
     }, WATCHDOG_INTERVAL_MS);
   }
@@ -5174,16 +5211,18 @@
   // SSE 自动重连：使用退避避免请求风暴
   function scheduleSSEReconnect() {
     if (sseState.reconnectTimer) return;
-    const delay = Math.min(sseState.backoffMs, 30_000);
+    stopSSE(true);
+    const delay = Math.min(sseState.backoffMs, 30_000) + Math.random() * 500;
     sseState.reconnectTimer = setTimeout(() => {
       sseState.reconnectTimer = null;
       sseState.backoffMs = Math.min(sseState.backoffMs * 2, 30_000);
-      startSSE();
+      startSSE(true);
     }, delay);
   }
 
   // 用户主动 restart（切换 symbol/market/interval / 点刷新）
   function restartSSE() {
+    dataGeneration += 1;
     if (!sseState.supported) return;
     stopSSE();
     sseState.backoffMs = 1000;
@@ -5203,6 +5242,7 @@
     const symbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
     const market = els.market.value;
     const interval = els.interval.value;
+    const generation = dataGeneration;
     // 仅在 SSE 还没接管的"首屏 / 降级"模式下显示 fetching 提示，
     // 避免在实时模式下每 10s 把"实时 / Live"覆盖成"请求数据中"。
     if (!sseOwnsMainChart()) {
@@ -5216,25 +5256,27 @@
       // (Order-book depth scales with interval so longer timeframes show
       //  more levels and shorter ones zoom in on the touch.)
       const obDepth = obDepthForInterval(interval);
+      const requestedUrls = [];
+      const request = url => { requestedUrls.push(url); return fetchJsonSoft(url); };
       // 主图归 SSE 管：一旦 SSE 成功过一次，就不再拉订单簿（避免 10s 跳动 + 节省请求）
       // (Once SSE has succeeded at least once, the main chart and order book
       //  are owned by SSE; poll skips fetching them entirely.)
       const sseOwns = sseOwnsMainChart();
       const obFetch = sseOwns
         ? Promise.resolve(null)
-        : fetchJsonSoft(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
+        : request(`/api/orderbook/indicators?symbol=${symbol}&depth=${obDepth}&market=${market}&interval=${interval}`);
       // OI 仅合约支持；现货时直接传 spot，后端会回 supported:false，前端清空
-      const oiFetch = fetchJsonSoft(
+      const oiFetch = request(
         `/api/openInterest?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}${oiAggregateParam()}`
       );
       // CVD 合并模式：仅合约 + 开关打开时拉多合约 delta；否则前端用主图 K 线派生
       const cvdFetch = (market === 'futures' && _cvdAggregate)
-        ? fetchJsonSoft(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}&aggregate=binance`)
+        ? request(`/api/cvd?symbol=${symbol}&market=${market}&interval=${interval}&limit=${SUBCHART_LIMIT}&aggregate=binance`)
         : Promise.resolve(null);
       // 🧲 清算磁极 / 共振信号已改由后端 signalPoller 定时轮询（飞书 + autoTrade），
       // 前端不再拉取信号接口 → 每轮 poll 少 1-2 个重计算请求。
       const [kData, obData, oiData, cvdData] = await Promise.all([
-        fetchJsonSoft(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${KLINE_LIMIT}&market=${market}&detectPatterns=true`),
+        sseOwns ? Promise.resolve(null) : request(`/api/klines?symbol=${symbol}&interval=${interval}&limit=${KLINE_LIMIT}&market=${market}&detectPatterns=false&notify=false`),
         obFetch,
         oiFetch,
         cvdFetch
@@ -5244,7 +5286,7 @@
       const currentSymbol = els.symbol.value.trim().toUpperCase() || 'BTCUSDT';
       const currentMarket = els.market.value;
       const currentInterval = els.interval.value;
-      if (symbol !== currentSymbol || market !== currentMarket || interval !== currentInterval) {
+      if (generation !== dataGeneration || symbol !== currentSymbol || market !== currentMarket || interval !== currentInterval) {
         return;
       }
 
@@ -5252,13 +5294,13 @@
       if (kData) {
         // FVG / 流动性空白已全部由前端在 renderMain 里对合并后的
         // 全量 K 线动态识别，poll 不再需要搬运后端 patterns。
-        if (!sseOwns) {
+        if (!sseOwnsMainChart()) {
           // 启动后首屏：SSE 还没成功过，poll 负责一次性把主图 seed 出来
           renderMain(kData);
         }
-      } else failed.push('klines');
+      } else if (!sseOwns && !sseOwnsMainChart()) failed.push('klines');
 
-      if (!sseOwns) {
+      if (!sseOwnsMainChart()) {
         if (obData) renderOrderBook(obData);
         else failed.push('orderbook');
       }
@@ -5281,12 +5323,14 @@
 
       const elapsed = Date.now() - startedAt;
       if (failed.length) {
-        const firstErr = Object.values(fetchJsonSoft.lastErrors)[0] || '';
+        const firstErr = requestedUrls.map(url => fetchJsonSoft.lastErrors[url]).find(Boolean) || '';
         const detail = firstErr ? ` — ${firstErr}` : '';
         setStatus(
-          `部分失败 / Partial: ${failed.join(',')} · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)${detail}`,
+          `部分数据暂未更新（保留最近数据）: ${failed.join(',')} · ${nowBJTimeHMS()} (UTC+8) (${elapsed}ms)${detail}`,
           true
         );
+      } else if (requestedUrls.some(url => fetchJsonSoft.cacheInfo[url]?.stale)) {
+        setStatus(`部分指标使用缓存，后台更新中 · ${nowBJTimeHMS()} (UTC+8)`, true);
       } else if (isSSEDriving()) {
         // SSE 在线时刷新一次"实时 / Live"标签里的时间戳，让用户能看到面板还活着
         setSSELiveStatus();
@@ -5307,7 +5351,9 @@
 
   function startAutoPoll() {
     stopAutoPoll();
-    pollTimer = setInterval(poll, POLL_INTERVAL_MS);
+    pollTimer = setInterval(() => {
+      if (!inFlight && !document.hidden) poll();
+    }, POLL_INTERVAL_MS);
   }
   function stopAutoPoll() {
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }

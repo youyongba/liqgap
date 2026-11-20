@@ -2,6 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Liquidity Gap - 管理后台</title>
   <style>
     body { background: #0b0e11; color: #E0E3EB; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }
@@ -18,6 +19,9 @@
     button.outline { background: transparent; border: 1px solid #474D57; color: #E0E3EB; }
     button.outline:hover { border-color: #E0E3EB; }
     table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
+    .card { overflow-x:auto; }
+    .flex-row { flex-wrap:wrap; }
+    td.account { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     th, td { text-align: left; padding: 16px 12px; border-bottom: 1px solid #2B3139; }
     th { color: #848E9C; font-weight: 500; }
     .flex-row { display: flex; gap: 12px; align-items: center; }
@@ -57,7 +61,8 @@
         <table>
           <thead>
             <tr>
-              <th>Token 标识</th>
+              <th>订单标识</th>
+              <th>支付钱包</th>
               <th>授权类型</th>
               <th>签发时间</th>
               <th>到期时间</th>
@@ -73,7 +78,8 @@
   </div>
 
   <script>
-    let secret = localStorage.getItem('liq_gap_admin_secret') || '';
+    localStorage.removeItem('liq_gap_admin_secret');
+    let secret = sessionStorage.getItem('liq_gap_admin_secret') || '';
     if (secret) {
       document.getElementById('admin-secret').value = secret;
       fetchTokens(true);
@@ -96,11 +102,13 @@
         
         if (!data.success) {
           if (!silent) alert('密码错误或请求失败');
-          localStorage.removeItem('liq_gap_admin_secret');
+          sessionStorage.removeItem('liq_gap_admin_secret');
+          document.getElementById('login-section').style.display = 'block';
+          document.getElementById('admin-section').style.display = 'none';
           return;
         }
         
-        localStorage.setItem('liq_gap_admin_secret', secret);
+        sessionStorage.setItem('liq_gap_admin_secret', secret);
         document.getElementById('login-section').style.display = 'none';
         document.getElementById('admin-section').style.display = 'block';
         
@@ -111,29 +119,31 @@
         const tokensArray = Object.entries(data.tokens).sort((a, b) => b[1].createdAt - a[1].createdAt);
         
         if (tokensArray.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" style="text-align:center; color:#848E9C; padding:30px;">暂无已支付或已授权的访问凭证</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#848E9C; padding:30px;">暂无支付或授权记录</td></tr>';
           return;
         }
         
         for (const [token, info] of tokensArray) {
           const tr = document.createElement('tr');
           const created = new Date(info.createdAt).toLocaleString();
-          const expires = new Date(info.expiresAt).toLocaleString();
-          const isExpired = info.expiresAt < now;
-          
-          let typeText = info.type === 'admin' ? '👑 管理员通道' : (info.type === 'daily' ? '⏳ 24小时权限' : '📅 包月权限');
-          let statusHtml = isExpired 
-            ? '<span class="status-badge status-expired">已过期</span>' 
-            : '<span class="status-badge status-active">生效中</span>';
+          const expires = info.expiresAt ? new Date(info.expiresAt).toLocaleString() : '-';
+          const isExpired = info.expiresAt && info.expiresAt < now;
+          const typeText = { admin: '管理员通道', daily: '24小时 / 1 USDC', weekly: '7天 / 5 USDC', monthly: '30天 / 15 USDC' }[info.type] || '-';
+          const active = info.state === 'paid' && !isExpired && !info.revokedAt;
+          const status = info.revokedAt ? '已撤销' : isExpired ? '已过期' :
+            info.state === 'paid' ? '生效中' : info.state === 'pending' ? '待核实到账' :
+              info.state === 'cancelled' ? '已取消' : info.state === 'failed' ? '未成交' : '待支付';
+          const statusHtml = `<span class="status-badge ${active ? 'status-active' : 'status-expired'}">${status}</span>`;
           
           tr.innerHTML = `
             <td style="font-family:monospace; color:#FCD535;">${token.substring(0, 10)}...</td>
+            <td class="account" title="${info.wallet || ''}">${info.wallet || (info.type === 'admin' ? '管理员' : '-')}</td>
             <td>${typeText}</td>
             <td style="color:#848E9C;">${created}</td>
             <td style="${isExpired ? 'color:#848E9C;' : 'color:#E0E3EB;'}">${expires}</td>
             <td>${statusHtml}</td>
             <td>
-              <button class="danger" onclick="revoke('${token}')">撤销权限</button>
+              <button class="danger" ${active ? '' : 'disabled'} onclick="revoke('${token}')">撤销权限</button>
             </td>
           `;
           tbody.appendChild(tr);
@@ -153,7 +163,6 @@
         const data = await res.json();
         if (data.success) {
           localStorage.setItem('liq_gap_x402_token', data.token);
-          document.cookie = `liq_gap_token=${data.token}; path=/; max-age=31536000`;
           alert('免支付凭证已生效！即将为您跳转到行情仪表盘...');
           window.location.href = '/';
         } else {
@@ -174,11 +183,6 @@
         });
         const data = await res.json();
         if (data.success) {
-          // If we are revoking our own token, clear the cookie
-          if (localStorage.getItem('liq_gap_x402_token') === token) {
-             localStorage.removeItem('liq_gap_x402_token');
-             document.cookie = 'liq_gap_token=; path=/; max-age=0';
-          }
           fetchTokens();
         } else {
           alert(data.error);

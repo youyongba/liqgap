@@ -60,7 +60,7 @@ var X402App = (() => {
         constructor(shortMessage, args = {}) {
           const details = args.cause instanceof _BaseError ? args.cause.details : args.cause?.message ? args.cause.message : args.details;
           const docsPath9 = args.cause instanceof _BaseError ? args.cause.docsPath || args.docsPath : args.docsPath;
-          const message = [
+          const message2 = [
             shortMessage || "An error occurred.",
             "",
             ...args.metaMessages ? [...args.metaMessages, ""] : [],
@@ -68,7 +68,7 @@ var X402App = (() => {
             ...details ? [`Details: ${details}`] : [],
             `Version: abitype@${version}`
           ].join("\n");
-          super(message);
+          super(message2);
           Object.defineProperty(this, "details", {
             enumerable: true,
             configurable: true,
@@ -1095,8 +1095,8 @@ var X402App = (() => {
   });
 
   // node_modules/viem/_esm/errors/base.js
-  function setErrorConfig(config2) {
-    errorConfig = config2;
+  function setErrorConfig(config3) {
+    errorConfig = config3;
   }
   function walk(err, fn3) {
     if (fn3?.(err))
@@ -1128,7 +1128,7 @@ var X402App = (() => {
             return args.docsPath;
           })();
           const docsUrl = errorConfig.getDocsUrl?.({ ...args, docsPath: docsPath9 });
-          const message = [
+          const message2 = [
             shortMessage || "An error occurred.",
             "",
             ...args.metaMessages ? [...args.metaMessages, ""] : [],
@@ -1136,7 +1136,7 @@ var X402App = (() => {
             ...details ? [`Details: ${details}`] : [],
             ...errorConfig.version ? [`Version: ${errorConfig.version}`] : []
           ].join("\n");
-          super(message, args.cause ? { cause: args.cause } : void 0);
+          super(message2, args.cause ? { cause: args.cause } : void 0);
           Object.defineProperty(this, "details", {
             enumerable: true,
             configurable: true,
@@ -4261,7 +4261,7 @@ ${prettyStateOverride(stateOverride)}`;
         }
       };
       ContractFunctionRevertedError = class extends BaseError2 {
-        constructor({ abi: abi2, data, functionName, message, cause: error62 }) {
+        constructor({ abi: abi2, data, functionName, message: message2, cause: error62 }) {
           let cause;
           let decodedData;
           let metaMessages;
@@ -4291,8 +4291,8 @@ ${prettyStateOverride(stateOverride)}`;
             } catch (err) {
               cause = err;
             }
-          } else if (message)
-            reason = message;
+          } else if (message2)
+            reason = message2;
           let signature;
           if (cause instanceof AbiErrorSignatureNotFoundError) {
             signature = cause.signature;
@@ -4367,8 +4367,8 @@ ${prettyStateOverride(stateOverride)}`;
         }
       };
       RawContractError = class extends BaseError2 {
-        constructor({ data, message }) {
-          super(message || "", { name: "RawContractError" });
+        constructor({ data, message: message2 }) {
+          super(message2 || "", { name: "RawContractError" });
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -5014,16 +5014,16 @@ ${prettyStateOverride(stateOverride)}`;
   // node_modules/viem/_esm/utils/errors/getContractError.js
   function getContractError(err, { abi: abi2, address, args, docsPath: docsPath9, functionName, sender }) {
     const error62 = err instanceof RawContractError ? err : err instanceof BaseError2 ? err.walk((err2) => typeof err2 === "object" && err2 !== null && "data" in err2) || err.walk() : {};
-    const { code: code2, data, details, message, shortMessage } = error62;
+    const { code: code2, data, details, message: message2, shortMessage } = error62;
     const cause = (() => {
       if (err instanceof AbiDecodingZeroDataError)
         return new ContractFunctionZeroDataError({ functionName, cause: err });
-      if ([EXECUTION_REVERTED_ERROR_CODE, InternalRpcError.code].includes(code2) && (data || details || message || shortMessage) || code2 === InvalidInputRpcError.code && details === "execution reverted" && data) {
+      if ([EXECUTION_REVERTED_ERROR_CODE, InternalRpcError.code].includes(code2) && (data || details || message2 || shortMessage) || code2 === InvalidInputRpcError.code && details === "execution reverted" && data) {
         return new ContractFunctionRevertedError({
           abi: abi2,
           data: typeof data === "object" ? data.data : data,
           functionName,
-          message: error62 instanceof RpcRequestError ? details : shortMessage ?? message,
+          message: error62 instanceof RpcRequestError ? details : shortMessage ?? message2,
           cause: err
         });
       }
@@ -5404,7 +5404,7 @@ ${prettyStateOverride(stateOverride)}`;
           this.iHash.destroy();
         }
       };
-      hmac = (hash4, key, message) => new HMAC(hash4, key).update(message).digest();
+      hmac = (hash4, key, message2) => new HMAC(hash4, key).update(message2).digest();
       hmac.create = (hash4, key) => new HMAC(hash4, key);
     }
   });
@@ -7392,8 +7392,8 @@ ${prettyStateOverride(stateOverride)}`;
   function schnorrGetPublicKey(privateKey) {
     return schnorrGetExtPubKey(privateKey).bytes;
   }
-  function schnorrSign(message, privateKey, auxRand = randomBytes(32)) {
-    const m9 = ensureBytes("message", message);
+  function schnorrSign(message2, privateKey, auxRand = randomBytes(32)) {
+    const m9 = ensureBytes("message", message2);
     const { bytes: px, scalar: d17 } = schnorrGetExtPubKey(privateKey);
     const a22 = ensureBytes("auxRand", auxRand, 32);
     const t45 = numTo32b(d17 ^ num(taggedHash("BIP0340/aux", a22)));
@@ -7410,9 +7410,9 @@ ${prettyStateOverride(stateOverride)}`;
       throw new Error("sign: Invalid signature produced");
     return sig;
   }
-  function schnorrVerify(signature, message, publicKey) {
+  function schnorrVerify(signature, message2, publicKey) {
     const sig = ensureBytes("signature", signature, 64);
-    const m9 = ensureBytes("message", message);
+    const m9 = ensureBytes("message", message2);
     const pub = ensureBytes("publicKey", publicKey, 32);
     try {
       const P13 = lift_x(num(pub));
@@ -7808,8 +7808,8 @@ ${prettyStateOverride(stateOverride)}`;
       init_formatGwei();
       init_base();
       ExecutionRevertedError = class extends BaseError2 {
-        constructor({ cause, message } = {}) {
-          const reason = message?.replace("execution reverted: ", "")?.replace("execution reverted", "");
+        constructor({ cause, message: message2 } = {}) {
+          const reason = message2?.replace("execution reverted: ", "")?.replace("execution reverted", "");
           super(`Execution reverted ${reason ? `with reason: ${reason}` : "for an unknown reason"}.`, {
             cause,
             name: "ExecutionRevertedError"
@@ -7989,43 +7989,43 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/utils/errors/getNodeError.js
   function getNodeError(err, args) {
-    const message = (err.details || "").toLowerCase();
+    const message2 = (err.details || "").toLowerCase();
     const executionRevertedError = err instanceof BaseError2 ? err.walk((e11) => e11?.code === ExecutionRevertedError.code) : err;
     if (executionRevertedError instanceof BaseError2)
       return new ExecutionRevertedError({
         cause: err,
         message: executionRevertedError.details
       });
-    if (ExecutionRevertedError.nodeMessage.test(message))
+    if (ExecutionRevertedError.nodeMessage.test(message2))
       return new ExecutionRevertedError({
         cause: err,
         message: err.details
       });
-    if (FeeCapTooHighError.nodeMessage.test(message))
+    if (FeeCapTooHighError.nodeMessage.test(message2))
       return new FeeCapTooHighError({
         cause: err,
         maxFeePerGas: args?.maxFeePerGas
       });
-    if (FeeCapTooLowError.nodeMessage.test(message))
+    if (FeeCapTooLowError.nodeMessage.test(message2))
       return new FeeCapTooLowError({
         cause: err,
         maxFeePerGas: args?.maxFeePerGas
       });
-    if (NonceTooHighError.nodeMessage.test(message))
+    if (NonceTooHighError.nodeMessage.test(message2))
       return new NonceTooHighError({ cause: err, nonce: args?.nonce });
-    if (NonceTooLowError.nodeMessage.test(message))
+    if (NonceTooLowError.nodeMessage.test(message2))
       return new NonceTooLowError({ cause: err, nonce: args?.nonce });
-    if (NonceMaxValueError.nodeMessage.test(message))
+    if (NonceMaxValueError.nodeMessage.test(message2))
       return new NonceMaxValueError({ cause: err, nonce: args?.nonce });
-    if (InsufficientFundsError.nodeMessage.test(message))
+    if (InsufficientFundsError.nodeMessage.test(message2))
       return new InsufficientFundsError({ cause: err });
-    if (IntrinsicGasTooHighError.nodeMessage.test(message))
+    if (IntrinsicGasTooHighError.nodeMessage.test(message2))
       return new IntrinsicGasTooHighError({ cause: err, gas: args?.gas });
-    if (IntrinsicGasTooLowError.nodeMessage.test(message))
+    if (IntrinsicGasTooLowError.nodeMessage.test(message2))
       return new IntrinsicGasTooLowError({ cause: err, gas: args?.gas });
-    if (TransactionTypeNotSupportedError.nodeMessage.test(message))
+    if (TransactionTypeNotSupportedError.nodeMessage.test(message2))
       return new TransactionTypeNotSupportedError({ cause: err });
-    if (TipAboveFeeCapError.nodeMessage.test(message))
+    if (TipAboveFeeCapError.nodeMessage.test(message2))
       return new TipAboveFeeCapError({
         cause: err,
         maxFeePerGas: args?.maxFeePerGas,
@@ -9996,7 +9996,7 @@ ${prettyStateOverride(stateOverride)}`;
           const docs = `${docsBaseUrl}${docsPath9 ?? ""}`;
           const showVersion = Boolean(options.version ?? _BaseError.prototype.showVersion);
           const version8 = options.version ?? _BaseError.prototype.version;
-          const message = [
+          const message2 = [
             shortMessage || "An error occurred.",
             ...options.metaMessages ? ["", ...options.metaMessages] : [],
             ...details || docsPath9 || showVersion ? [
@@ -10006,7 +10006,7 @@ ${prettyStateOverride(stateOverride)}`;
               showVersion ? `Version: ${version8}` : void 0
             ] : []
           ].filter((x13) => typeof x13 === "string").join("\n");
-          super(message, options.cause ? { cause: options.cause } : void 0);
+          super(message2, options.cause ? { cause: options.cause } : void 0);
           Object.defineProperty(this, "details", {
             enumerable: true,
             configurable: true,
@@ -14940,16 +14940,16 @@ ${prettyStateOverride(stateOverride)}`;
         if (capabilities) {
           const hasNonOptionalCapability = Object.values(capabilities).some((capability) => !capability.optional);
           if (hasNonOptionalCapability) {
-            const message = "non-optional `capabilities` are not supported on fallback to `eth_sendTransaction`.";
-            throw new UnsupportedNonOptionalCapabilityError(new BaseError2(message, {
-              details: message
+            const message2 = "non-optional `capabilities` are not supported on fallback to `eth_sendTransaction`.";
+            throw new UnsupportedNonOptionalCapabilityError(new BaseError2(message2, {
+              details: message2
             }));
           }
         }
         if (forceAtomic && calls.length > 1) {
-          const message = "`forceAtomic` is not supported on fallback to `eth_sendTransaction`.";
-          throw new AtomicityNotSupportedError(new BaseError2(message, {
-            details: message
+          const message2 = "`forceAtomic` is not supported on fallback to `eth_sendTransaction`.";
+          throw new AtomicityNotSupportedError(new BaseError2(message2, {
+            details: message2
           }));
         }
         const results = [];
@@ -15215,12 +15215,12 @@ ${prettyStateOverride(stateOverride)}`;
     const pollingInterval = parameters.pollingInterval ?? defaultPollingInterval;
     const cacheTime = parameters.cacheTime ?? Math.min(pollingInterval, Math.floor(blockTime / 2));
     const account = parameters.account ? parseAccount(parameters.account) : void 0;
-    const { config: config2, request, value } = parameters.transport({
+    const { config: config3, request, value } = parameters.transport({
       account,
       chain: chain2,
       pollingInterval
     });
-    const transport = { ...config2, ...value };
+    const transport = { ...config3, ...value };
     const client = {
       account,
       batch,
@@ -17315,9 +17315,9 @@ ${prettyStateOverride(stateOverride)}`;
                   url: urls.join(" | ")
                 });
               } else {
-                const message = res.args[0];
-                if (message) {
-                  error62 = new Error(message);
+                const message2 = res.args[0];
+                if (message2) {
+                  error62 = new Error(message2);
                 }
               }
             } catch {
@@ -18215,15 +18215,15 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/utils/signature/toPrefixedMessage.js
   function toPrefixedMessage(message_) {
-    const message = (() => {
+    const message2 = (() => {
       if (typeof message_ === "string")
         return stringToHex(message_);
       if (typeof message_.raw === "string")
         return message_.raw;
       return bytesToHex(message_.raw);
     })();
-    const prefix = stringToHex(`${presignMessagePrefix}${size(message)}`);
-    return concat([prefix, message]);
+    const prefix = stringToHex(`${presignMessagePrefix}${size(message2)}`);
+    return concat([prefix, message2]);
   }
   var init_toPrefixedMessage = __esm({
     "node_modules/viem/_esm/utils/signature/toPrefixedMessage.js"() {
@@ -18235,8 +18235,8 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/utils/signature/hashMessage.js
-  function hashMessage(message, to_) {
-    return keccak256(toPrefixedMessage(message), to_);
+  function hashMessage(message2, to_) {
+    return keccak256(toPrefixedMessage(message2), to_);
   }
   var init_hashMessage = __esm({
     "node_modules/viem/_esm/utils/signature/hashMessage.js"() {
@@ -18307,15 +18307,15 @@ ${prettyStateOverride(stateOverride)}`;
         return {};
       return normalizeData(types.EIP712Domain, domain_);
     })();
-    const message = (() => {
+    const message2 = (() => {
       if (primaryType === "EIP712Domain")
         return void 0;
       return normalizeData(types[primaryType], message_);
     })();
-    return stringify({ domain: domain2, message, primaryType, types });
+    return stringify({ domain: domain2, message: message2, primaryType, types });
   }
   function validateTypedData(parameters) {
-    const { domain: domain2, message, primaryType, types } = parameters;
+    const { domain: domain2, message: message2, primaryType, types } = parameters;
     const validateData = (struct, data) => {
       for (const param of struct) {
         const { name: name2, type } = param;
@@ -18355,7 +18355,7 @@ ${prettyStateOverride(stateOverride)}`;
     }
     if (primaryType !== "EIP712Domain") {
       if (types[primaryType])
-        validateData(types[primaryType], message);
+        validateData(types[primaryType], message2);
       else
         throw new InvalidPrimaryTypeError({ primaryType, types });
     }
@@ -18413,14 +18413,14 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/utils/signature/hashTypedData.js
   function hashTypedData(parameters) {
-    const { domain: domain2 = {}, message, primaryType } = parameters;
+    const { domain: domain2 = {}, message: message2, primaryType } = parameters;
     const types = {
       EIP712Domain: getTypesForEIP712Domain({ domain: domain2 }),
       ...parameters.types
     };
     validateTypedData({
       domain: domain2,
-      message,
+      message: message2,
       primaryType,
       types
     });
@@ -18432,7 +18432,7 @@ ${prettyStateOverride(stateOverride)}`;
       }));
     if (primaryType !== "EIP712Domain")
       parts.push(hashStruct({
-        data: message,
+        data: message2,
         primaryType,
         types
       }));
@@ -20599,8 +20599,8 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/utils/signature/recoverMessageAddress.js
-  async function recoverMessageAddress({ message, signature }) {
-    return recoverAddress({ hash: hashMessage(message), signature });
+  async function recoverMessageAddress({ message: message2, signature }) {
+    return recoverAddress({ hash: hashMessage(message2), signature });
   }
   var init_recoverMessageAddress = __esm({
     "node_modules/viem/_esm/utils/signature/recoverMessageAddress.js"() {
@@ -20611,11 +20611,11 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/utils/signature/recoverTypedDataAddress.js
   async function recoverTypedDataAddress(parameters) {
-    const { domain: domain2, message, primaryType, signature, types } = parameters;
+    const { domain: domain2, message: message2, primaryType, signature, types } = parameters;
     return recoverAddress({
       hash: hashTypedData({
         domain: domain2,
-        message,
+        message: message2,
         primaryType,
         types
       }),
@@ -20689,8 +20689,8 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/utils/signature/verifyMessage.js
-  async function verifyMessage({ address, message, signature }) {
-    return isAddressEqual(getAddress(address), await recoverMessageAddress({ message, signature }));
+  async function verifyMessage({ address, message: message2, signature }) {
+    return isAddressEqual(getAddress(address), await recoverMessageAddress({ message: message2, signature }));
   }
   var init_verifyMessage = __esm({
     "node_modules/viem/_esm/utils/signature/verifyMessage.js"() {
@@ -20702,10 +20702,10 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/utils/signature/verifyTypedData.js
   async function verifyTypedData(parameters) {
-    const { address, domain: domain2, message, primaryType, signature, types } = parameters;
+    const { address, domain: domain2, message: message2, primaryType, signature, types } = parameters;
     return isAddressEqual(getAddress(address), await recoverTypedDataAddress({
       domain: domain2,
-      message,
+      message: message2,
       primaryType,
       signature,
       types
@@ -22635,8 +22635,8 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/actions/public/verifyMessage.js
-  async function verifyMessage2(client, { address, message, factory, factoryData, signature, ...callRequest }) {
-    const hash4 = hashMessage(message);
+  async function verifyMessage2(client, { address, message: message2, factory, factoryData, signature, ...callRequest }) {
+    const hash4 = hashMessage(message2);
     return getAction(client, verifyHash2, "verifyHash")({
       address,
       factory,
@@ -22656,8 +22656,8 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/actions/public/verifyTypedData.js
   async function verifyTypedData2(client, parameters) {
-    const { address, factory, factoryData, signature, message, primaryType, types, domain: domain2, ...callRequest } = parameters;
-    const hash4 = hashTypedData({ message, primaryType, types, domain: domain2 });
+    const { address, factory, factoryData, signature, message: message2, primaryType, types, domain: domain2, ...callRequest } = parameters;
+    const hash4 = hashTypedData({ message: message2, primaryType, types, domain: domain2 });
     return getAction(client, verifyHash2, "verifyHash")({
       address,
       factory,
@@ -23521,9 +23521,9 @@ ${prettyStateOverride(stateOverride)}`;
       return new Date(Number.NaN);
     return new Date(value);
   }
-  function parseSiweMessage(message) {
-    const { scheme, statement, ...prefix } = message.match(prefixRegex)?.groups ?? {};
-    const { chainId, expirationTime, issuedAt, notBefore, requestId, resources: resources_, ...suffix } = message.match(suffixRegex)?.groups ?? {};
+  function parseSiweMessage(message2) {
+    const { scheme, statement, ...prefix } = message2.match(prefixRegex)?.groups ?? {};
+    const { chainId, expirationTime, issuedAt, notBefore, requestId, resources: resources_, ...suffix } = message2.match(suffixRegex)?.groups ?? {};
     const resources = resources_?.split("\n- ").slice(1);
     return {
       ...prefix,
@@ -23549,33 +23549,33 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/utils/siwe/validateSiweMessage.js
   function validateSiweMessage(parameters) {
-    const { address, domain: domain2, message, nonce, scheme, time: time3 = /* @__PURE__ */ new Date() } = parameters;
-    if (domain2 && message.domain !== domain2)
+    const { address, domain: domain2, message: message2, nonce, scheme, time: time3 = /* @__PURE__ */ new Date() } = parameters;
+    if (domain2 && message2.domain !== domain2)
       return false;
-    if (nonce && message.nonce !== nonce)
+    if (nonce && message2.nonce !== nonce)
       return false;
-    if (scheme && message.scheme !== scheme)
+    if (scheme && message2.scheme !== scheme)
       return false;
     if (Number.isNaN(time3.getTime()))
       return false;
-    if (message.expirationTime) {
-      if (Number.isNaN(message.expirationTime.getTime()))
+    if (message2.expirationTime) {
+      if (Number.isNaN(message2.expirationTime.getTime()))
         return false;
-      if (time3 >= message.expirationTime)
+      if (time3 >= message2.expirationTime)
         return false;
     }
-    if (message.notBefore) {
-      if (Number.isNaN(message.notBefore.getTime()))
+    if (message2.notBefore) {
+      if (Number.isNaN(message2.notBefore.getTime()))
         return false;
-      if (time3 < message.notBefore)
+      if (time3 < message2.notBefore)
         return false;
     }
     try {
-      if (!message.address)
+      if (!message2.address)
         return false;
-      if (!isAddress(message.address, { strict: false }))
+      if (!isAddress(message2.address, { strict: false }))
         return false;
-      if (address && !isAddressEqual(message.address, address))
+      if (address && !isAddressEqual(message2.address, address))
         return false;
     } catch {
       return false;
@@ -23591,8 +23591,8 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/actions/siwe/verifySiweMessage.js
   async function verifySiweMessage(client, parameters) {
-    const { address, domain: domain2, message, nonce, scheme, signature, time: time3 = /* @__PURE__ */ new Date(), ...callRequest } = parameters;
-    const parsed = parseSiweMessage(message);
+    const { address, domain: domain2, message: message2, nonce, scheme, signature, time: time3 = /* @__PURE__ */ new Date(), ...callRequest } = parameters;
+    const parsed = parseSiweMessage(message2);
     if (!parsed.address)
       return false;
     const isValid = validateSiweMessage({
@@ -23605,7 +23605,7 @@ ${prettyStateOverride(stateOverride)}`;
     });
     if (!isValid)
       return false;
-    const hash4 = hashMessage(message);
+    const hash4 = hashMessage(message2);
     return verifyHash2(client, {
       address: parsed.address,
       hash: hash4,
@@ -25037,9 +25037,9 @@ ${prettyStateOverride(stateOverride)}`;
       name: name2,
       type: "testClient"
     });
-    return client.extend((config2) => ({
+    return client.extend((config3) => ({
       mode,
-      ...testActions({ mode })(config2)
+      ...testActions({ mode })(config3)
     }));
   }
   var init_createTestClient = __esm({
@@ -25266,20 +25266,20 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/actions/wallet/signMessage.js
-  async function signMessage(client, { account: account_ = client.account, message }) {
+  async function signMessage(client, { account: account_ = client.account, message: message2 }) {
     if (!account_)
       throw new AccountNotFoundError({
         docsPath: "/docs/actions/wallet/signMessage"
       });
     const account = parseAccount(account_);
     if (account.signMessage)
-      return account.signMessage({ message });
+      return account.signMessage({ message: message2 });
     const message_ = (() => {
-      if (typeof message === "string")
-        return stringToHex(message);
-      if (message.raw instanceof Uint8Array)
-        return toHex(message.raw);
-      return message.raw;
+      if (typeof message2 === "string")
+        return stringToHex(message2);
+      if (message2.raw instanceof Uint8Array)
+        return toHex(message2.raw);
+      return message2.raw;
     })();
     return client.request({
       method: "personal_sign",
@@ -25349,7 +25349,7 @@ ${prettyStateOverride(stateOverride)}`;
 
   // node_modules/viem/_esm/actions/wallet/signTypedData.js
   async function signTypedData(client, parameters) {
-    const { account: account_ = client.account, domain: domain2, message, primaryType } = parameters;
+    const { account: account_ = client.account, domain: domain2, message: message2, primaryType } = parameters;
     if (!account_)
       throw new AccountNotFoundError({
         docsPath: "/docs/actions/wallet/signTypedData"
@@ -25359,10 +25359,10 @@ ${prettyStateOverride(stateOverride)}`;
       EIP712Domain: getTypesForEIP712Domain({ domain: domain2 }),
       ...parameters.types
     };
-    validateTypedData({ domain: domain2, message, primaryType, types });
+    validateTypedData({ domain: domain2, message: message2, primaryType, types });
     if (account.signTypedData)
-      return account.signTypedData({ domain: domain2, message, primaryType, types });
-    const typedData = serializeTypedData({ domain: domain2, message, primaryType, types });
+      return account.signTypedData({ domain: domain2, message: message2, primaryType, types });
+    const typedData = serializeTypedData({ domain: domain2, message: message2, primaryType, types });
     return client.request({
       method: "eth_signTypedData_v4",
       params: [account.address, typedData]
@@ -25525,14 +25525,14 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/clients/transports/custom.js
-  function custom(provider, config2 = {}) {
-    const { key = "custom", methods, name: name2 = "Custom Provider", retryDelay } = config2;
+  function custom(provider, config3 = {}) {
+    const { key = "custom", methods, name: name2 = "Custom Provider", retryDelay } = config3;
     return ({ retryCount: defaultRetryCount }) => createTransport({
       key,
       methods,
       name: name2,
       request: provider.request.bind(provider),
-      retryCount: config2.retryCount ?? defaultRetryCount,
+      retryCount: config3.retryCount ?? defaultRetryCount,
       retryDelay,
       type: "custom"
     });
@@ -25544,8 +25544,8 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/clients/transports/fallback.js
-  function fallback(transports_, config2 = {}) {
-    const { key = "fallback", name: name2 = "Fallback", rank = false, shouldThrow: shouldThrow_ = shouldThrow, retryCount, retryDelay } = config2;
+  function fallback(transports_, config3 = {}) {
+    const { key = "fallback", name: name2 = "Fallback", rank = false, shouldThrow: shouldThrow_ = shouldThrow, retryCount, retryDelay } = config3;
     return (({ chain: chain2, pollingInterval = 4e3, timeout, ...rest }) => {
       let transports = transports_;
       let onResponse = () => {
@@ -25714,12 +25714,12 @@ ${prettyStateOverride(stateOverride)}`;
     signalIds.set(signal, nextId);
     return nextId;
   }
-  function http(url2, config2 = {}) {
-    const { batch, fetchFn, fetchOptions, key = "http", maxResponseBodySize, methods, name: name2 = "HTTP JSON-RPC", onFetchRequest, onFetchResponse, retryDelay, raw } = config2;
+  function http(url2, config3 = {}) {
+    const { batch, fetchFn, fetchOptions, key = "http", maxResponseBodySize, methods, name: name2 = "HTTP JSON-RPC", onFetchRequest, onFetchResponse, retryDelay, raw } = config3;
     return ({ chain: chain2, retryCount: retryCount_, timeout: timeout_ }) => {
       const { batchSize = 1e3, wait: wait2 = 0 } = typeof batch === "object" ? batch : {};
-      const retryCount = config2.retryCount ?? retryCount_;
-      const timeout = timeout_ ?? config2.timeout ?? 1e4;
+      const retryCount = config3.retryCount ?? retryCount_;
+      const timeout = timeout_ ?? config3.timeout ?? 1e4;
       const url_ = url2 || chain2?.rpcUrls.default.http[0];
       if (!url_)
         throw new UrlRequiredError();
@@ -25795,11 +25795,11 @@ ${prettyStateOverride(stateOverride)}`;
   });
 
   // node_modules/viem/_esm/clients/transports/webSocket.js
-  function webSocket(url2, config2 = {}) {
-    const { keepAlive, key = "webSocket", methods, name: name2 = "WebSocket JSON-RPC", reconnect, retryDelay } = config2;
+  function webSocket(url2, config3 = {}) {
+    const { keepAlive, key = "webSocket", methods, name: name2 = "WebSocket JSON-RPC", reconnect, retryDelay } = config3;
     return ({ chain: chain2, retryCount: retryCount_, timeout: timeout_ }) => {
-      const retryCount = config2.retryCount ?? retryCount_;
-      const timeout = timeout_ ?? config2.timeout ?? 1e4;
+      const retryCount = config3.retryCount ?? retryCount_;
+      const timeout = timeout_ ?? config3.timeout ?? 1e4;
       const url_ = url2 || chain2?.rpcUrls.default.webSocket?.[0];
       const wsRpcClientOpts = { keepAlive, reconnect };
       if (!url_)
@@ -25935,8 +25935,8 @@ ${prettyStateOverride(stateOverride)}`;
   var init_eip1193 = __esm({
     "node_modules/viem/_esm/types/eip1193.js"() {
       ProviderRpcError2 = class extends Error {
-        constructor(code2, message) {
-          super(message);
+        constructor(code2, message2) {
+          super(message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -25950,7 +25950,7 @@ ${prettyStateOverride(stateOverride)}`;
             value: void 0
           });
           this.code = code2;
-          this.details = message;
+          this.details = message2;
         }
       };
     }
@@ -27957,10 +27957,10 @@ ${prettyStateOverride(stateOverride)}`;
         return getFromWindowOrThrow("crypto");
       }
       exports.getCryptoOrThrow = getCryptoOrThrow;
-      function getCrypto() {
+      function getCrypto2() {
         return getFromWindow("crypto");
       }
-      exports.getCrypto = getCrypto;
+      exports.getCrypto = getCrypto2;
       function getLocalStorageOrThrow() {
         return getFromWindowOrThrow("localStorage");
       }
@@ -28574,8 +28574,8 @@ ${prettyStateOverride(stateOverride)}`;
   var init_DecodeError = __esm({
     "node_modules/@msgpack/msgpack/dist.esm/DecodeError.mjs"() {
       DecodeError = class _DecodeError extends Error {
-        constructor(message) {
-          super(message);
+        constructor(message2) {
+          super(message2);
           const proto = Object.create(_DecodeError.prototype);
           Object.setPrototypeOf(this, proto);
           Object.defineProperty(this, "name", {
@@ -31144,11 +31144,11 @@ ${prettyStateOverride(stateOverride)}`;
         configurable: false
       };
       version6 = "0.0.0-dev";
-      deprecate = (range, message) => {
+      deprecate = (range, message2) => {
         if (range.test(version6)) {
-          console.warn(message);
+          console.warn(message2);
         } else {
-          throw new Error(message);
+          throw new Error(message2);
         }
       };
       IS_CID_DEPRECATION = `CID.isCID(v) is deprecated and will be removed in the next major release.
@@ -35698,10 +35698,10 @@ if (cid) {
           try {
             new exports2.DOMException();
           } catch (err) {
-            exports2.DOMException = function(message, name2) {
-              this.message = message;
+            exports2.DOMException = function(message2, name2) {
+              this.message = message2;
               this.name = name2;
-              var error62 = Error(message);
+              var error62 = Error(message2);
               this.stack = error62.stack;
             };
             exports2.DOMException.prototype = Object.create(Error.prototype);
@@ -37050,8 +37050,8 @@ if (cid) {
             return false;
           }
         },
-        isUserRejectedMessage(message) {
-          return message.toLowerCase().includes("user rejected") || message.toLowerCase().includes("user cancelled") || message.toLowerCase().includes("user canceled");
+        isUserRejectedMessage(message2) {
+          return message2.toLowerCase().includes("user rejected") || message2.toLowerCase().includes("user cancelled") || message2.toLowerCase().includes("user canceled");
         },
         isUserRejectedRequestError(error62) {
           if (ErrorUtil.isRpcProviderError(error62)) {
@@ -39659,17 +39659,17 @@ if (cid) {
         subscribeKey(key, callback) {
           return subscribeKey(state2, key, callback);
         },
-        showLoading(message, options = {}) {
-          this._showMessage({ message, variant: "loading", ...options });
+        showLoading(message2, options = {}) {
+          this._showMessage({ message: message2, variant: "loading", ...options });
         },
-        showSuccess(message) {
-          this._showMessage({ message, variant: "success" });
+        showSuccess(message2) {
+          this._showMessage({ message: message2, variant: "success" });
         },
-        showSvg(message, svg) {
-          this._showMessage({ message, svg });
+        showSvg(message2, svg) {
+          this._showMessage({ message: message2, svg });
         },
-        showError(message) {
-          const errorMessage = CoreHelperUtil.parseError(message);
+        showError(message2) {
+          const errorMessage = CoreHelperUtil.parseError(message2);
           this._showMessage({ message: errorMessage, variant: "error" });
         },
         hide() {
@@ -39679,18 +39679,18 @@ if (cid) {
           state2.open = DEFAULT_STATE.open;
           state2.autoClose = DEFAULT_STATE.autoClose;
         },
-        _showMessage({ message, svg, variant = "success", autoClose = DEFAULT_STATE.autoClose }) {
+        _showMessage({ message: message2, svg, variant = "success", autoClose = DEFAULT_STATE.autoClose }) {
           if (state2.open) {
             state2.open = false;
             setTimeout(() => {
-              state2.message = message;
+              state2.message = message2;
               state2.variant = variant;
               state2.svg = svg;
               state2.open = true;
               state2.autoClose = autoClose;
             }, 150);
           } else {
-            state2.message = message;
+            state2.message = message2;
             state2.variant = variant;
             state2.svg = svg;
             state2.open = true;
@@ -40095,14 +40095,14 @@ if (cid) {
             params: { zone: "reown.id" }
           });
         },
-        async registerEnsName({ coinType, address, message, signature }) {
+        async registerEnsName({ coinType, address, message: message2, signature }) {
           const isSupported = await BlockchainApiController.isNetworkSupported(ChainController.state.activeCaipNetwork?.caipNetworkId);
           if (!isSupported) {
             return { success: false };
           }
           return state3.api.post({
             path: `/v1/profile/account`,
-            body: { coin_type: coinType, address, message, signature },
+            body: { coin_type: coinType, address, message: message2, signature },
             headers: {
               "Content-Type": "application/json"
             }
@@ -40361,8 +40361,8 @@ if (cid) {
     "node_modules/@reown/appkit-controllers/dist/esm/src/utils/withErrorBoundary.js"() {
       init_TelemetryController();
       AppKitError = class _AppKitError extends Error {
-        constructor(message, category, originalError) {
-          super(message);
+        constructor(message2, category, originalError) {
+          super(message2);
           this.originalName = "AppKitError";
           this.name = "AppKitError";
           this.category = category;
@@ -42329,12 +42329,12 @@ ${originalFrames}`;
         isSocialProvider(socialProvider) {
           return ConstantsUtil2.DEFAULT_REMOTE_FEATURES.socials.includes(socialProvider);
         },
-        connectWalletConnect({ walletConnect, connector, closeModalOnConnect = true, redirectViewOnModalClose = "Connect", onOpen, onConnect }) {
+        connectWalletConnect({ walletConnect: walletConnect2, connector, closeModalOnConnect = true, redirectViewOnModalClose = "Connect", onOpen, onConnect }) {
           return new Promise((resolve, reject) => {
-            if (walletConnect) {
+            if (walletConnect2) {
               ConnectorController.setActiveConnector(connector);
             }
-            onOpen?.(CoreHelperUtil.isMobile() && walletConnect);
+            onOpen?.(CoreHelperUtil.isMobile() && walletConnect2);
             if (redirectViewOnModalClose) {
               const unsubscribeModalController = ModalController.subscribeKey("open", (val) => {
                 if (!val) {
@@ -42986,8 +42986,8 @@ ${originalFrames}`;
             }
           });
         },
-        async signMessage(message) {
-          return ConnectionController._getClient()?.signMessage(message);
+        async signMessage(message2) {
+          return ConnectionController._getClient()?.signMessage(message2);
         },
         parseUnits(value, decimals) {
           return ConnectionController._getClient()?.parseUnits(value, decimals);
@@ -45048,7 +45048,7 @@ ${originalFrames}`;
           }
           state21.loading = true;
           try {
-            const message = JSON.stringify({
+            const message2 = JSON.stringify({
               name: name2,
               attributes: {},
               // Unix timestamp
@@ -45059,7 +45059,7 @@ ${originalFrames}`;
                 RouterController.replace("RegisterAccountName");
               }
             });
-            const signature = await ConnectionController.signMessage(message);
+            const signature = await ConnectionController.signMessage(message2);
             state21.loading = false;
             const networkId = network.id;
             if (!networkId) {
@@ -45070,7 +45070,7 @@ ${originalFrames}`;
               coinType,
               address,
               signature,
-              message
+              message: message2
             });
             ChainController.setAccountProp("profileName", name2, network.chainNamespace);
             StorageUtil.updateEnsCache({
@@ -46097,11 +46097,11 @@ ${originalFrames}`;
               chainId: network.caipNetworkId,
               accountAddress: address
             });
-            const message = siwxMessage.toString();
+            const message2 = siwxMessage.toString();
             let signature = "";
             if (siwx.signMessage) {
               signature = await siwx.signMessage({
-                message,
+                message: message2,
                 chainId: network.caipNetworkId,
                 accountAddress: address
               });
@@ -46110,11 +46110,11 @@ ${originalFrames}`;
               if (connectorId === ConstantsUtil.CONNECTOR_ID.AUTH) {
                 RouterController.pushTransactionStack({});
               }
-              signature = await ConnectionController.signMessage(message) || "";
+              signature = await ConnectionController.signMessage(message2) || "";
             }
             await siwx.addSession({
               data: siwxMessage,
-              message,
+              message: message2,
               signature
             });
             ChainController.setLastConnectedSIWECaipNetwork(network);
@@ -46263,7 +46263,7 @@ ${originalFrames}`;
             accounts: result.accounts
           };
         },
-        async addEmbeddedWalletSession(siwxMessageData, message, signature) {
+        async addEmbeddedWalletSession(siwxMessageData, message2, signature) {
           if (addEmbeddedWalletSessionPromise) {
             return addEmbeddedWalletSessionPromise;
           }
@@ -46273,7 +46273,7 @@ ${originalFrames}`;
           }
           addEmbeddedWalletSessionPromise = siwx.addSession({
             data: siwxMessageData,
-            message,
+            message: message2,
             signature
           }).finally(() => {
             addEmbeddedWalletSessionPromise = null;
@@ -46317,7 +46317,7 @@ ${originalFrames}`;
           ChainController.setAccountProp("connectedWalletInfo", walletInfo, Array.from(namespaces)[0]);
           if (result?.auths?.length) {
             const sessions = result.auths.map((cacao) => {
-              const message = universalProvider.client.formatAuthMessage({
+              const message2 = universalProvider.client.formatAuthMessage({
                 request: cacao.p,
                 iss: cacao.p.iss
               });
@@ -46332,7 +46332,7 @@ ${originalFrames}`;
                   issuedAt: cacao.p.iat,
                   notBefore: cacao.p.nbf
                 },
-                message,
+                message: message2,
                 signature: cacao.s.s,
                 cacao
               };
@@ -46530,9 +46530,9 @@ ${originalFrames}`;
         subscribeKey(key, callback) {
           return subscribeKey(state22, key, callback);
         },
-        open(message, variant) {
+        open(message2, variant) {
           const { debug } = OptionsController.state;
-          const { code: code2, displayMessage, debugMessage } = message;
+          const { code: code2, displayMessage, debugMessage } = message2;
           if (displayMessage && debug) {
             state22.message = displayMessage;
             state22.variant = variant;
@@ -47255,9 +47255,9 @@ ${originalFrames}`;
         subscribeKey(key, callback) {
           return subscribeKey(state24, key, callback);
         },
-        showTooltip({ message, triggerRect, variant }) {
+        showTooltip({ message: message2, triggerRect, variant }) {
           state24.open = true;
-          state24.message = message;
+          state24.message = message2;
           state24.triggerRect = triggerRect;
           state24.variant = variant;
         },
@@ -47517,7 +47517,7 @@ ${originalFrames}`;
           })();
           const docsBaseUrl = "https://oxlib.sh";
           const docs = `${docsBaseUrl}${docsPath9 ?? ""}`;
-          const message = [
+          const message2 = [
             shortMessage || "An error occurred.",
             ...options.metaMessages ? ["", ...options.metaMessages] : [],
             ...details || docsPath9 ? [
@@ -47526,7 +47526,7 @@ ${originalFrames}`;
               docsPath9 ? `See: ${docs}` : void 0
             ] : []
           ].filter((x13) => typeof x13 === "string").join("\n");
-          super(message, options.cause ? { cause: options.cause } : void 0);
+          super(message2, options.cause ? { cause: options.cause } : void 0);
           Object.defineProperty(this, "details", {
             enumerable: true,
             configurable: true,
@@ -49505,7 +49505,7 @@ ${originalFrames}`;
           this.iHash.destroy();
         }
       };
-      hmac3 = (hash4, key, message) => new HMAC3(hash4, key).update(message).digest();
+      hmac3 = (hash4, key, message2) => new HMAC3(hash4, key).update(message2).digest();
       hmac3.create = (hash4, key) => new HMAC3(hash4, key);
     }
   });
@@ -51574,8 +51574,8 @@ ${originalFrames}`;
     "node_modules/@reown/appkit/node_modules/ox/_esm/core/RpcResponse.js"() {
       BaseError6 = class extends Error {
         constructor(errorObject) {
-          const { cause, code: code2, message, data, stack } = errorObject;
-          super(message, { cause });
+          const { cause, code: code2, message: message2, data, stack } = errorObject;
+          super(message2, { cause });
           Object.defineProperty(this, "name", {
             enumerable: true,
             configurable: true,
@@ -51947,8 +51947,8 @@ ${originalFrames}`;
     "node_modules/@reown/appkit/node_modules/ox/_esm/core/Provider.js"() {
       init_eventemitter3();
       ProviderRpcError4 = class extends Error {
-        constructor(code2, message) {
-          super(message);
+        constructor(code2, message2) {
+          super(message2);
           Object.defineProperty(this, "name", {
             enumerable: true,
             configurable: true,
@@ -51968,12 +51968,12 @@ ${originalFrames}`;
             value: void 0
           });
           this.code = code2;
-          this.details = message;
+          this.details = message2;
         }
       };
       UserRejectedRequestError3 = class extends ProviderRpcError4 {
-        constructor({ message = "The user rejected the request." } = {}) {
-          super(4001, message);
+        constructor({ message: message2 = "The user rejected the request." } = {}) {
+          super(4001, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -51995,8 +51995,8 @@ ${originalFrames}`;
         value: 4001
       });
       UnauthorizedError = class extends ProviderRpcError4 {
-        constructor({ message = "The requested method and/or account has not been authorized by the user." } = {}) {
-          super(4100, message);
+        constructor({ message: message2 = "The requested method and/or account has not been authorized by the user." } = {}) {
+          super(4100, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52018,8 +52018,8 @@ ${originalFrames}`;
         value: 4100
       });
       UnsupportedMethodError = class extends ProviderRpcError4 {
-        constructor({ message = "The provider does not support the requested method." } = {}) {
-          super(4200, message);
+        constructor({ message: message2 = "The provider does not support the requested method." } = {}) {
+          super(4200, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52041,8 +52041,8 @@ ${originalFrames}`;
         value: 4200
       });
       DisconnectedError = class extends ProviderRpcError4 {
-        constructor({ message = "The provider is disconnected from all chains." } = {}) {
-          super(4900, message);
+        constructor({ message: message2 = "The provider is disconnected from all chains." } = {}) {
+          super(4900, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52064,8 +52064,8 @@ ${originalFrames}`;
         value: 4900
       });
       ChainDisconnectedError2 = class extends ProviderRpcError4 {
-        constructor({ message = "The provider is not connected to the requested chain." } = {}) {
-          super(4901, message);
+        constructor({ message: message2 = "The provider is not connected to the requested chain." } = {}) {
+          super(4901, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52087,8 +52087,8 @@ ${originalFrames}`;
         value: 4901
       });
       SwitchChainError2 = class extends ProviderRpcError4 {
-        constructor({ message = "An error occurred when attempting to switch chain." } = {}) {
-          super(4902, message);
+        constructor({ message: message2 = "An error occurred when attempting to switch chain." } = {}) {
+          super(4902, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52110,8 +52110,8 @@ ${originalFrames}`;
         value: 4902
       });
       UnsupportedNonOptionalCapabilityError2 = class extends ProviderRpcError4 {
-        constructor({ message = "This Wallet does not support a capability that was not marked as optional." } = {}) {
-          super(5700, message);
+        constructor({ message: message2 = "This Wallet does not support a capability that was not marked as optional." } = {}) {
+          super(5700, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52133,8 +52133,8 @@ ${originalFrames}`;
         value: 5700
       });
       UnsupportedChainIdError2 = class extends ProviderRpcError4 {
-        constructor({ message = "This Wallet does not support the requested chain ID." } = {}) {
-          super(5710, message);
+        constructor({ message: message2 = "This Wallet does not support the requested chain ID." } = {}) {
+          super(5710, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52156,8 +52156,8 @@ ${originalFrames}`;
         value: 5710
       });
       DuplicateIdError2 = class extends ProviderRpcError4 {
-        constructor({ message = "There is already a bundle submitted with this ID." } = {}) {
-          super(5720, message);
+        constructor({ message: message2 = "There is already a bundle submitted with this ID." } = {}) {
+          super(5720, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52179,8 +52179,8 @@ ${originalFrames}`;
         value: 5720
       });
       UnknownBundleIdError2 = class extends ProviderRpcError4 {
-        constructor({ message = "This bundle id is unknown / has not been submitted." } = {}) {
-          super(5730, message);
+        constructor({ message: message2 = "This bundle id is unknown / has not been submitted." } = {}) {
+          super(5730, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52202,8 +52202,8 @@ ${originalFrames}`;
         value: 5730
       });
       BundleTooLargeError2 = class extends ProviderRpcError4 {
-        constructor({ message = "The call bundle is too large for the Wallet to process." } = {}) {
-          super(5740, message);
+        constructor({ message: message2 = "The call bundle is too large for the Wallet to process." } = {}) {
+          super(5740, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52225,8 +52225,8 @@ ${originalFrames}`;
         value: 5740
       });
       AtomicReadyWalletRejectedUpgradeError2 = class extends ProviderRpcError4 {
-        constructor({ message = "The Wallet can support atomicity after an upgrade, but the user rejected the upgrade." } = {}) {
-          super(5750, message);
+        constructor({ message: message2 = "The Wallet can support atomicity after an upgrade, but the user rejected the upgrade." } = {}) {
+          super(5750, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -52248,8 +52248,8 @@ ${originalFrames}`;
         value: 5750
       });
       AtomicityNotSupportedError2 = class extends ProviderRpcError4 {
-        constructor({ message = "The wallet does not support atomic execution but the request requires it." } = {}) {
-          super(5760, message);
+        constructor({ message: message2 = "The wallet does not support atomic execution but the request requires it." } = {}) {
+          super(5760, message2);
           Object.defineProperty(this, "code", {
             enumerable: true,
             configurable: true,
@@ -62662,7 +62662,7 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
           };
         }
         async signMessage(params) {
-          const { provider, message, address } = params;
+          const { provider, message: message2, address } = params;
           if (!provider) {
             throw new Error("UniversalAdapter:signMessage - provider is undefined");
           }
@@ -62671,7 +62671,7 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
             const response = await provider.request({
               method: "solana_signMessage",
               params: {
-                message: esm_default2.encode(new TextEncoder().encode(message)),
+                message: esm_default2.encode(new TextEncoder().encode(message2)),
                 pubkey: address
               }
             }, ChainController.state.activeCaipNetwork?.caipNetworkId);
@@ -62679,7 +62679,7 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
           } else {
             signature = await provider.request({
               method: "personal_sign",
-              params: [message, address]
+              params: [message2, address]
             }, ChainController.state.activeCaipNetwork?.caipNetworkId);
           }
           return { signature };
@@ -62808,8 +62808,8 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
             if (!apiConfig?.config) {
               return false;
             }
-            const config2 = apiConfig.config;
-            return Boolean(apiConfig.isEnabled) && config2.includes("email");
+            const config3 = apiConfig.config;
+            return Boolean(apiConfig.isEnabled) && config3.includes("email");
           },
           processFallback: (localValue) => {
             if (localValue === void 0) {
@@ -62828,8 +62828,8 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
             if (!apiConfig?.config) {
               return false;
             }
-            const config2 = apiConfig.config;
-            return Boolean(apiConfig.isEnabled) && config2.length > 0 ? config2.filter((s23) => s23 !== "email") : false;
+            const config3 = apiConfig.config;
+            return Boolean(apiConfig.isEnabled) && config3.length > 0 ? config3.filter((s23) => s23 !== "email") : false;
           },
           processFallback: (localValue) => {
             if (localValue === void 0) {
@@ -62851,8 +62851,8 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
             if (!apiConfig?.config) {
               return false;
             }
-            const config2 = apiConfig.config;
-            return Boolean(apiConfig.isEnabled) && config2.length > 0 ? config2 : false;
+            const config3 = apiConfig.config;
+            return Boolean(apiConfig.isEnabled) && config3.length > 0 ? config3 : false;
           },
           processFallback: (localValue) => {
             if (localValue === void 0) {
@@ -62874,8 +62874,8 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
             if (!apiConfig?.config) {
               return false;
             }
-            const config2 = apiConfig.config;
-            return Boolean(apiConfig.isEnabled) && config2.length > 0 ? config2 : false;
+            const config3 = apiConfig.config;
+            return Boolean(apiConfig.isEnabled) && config3.length > 0 ? config3 : false;
           },
           processFallback: (localValue) => {
             if (localValue === void 0) {
@@ -62982,19 +62982,19 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
         },
         addWarning(localFeatureValue, featureKey) {
           if (localFeatureValue !== void 0) {
-            const config2 = featureConfig[featureKey];
-            const warningName = config2.isLegacy ? `"features.${config2.localFeatureName}" (now "${featureKey}")` : `"features.${featureKey}"`;
+            const config3 = featureConfig[featureKey];
+            const warningName = config3.isLegacy ? `"features.${config3.localFeatureName}" (now "${featureKey}")` : `"features.${featureKey}"`;
             this.localSettingsOverridden.add(warningName);
           }
         },
         processFeature(featureKey, localFeatures, apiProjectConfig, useApi, isBasic) {
-          const config2 = featureConfig[featureKey];
-          const localValue = localFeatures[config2.localFeatureName];
-          if (isBasic && !config2.isAvailableOnBasic) {
+          const config3 = featureConfig[featureKey];
+          const localValue = localFeatures[config3.localFeatureName];
+          if (isBasic && !config3.isAvailableOnBasic) {
             return false;
           }
           if (useApi) {
-            const apiConfig = this.getApiConfig(config2.apiFeatureName, apiProjectConfig);
+            const apiConfig = this.getApiConfig(config3.apiFeatureName, apiProjectConfig);
             if (apiConfig?.config === null) {
               return this.processFallbackFeature(featureKey, localValue);
             }
@@ -63014,9 +63014,9 @@ NPM Registry: https://www.npmjs.com/package/@reown/appkit`;
         processFallbackFeature(featureKey, localValue) {
           return featureConfig[featureKey].processFallback(localValue);
         },
-        async fetchRemoteFeatures(config2) {
-          const isBasic = config2.basic ?? false;
-          const localFeatures = config2.features || {};
+        async fetchRemoteFeatures(config3) {
+          const isBasic = config3.basic ?? false;
+          const localFeatures = config3.features || {};
           this.localSettingsOverridden.clear();
           let apiProjectConfig = null;
           let shouldUseApiConfig = false;
@@ -63670,8 +63670,8 @@ ${params.statement}
                 resolve({ hash: hash4 });
               }
             });
-            const unsubscribeModal = ModalController.subscribe((modal) => {
-              if (!modal.open) {
+            const unsubscribeModal = ModalController.subscribe((modal2) => {
+              if (!modal2.open) {
                 cleanup();
                 reject(new Error("Modal closed"));
               }
@@ -64013,7 +64013,7 @@ ${params.statement}
               }
               return ids.some((id) => Boolean(window.ethereum?.[String(id)]));
             },
-            signMessage: async (message) => {
+            signMessage: async (message2) => {
               const namespace = ChainController.state.activeChain;
               const adapter = this.getAdapter(ChainController.state.activeChain);
               if (!namespace) {
@@ -64027,7 +64027,7 @@ ${params.statement}
                 throw new Error("signMessage: address not found");
               }
               const result = await adapter?.signMessage({
-                message,
+                message: message2,
                 address,
                 provider: ProviderController.getProvider(namespace)
               });
@@ -64907,10 +64907,10 @@ ${params.statement}
         }
         // - Utils -------------------------------------------------------------------
         handleAlertError(error62) {
-          const matchedUniversalProviderError = Object.entries(ErrorUtil2.UniversalProviderErrors).find(([, { message: message2 }]) => error62.message.includes(message2));
+          const matchedUniversalProviderError = Object.entries(ErrorUtil2.UniversalProviderErrors).find(([, { message: message3 }]) => error62.message.includes(message3));
           const [errorKey, errorValue] = matchedUniversalProviderError ?? [];
-          const { message, alertErrorKey } = errorValue ?? {};
-          if (errorKey && message && !this.reportedAlertErrors[errorKey]) {
+          const { message: message2, alertErrorKey } = errorValue ?? {};
+          if (errorKey && message2 && !this.reportedAlertErrors[errorKey]) {
             const alertError = ErrorUtil2.ALERT_ERRORS[alertErrorKey];
             if (alertError) {
               AlertController.open(alertError, "error");
@@ -65138,11 +65138,11 @@ ${params.statement}
         subscribeRemoteFeatures(callback) {
           return OptionsController.subscribeKey("remoteFeatures", callback);
         }
-        showErrorMessage(message) {
-          SnackController.showError(message);
+        showErrorMessage(message2) {
+          SnackController.showError(message2);
         }
-        showSuccessMessage(message) {
-          SnackController.showSuccess(message);
+        showSuccessMessage(message2) {
+          SnackController.showSuccess(message2);
         }
         getEvent() {
           return { ...EventsController.state };
@@ -76881,7 +76881,7 @@ ${params.statement}
           throw new Error("You need to specify a canvas element");
         }
       }
-      exports.render = function render(qrData, canvas, options) {
+      exports.render = function render2(qrData, canvas, options) {
         let opts = options;
         let canvasEl = canvas;
         if (typeof opts === "undefined" && (!canvas || !canvas.getContext)) {
@@ -76955,7 +76955,7 @@ ${params.statement}
         }
         return path;
       }
-      exports.render = function render(qrData, options, cb) {
+      exports.render = function render2(qrData, options, cb) {
         const opts = Utils.getOptions(options);
         const size9 = qrData.modules.size;
         const data = qrData.modules.data;
@@ -80447,11 +80447,11 @@ ${params.statement}
           this.unsubscribe.forEach((unsubscribe) => unsubscribe());
         }
         render() {
-          const { message, variant } = AlertController.state;
+          const { message: message2, variant } = AlertController.state;
           const preset = presets[variant];
           return b9`
       <wui-alertbar
-        message=${message}
+        message=${message2}
         backgroundColor=${preset?.backgroundColor}
         iconColor=${preset?.iconColor}
         icon=${preset?.icon}
@@ -81913,18 +81913,18 @@ ${params.statement}
           state25.isFetchingQuote = false;
           state25.requestId = void 0;
         },
-        setPaymentConfig(config2) {
-          if (!config2.paymentAsset) {
+        setPaymentConfig(config3) {
+          if (!config3.paymentAsset) {
             throw new AppKitPayError(AppKitPayErrorCodes.INVALID_PAYMENT_CONFIG);
           }
           try {
-            state25.choice = config2.choice ?? "pay";
-            state25.paymentAsset = config2.paymentAsset;
-            state25.recipient = config2.recipient;
-            state25.amount = config2.amount;
-            state25.openInNewTab = config2.openInNewTab ?? true;
-            state25.redirectUrl = config2.redirectUrl;
-            state25.payWithExchange = config2.payWithExchange;
+            state25.choice = config3.choice ?? "pay";
+            state25.paymentAsset = config3.paymentAsset;
+            state25.recipient = config3.recipient;
+            state25.amount = config3.amount;
+            state25.openInNewTab = config3.openInNewTab ?? true;
+            state25.redirectUrl = config3.redirectUrl;
+            state25.payWithExchange = config3.payWithExchange;
             state25.error = null;
           } catch (error62) {
             throw new AppKitPayError(AppKitPayErrorCodes.INVALID_PAYMENT_CONFIG, error62.message);
@@ -82168,8 +82168,8 @@ ${params.statement}
         getExchangeById(exchangeId) {
           return state25.exchanges.find((exchange) => exchange.id === exchangeId);
         },
-        validatePayConfig(config2) {
-          const { paymentAsset, recipient, amount } = config2;
+        validatePayConfig(config3) {
+          const { paymentAsset, recipient, amount } = config3;
           if (!paymentAsset) {
             throw new AppKitPayError(AppKitPayErrorCodes.INVALID_PAYMENT_CONFIG);
           }
@@ -82293,8 +82293,8 @@ ${params.statement}
             const balances = await balancesFnPromise;
             state25.tokenBalances = { ...state25.tokenBalances, [namespace]: balances };
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Unable to get token balances";
-            SnackController.showError(message);
+            const message2 = err instanceof Error ? err.message : "Unable to get token balances";
+            SnackController.showError(message2);
           } finally {
             state25.isFetchingTokenBalances = false;
           }
@@ -85558,8 +85558,8 @@ ${params.statement}
           this.unsubscribe.forEach((unsubscribe) => unsubscribe());
         }
         render() {
-          const { message, variant } = SnackController.state;
-          return b9` <wui-snackbar message=${message} variant=${variant}></wui-snackbar> `;
+          const { message: message2, variant } = SnackController.state;
+          return b9` <wui-snackbar message=${message2} variant=${variant}></wui-snackbar> `;
         }
         onOpen() {
           clearTimeout(this.timeout);
@@ -87598,9 +87598,9 @@ ${params.statement}
             await Promise.resolve().then(() => (init_w3m_modal2(), w3m_modal_exports));
             const isElementCreated = document.querySelector("w3m-modal");
             if (!isElementCreated) {
-              const modal = document.createElement("w3m-modal");
+              const modal2 = document.createElement("w3m-modal");
               if (!OptionsController.state.disableAppend && !OptionsController.state.enableEmbedded) {
-                document.body.insertAdjacentElement("beforeend", modal);
+                document.body.insertAdjacentElement("beforeend", modal2);
               }
             }
             isInitialized = true;
@@ -87638,9 +87638,9 @@ ${params.statement}
     }
   });
 
-  // public/x402-client.js
-  var x402_client_exports = {};
-  __export(x402_client_exports, {
+  // public/payment-client.js
+  var payment_client_exports = {};
+  __export(payment_client_exports, {
     initPaymentUI: () => initPaymentUI
   });
   init_esm3();
@@ -88998,8 +88998,8 @@ ${params.statement}
       return iss;
     });
   }
-  function unwrapMessage(message) {
-    return typeof message === "string" ? message : message?.message;
+  function unwrapMessage(message2) {
+    return typeof message2 === "string" ? message2 : message2?.message;
   }
   function sizeCaps(defChecks) {
     const caps = [];
@@ -89019,7 +89019,7 @@ ${params.statement}
       (_a4 = issues[i11]).schema ?? (_a4.schema = inst);
     }
   }
-  function finalizeIssue(iss, ctx, config2) {
+  function finalizeIssue(iss, ctx, config3) {
     var _a4;
     const traits = iss.inst?._zod?.traits;
     if (traits?.has("$ZodType")) {
@@ -89029,7 +89029,7 @@ ${params.statement}
         iss.schema = iss.inst;
     }
     const schemaError = iss.schema !== iss.inst ? iss.schema?._zod.def?.error : void 0;
-    const message = iss.message ? iss.message : unwrapMessage(iss.inst?._zod.def?.error?.(iss)) ?? unwrapMessage(schemaError?.(iss)) ?? unwrapMessage(ctx?.error?.(iss)) ?? unwrapMessage(config2.customError?.(iss)) ?? unwrapMessage(config2.localeError?.(iss)) ?? "Invalid input";
+    const message2 = iss.message ? iss.message : unwrapMessage(iss.inst?._zod.def?.error?.(iss)) ?? unwrapMessage(schemaError?.(iss)) ?? unwrapMessage(ctx?.error?.(iss)) ?? unwrapMessage(config3.customError?.(iss)) ?? unwrapMessage(config3.localeError?.(iss)) ?? "Invalid input";
     const full = {};
     for (const k10 of Object.keys(iss)) {
       if (k10 === "inst" || k10 === "schema" || k10 === "continue" || k10 === "input" || k10 === "__proto__")
@@ -89037,7 +89037,7 @@ ${params.statement}
       full[k10] = iss[k10];
     }
     full.path ?? (full.path = []);
-    full.message = message;
+    full.message = message2;
     if (ctx?.reportInput) {
       full.input = iss.input;
     }
@@ -100776,8 +100776,8 @@ ${content.join("\n")}
   var INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
   var FALLBACK_FLAG = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
   var ZodCompileAsyncError = class extends Error {
-    constructor(message = "z.compile does not support async refinements, transforms, or checks") {
-      super(message);
+    constructor(message2 = "z.compile does not support async refinements, transforms, or checks") {
+      super(message2);
       this.name = "ZodCompileAsyncError";
     }
   };
@@ -103477,12 +103477,12 @@ ${code2}
       external: params?.external ?? void 0
     };
   }
-  function handleUnrepresentable(schema, ctx, json2, params, message) {
-    const result = typeof ctx.unrepresentable === "function" ? ctx.unrepresentable({ zodSchema: schema, path: params.path, message }) : ctx.unrepresentable;
+  function handleUnrepresentable(schema, ctx, json2, params, message2) {
+    const result = typeof ctx.unrepresentable === "function" ? ctx.unrepresentable({ zodSchema: schema, path: params.path, message: message2 }) : ctx.unrepresentable;
     if (result === "any")
       return false;
     if (result === void 0 || result === "throw")
-      throw new Error(message);
+      throw new Error(message2);
     Object.assign(json2, result);
     return true;
   }
@@ -107627,6 +107627,150 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
     PaymentPayloadV2Schema
   ]);
 
+  // node_modules/@x402/core/dist/esm/chunk-VE37GDG2.mjs
+  var x402Version = 2;
+
+  // node_modules/@x402/core/dist/esm/chunk-XW2CWVLZ.mjs
+  function numberToDecimalString(n21) {
+    const str = n21.toString();
+    if (!/[eE]/.test(str)) return str;
+    const [significand, exponentStr] = str.split(/[eE]/);
+    const exp = parseInt(exponentStr, 10);
+    const negative = significand.startsWith("-");
+    const abs = negative ? significand.slice(1) : significand;
+    const [intDigits, fracDigits = ""] = abs.split(".");
+    const allDigits = intDigits + fracDigits;
+    const decimalPos = intDigits.length + exp;
+    let result;
+    if (decimalPos <= 0) {
+      result = "0." + "0".repeat(-decimalPos) + allDigits;
+    } else if (decimalPos >= allDigits.length) {
+      result = allDigits + "0".repeat(decimalPos - allDigits.length);
+    } else {
+      result = allDigits.slice(0, decimalPos) + "." + allDigits.slice(decimalPos);
+    }
+    return (negative ? "-" : "") + result;
+  }
+  function parseMoneyString(money) {
+    const cleaned = money.replace(/^\$/, "").trim();
+    if (!/^\d+(?:\.\d+)?$/.test(cleaned) || /[eE]/.test(cleaned)) {
+      throw new Error(`Invalid money format: ${money}`);
+    }
+    return cleaned;
+  }
+  function parseMoney(money) {
+    if (typeof money === "number") {
+      if (!Number.isFinite(money) || money < 0) {
+        throw new Error(`Invalid money format: ${money}`);
+      }
+      return { amount: numberToDecimalString(money) };
+    }
+    const trimmed = money.trim();
+    const match = trimmed.match(/^\$?\s*(-?\d+(?:\.\d+)?)(?:\s+([A-Za-z][A-Za-z0-9.]*))?$/);
+    if (!match) {
+      throw new Error(`Invalid money format: ${money}`);
+    }
+    const amount = parseMoneyString(match[1]);
+    const rawSymbol = match[2];
+    if (!rawSymbol || rawSymbol.toUpperCase() === "USD") {
+      return { amount };
+    }
+    return { amount, symbol: rawSymbol.toUpperCase() };
+  }
+  function convertToTokenAmount(decimalAmount, decimals) {
+    if (/[eE]/.test(decimalAmount)) {
+      throw new Error(
+        `Invalid amount: ${decimalAmount} \u2014 use decimal notation, not scientific notation`
+      );
+    }
+    if (!/^-?\d+\.?\d*$/.test(decimalAmount)) {
+      throw new Error(`Invalid amount: ${decimalAmount}`);
+    }
+    const [intPart, decPart = ""] = decimalAmount.split(".");
+    const paddedDec = decPart.padEnd(decimals, "0").slice(0, decimals);
+    return (intPart + paddedDec).replace(/^0+/, "") || "0";
+  }
+  var escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  var networkPatternToRegExp = (pattern) => {
+    const source = escapeRegExp(pattern).replace(/\\\*/g, ".*");
+    return new RegExp(`^${source}$`);
+  };
+  var networkMatchesPattern = (pattern, network) => {
+    return networkPatternToRegExp(pattern).test(network);
+  };
+  var findSchemesByNetwork = (map2, network) => {
+    let implementationsByScheme = map2.get(network);
+    if (!implementationsByScheme) {
+      for (const [registeredNetworkPattern, implementations] of map2.entries()) {
+        if (networkMatchesPattern(registeredNetworkPattern, network)) {
+          implementationsByScheme = implementations;
+          break;
+        }
+      }
+    }
+    return implementationsByScheme;
+  };
+  var findByNetworkAndScheme = (map2, scheme, network) => {
+    return findSchemesByNetwork(map2, network)?.get(scheme);
+  };
+  var Base64EncodedRegex = /^[A-Za-z0-9+/]*={0,2}$/;
+  function safeBase64Encode(data) {
+    if (typeof globalThis !== "undefined" && typeof globalThis.btoa === "function") {
+      const bytes = new TextEncoder().encode(data);
+      const binaryString = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+      return globalThis.btoa(binaryString);
+    }
+    return Buffer.from(data, "utf8").toString("base64");
+  }
+  function safeBase64Decode(data) {
+    if (typeof globalThis !== "undefined" && typeof globalThis.atob === "function") {
+      const binaryString = globalThis.atob(data);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i11 = 0; i11 < binaryString.length; i11++) {
+        bytes[i11] = binaryString.charCodeAt(i11);
+      }
+      const decoder3 = new TextDecoder("utf-8");
+      return decoder3.decode(bytes);
+    }
+    return Buffer.from(data, "base64").toString("utf-8");
+  }
+  function deepEqual(obj1, obj2) {
+    const normalize = (obj) => {
+      if (obj === null || obj === void 0) return JSON.stringify(obj);
+      if (typeof obj !== "object") return JSON.stringify(obj);
+      if (Array.isArray(obj)) {
+        return JSON.stringify(
+          obj.map(
+            (item) => typeof item === "object" && item !== null ? JSON.parse(normalize(item)) : item
+          )
+        );
+      }
+      const sorted = {};
+      Object.keys(obj).sort().forEach((key) => {
+        const value = obj[key];
+        sorted[key] = typeof value === "object" && value !== null ? JSON.parse(normalize(value)) : value;
+      });
+      return JSON.stringify(sorted);
+    };
+    try {
+      return normalize(obj1) === normalize(obj2);
+    } catch {
+      return JSON.stringify(obj1) === JSON.stringify(obj2);
+    }
+  }
+  function toComparableArray(value) {
+    if (Array.isArray(value)) {
+      return value;
+    }
+    if (value === null || value === void 0 || typeof value === "object") {
+      return void 0;
+    }
+    return [value];
+  }
+  var ADDITIVE_ARRAY_INFO_FIELDS = {
+    "builder-code": /* @__PURE__ */ new Set(["s"])
+  };
+
   // node_modules/@x402/core/dist/esm/chunk-4NCAR6KR.mjs
   var MAX_CONTROL_PLANE_RESPONSE_BYTES = 1 << 20;
   var verifyResponseSchema = external_exports.object({
@@ -107661,6 +107805,723 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
     extensions: external_exports.array(external_exports.string()).default([]),
     signers: external_exports.record(external_exports.string(), external_exports.array(external_exports.string())).default({})
   });
+  function encodePaymentSignatureHeader(paymentPayload) {
+    return safeBase64Encode(JSON.stringify(paymentPayload));
+  }
+  function decodePaymentRequiredHeader(paymentRequiredHeader) {
+    if (!Base64EncodedRegex.test(paymentRequiredHeader)) {
+      throw new Error("Invalid payment required header");
+    }
+    return JSON.parse(safeBase64Decode(paymentRequiredHeader));
+  }
+
+  // node_modules/@x402/core/dist/esm/client/index.mjs
+  var DEFAULT_MAX_AMOUNT_PER_PAYMENT = "$1";
+  function isAtomicAmount(amount) {
+    return /^\d+$/.test(amount);
+  }
+  function findSpendControlAssetEntry(controls, requirement, defaultAsset) {
+    if (controls.allowedAssets === true) {
+      return void 0;
+    }
+    return controls.allowedAssets?.find((entry) => {
+      if (!networkMatchesPattern(entry.network, requirement.network)) {
+        return false;
+      }
+      if (entry.asset.toLowerCase() === requirement.asset.toLowerCase()) {
+        return true;
+      }
+      return defaultAsset != null && defaultAsset.symbol.toLowerCase() === entry.asset.toLowerCase();
+    });
+  }
+  function resolveAtomicSpendCap(controls, requirement, defaultAsset) {
+    if (controls === false) {
+      return void 0;
+    }
+    const assetEntry = findSpendControlAssetEntry(controls, requirement, defaultAsset);
+    if (assetEntry?.maxAmountPerPayment != null) {
+      if (!isAtomicAmount(assetEntry.maxAmountPerPayment)) {
+        throw new Error(
+          `spendControls.allowedAssets[].maxAmountPerPayment must be an integer atomic amount, not a dollar value; got ${JSON.stringify(assetEntry.maxAmountPerPayment)}`
+        );
+      }
+      return assetEntry.maxAmountPerPayment;
+    }
+    if (!defaultAsset || controls.maxAmountPerPayment === false) {
+      return void 0;
+    }
+    const usdLimit = controls.maxAmountPerPayment ?? DEFAULT_MAX_AMOUNT_PER_PAYMENT;
+    return convertToTokenAmount(parseMoney(usdLimit).amount, defaultAsset.decimals);
+  }
+  var x402Client = class _x402Client {
+    /**
+     * Creates a new x402Client instance.
+     *
+     * @param paymentRequirementsSelector - Function to select payment requirements from available options
+     */
+    constructor(paymentRequirementsSelector) {
+      this.registeredClientSchemes = /* @__PURE__ */ new Map();
+      this.schemeClientHookAdapters = /* @__PURE__ */ new Map();
+      this.policies = [];
+      this.registeredExtensions = /* @__PURE__ */ new Map();
+      this.spendControls = {};
+      this.beforePaymentCreationHooks = [];
+      this.afterPaymentCreationHooks = [];
+      this.onPaymentCreationFailureHooks = [];
+      this.paymentResponseHooks = [];
+      this.paymentRequirementsSelector = paymentRequirementsSelector || ((x402Version2, accepts) => accepts[0]);
+    }
+    /**
+     * Creates a new x402Client instance from a configuration object.
+     *
+     * @param config - The client configuration including schemes, policies, and payment requirements selector
+     * @returns A configured x402Client instance
+     */
+    static fromConfig(config3) {
+      const client = new _x402Client(config3.paymentRequirementsSelector);
+      config3.schemes.forEach((scheme) => {
+        if (scheme.x402Version === 1) {
+          client.registerV1(scheme.network, scheme.client);
+        } else {
+          client.register(scheme.network, scheme.client);
+        }
+      });
+      config3.policies?.forEach((policy) => {
+        client.registerPolicy(policy);
+      });
+      if (config3.spendControls !== void 0) {
+        client.setSpendControls(config3.spendControls);
+      }
+      return client;
+    }
+    /**
+     * Registers a scheme client for the current x402 version.
+     *
+     * @param network - The network to register the client for
+     * @param client - The scheme network client to register
+     * @returns The x402Client instance for chaining
+     */
+    register(network, client) {
+      return this._registerScheme(x402Version, network, client);
+    }
+    /**
+     * Registers a scheme client for x402 version 1.
+     *
+     * @param network - The v1 network identifier (e.g., 'base-sepolia', 'solana-devnet')
+     * @param client - The scheme network client to register
+     * @returns The x402Client instance for chaining
+     */
+    registerV1(network, client) {
+      return this._registerScheme(1, network, client);
+    }
+    /**
+     * Registers a policy to filter or transform payment requirements.
+     *
+     * Policies are applied in order after filtering by registered schemes
+     * and before the selector chooses the final payment requirement.
+     *
+     * @param policy - Function to filter/transform payment requirements
+     * @returns The x402Client instance for chaining
+     *
+     * @example
+     * ```typescript
+     * // Prefer cheaper options
+     * client.registerPolicy((version, reqs) =>
+     *   reqs.filter(r => BigInt(r.value) < BigInt('1000000'))
+     * );
+     *
+     * // Prefer specific networks
+     * client.registerPolicy((version, reqs) =>
+     *   reqs.filter(r => r.network.startsWith('eip155:'))
+     * );
+     * ```
+     */
+    registerPolicy(policy) {
+      this.policies.push(policy);
+      return this;
+    }
+    /**
+     * Replace spend controls. Pass `false` to disable all spend controls.
+     * When an object is passed, omitted `maxAmountPerPayment` still defaults to
+     * {@link DEFAULT_MAX_AMOUNT_PER_PAYMENT}.
+     *
+     * @param controls - Spend control configuration, or `false` to disable
+     * @returns This client for chaining
+     */
+    setSpendControls(controls) {
+      this.spendControls = controls;
+      return this;
+    }
+    /**
+     * Registers a client extension that can enrich payment payloads.
+     *
+     * Extensions are invoked after the scheme creates the base payload and the
+     * payload is wrapped with extensions/resource/accepted data. Every registered
+     * extension's `enrichPaymentPayload` hook is called to modify the payload.
+     * Server-declared fields are preserved via merge after enrichment.
+     *
+     * @param extension - The client extension to register
+     * @returns The x402Client instance for chaining
+     */
+    registerExtension(extension) {
+      this.registeredExtensions.set(extension.key, extension);
+      return this;
+    }
+    /**
+     * Get all registered client extensions.
+     *
+     * @returns Array of registered extensions
+     */
+    getExtensions() {
+      return Array.from(this.registeredExtensions.values());
+    }
+    /**
+     * Register a hook to execute before payment payload creation.
+     * Can abort creation by returning { abort: true, reason: string }
+     *
+     * @param hook - The hook function to register
+     * @returns The x402Client instance for chaining
+     */
+    onBeforePaymentCreation(hook) {
+      this.beforePaymentCreationHooks.push(hook);
+      return this;
+    }
+    /**
+     * Register a hook to execute after successful payment payload creation.
+     *
+     * @param hook - The hook function to register
+     * @returns The x402Client instance for chaining
+     */
+    onAfterPaymentCreation(hook) {
+      this.afterPaymentCreationHooks.push(hook);
+      return this;
+    }
+    /**
+     * Register a hook to execute when payment payload creation fails.
+     * Can recover from failure by returning { recovered: true, payload: PaymentPayload }
+     *
+     * @param hook - The hook function to register
+     * @returns The x402Client instance for chaining
+     */
+    onPaymentCreationFailure(hook) {
+      this.onPaymentCreationFailureHooks.push(hook);
+      return this;
+    }
+    /**
+     * Register a hook to execute after a paid request completes.
+     * Can signal recovery by returning { recovered: true }, causing the transport to retry.
+     *
+     * @param hook - The hook function to register
+     * @returns The x402Client instance for chaining
+     */
+    onPaymentResponse(hook) {
+      this.paymentResponseHooks.push(hook);
+      return this;
+    }
+    /**
+     * Fires all registered payment response hooks in order.
+     * Returns `{ recovered: true }` if any hook signals recovery (first wins).
+     *
+     * @param ctx - The payment response context
+     * @returns Recovery signal or undefined
+     */
+    async handlePaymentResponse(ctx) {
+      for (const hook of this.getLabeledHooks(
+        "onPaymentResponse",
+        ctx.paymentPayload.x402Version,
+        ctx.requirements,
+        ctx.paymentRequired?.extensions ?? ctx.paymentPayload.extensions
+      )) {
+        const result = await hook(ctx);
+        if (result && "recovered" in result && result.recovered) {
+          return { recovered: true };
+        }
+      }
+      return void 0;
+    }
+    /**
+     * Creates a payment payload based on a PaymentRequired response.
+     *
+     * Automatically extracts x402Version, resource, and extensions from the PaymentRequired
+     * response and constructs a complete PaymentPayload with the accepted requirements.
+     *
+     * @param paymentRequired - The PaymentRequired response from the server
+     * @returns Promise resolving to the complete payment payload
+     */
+    async createPaymentPayload(paymentRequired) {
+      const clientSchemesByNetwork = this.registeredClientSchemes.get(paymentRequired.x402Version);
+      if (!clientSchemesByNetwork) {
+        throw new Error(`No client registered for x402 version: ${paymentRequired.x402Version}`);
+      }
+      const requirements = this.selectPaymentRequirements(paymentRequired.x402Version, paymentRequired.accepts);
+      const context = {
+        paymentRequired,
+        selectedRequirements: requirements
+      };
+      for (const hook of this.getLabeledHooks(
+        "beforePaymentCreation",
+        paymentRequired.x402Version,
+        requirements,
+        paymentRequired.extensions
+      )) {
+        const result = await hook(context);
+        if (result && "abort" in result && result.abort) {
+          throw new Error(`Payment creation aborted: ${result.reason}`);
+        }
+      }
+      try {
+        const schemeNetworkClient = findByNetworkAndScheme(clientSchemesByNetwork, requirements.scheme, requirements.network);
+        if (!schemeNetworkClient) {
+          throw new Error(`No client registered for scheme: ${requirements.scheme} and network: ${requirements.network}`);
+        }
+        const partialPayload = await schemeNetworkClient.createPaymentPayload(
+          paymentRequired.x402Version,
+          requirements,
+          {
+            extensions: paymentRequired.extensions,
+            maxAmountPerPayment: resolveAtomicSpendCap(
+              this.spendControls,
+              requirements,
+              schemeNetworkClient.findDefaultAsset?.(requirements.asset, requirements.network)
+            )
+          }
+        );
+        let paymentPayload;
+        if (partialPayload.x402Version == 1) {
+          paymentPayload = partialPayload;
+        } else {
+          const mergedExtensions = this.mergeExtensions(
+            paymentRequired.extensions,
+            partialPayload.extensions
+          );
+          paymentPayload = {
+            x402Version: partialPayload.x402Version,
+            payload: partialPayload.payload,
+            extensions: mergedExtensions,
+            resource: paymentRequired.resource,
+            accepted: requirements
+          };
+        }
+        paymentPayload = await this.enrichPaymentPayloadWithExtensions(paymentPayload, paymentRequired);
+        const createdContext = {
+          ...context,
+          paymentPayload
+        };
+        for (const hook of this.getLabeledHooks(
+          "afterPaymentCreation",
+          paymentRequired.x402Version,
+          requirements,
+          paymentRequired.extensions
+        )) {
+          await hook(createdContext);
+        }
+        return paymentPayload;
+      } catch (error62) {
+        const failureContext = {
+          ...context,
+          error: error62
+        };
+        for (const hook of this.getLabeledHooks(
+          "onPaymentCreationFailure",
+          paymentRequired.x402Version,
+          requirements,
+          paymentRequired.extensions
+        )) {
+          const result = await hook(failureContext);
+          if (result && "recovered" in result && result.recovered) {
+            return result.payload;
+          }
+        }
+        throw error62;
+      }
+    }
+    /**
+     * Merges server-declared extensions with client extension echoes.
+     * Client extension data may add fields, but server-declared fields remain intact.
+     * For fields listed in `ADDITIVE_ARRAY_INFO_FIELDS` (e.g. builder-code `s`), a
+     * conflicting array is concatenated with client entries first (so a downstream
+     * length cap trims server entries rather than the client's) and duplicates
+     * removed; a scalar on either side is treated as a single-element array. Every
+     * other conflicting array keeps the server's value, same as any other scalar.
+     *
+     * @param serverExtensions - Extensions declared by the server in the 402 response
+     * @param clientExtensions - Extensions provided by the client or scheme
+     * @returns The merged extensions object, or undefined if both inputs are undefined
+     */
+    mergeExtensions(serverExtensions, clientExtensions) {
+      if (!clientExtensions) return serverExtensions;
+      if (!serverExtensions) return clientExtensions;
+      const merged = { ...serverExtensions };
+      for (const [key, clientValue] of Object.entries(clientExtensions)) {
+        const serverValue = merged[key];
+        if (serverValue === null || typeof serverValue !== "object" || Array.isArray(serverValue) || clientValue === null || typeof clientValue !== "object" || Array.isArray(clientValue)) {
+          merged[key] = clientValue;
+          continue;
+        }
+        const serverRecord = serverValue;
+        const clientRecord = clientValue;
+        const additiveFields = ADDITIVE_ARRAY_INFO_FIELDS[key];
+        const extensionValue = { ...serverRecord };
+        const pending = [{ target: extensionValue, source: clientRecord }];
+        for (const item of pending) {
+          for (const [fieldKey, clientFieldValue] of Object.entries(item.source)) {
+            const serverFieldValue = item.target[fieldKey];
+            if (serverFieldValue !== null && typeof serverFieldValue === "object" && !Array.isArray(serverFieldValue) && clientFieldValue !== null && typeof clientFieldValue === "object" && !Array.isArray(clientFieldValue)) {
+              const nestedValue = { ...serverFieldValue };
+              item.target[fieldKey] = nestedValue;
+              pending.push({
+                target: nestedValue,
+                source: clientFieldValue
+              });
+              continue;
+            }
+            if (additiveFields?.has(fieldKey) && (Array.isArray(serverFieldValue) || Array.isArray(clientFieldValue))) {
+              const serverArray = toComparableArray(serverFieldValue);
+              const clientArray = toComparableArray(clientFieldValue);
+              if (serverArray && clientArray) {
+                item.target[fieldKey] = mergeArraysUnique(clientArray, serverArray);
+                continue;
+              }
+            }
+            if (!Object.prototype.hasOwnProperty.call(item.target, fieldKey)) {
+              item.target[fieldKey] = clientFieldValue;
+            }
+          }
+        }
+        merged[key] = extensionValue;
+      }
+      return merged;
+    }
+    /**
+     * Enriches a payment payload by calling registered extension hooks.
+     * Invokes enrichPaymentPayload for every registered extension, then merges
+     * server-declared extension fields back into the result.
+     *
+     * @param paymentPayload - The payment payload to enrich with extension data
+     * @param paymentRequired - The PaymentRequired response containing extension declarations
+     * @returns The enriched payment payload with extension data applied
+     */
+    async enrichPaymentPayloadWithExtensions(paymentPayload, paymentRequired) {
+      if (this.registeredExtensions.size === 0) {
+        return paymentPayload;
+      }
+      let enriched = paymentPayload;
+      for (const [, extension] of this.registeredExtensions) {
+        if (extension.enrichPaymentPayload) {
+          enriched = await extension.enrichPaymentPayload(enriched, paymentRequired);
+        }
+      }
+      return {
+        ...enriched,
+        extensions: this.mergeExtensions(paymentRequired.extensions, enriched.extensions)
+      };
+    }
+    /**
+     * Selects appropriate payment requirements based on registered clients and policies.
+     *
+     * Selection process:
+     * 1. Filter by registered schemes (network + scheme support)
+     * 2. Drop accepts with unrecognized `extra.paymentFlow`
+     * 3. Enforce spend controls (allowlist, per-asset caps, USD cap on default assets)
+     * 4. Apply all registered policies in order
+     * 5. Prefer authorization (omit or explicit) over upfront/escrow when both remain
+     * 6. Use selector to choose final requirement
+     *
+     * @param x402Version - The x402 protocol version
+     * @param paymentRequirements - Array of available payment requirements
+     * @returns The selected payment requirements
+     */
+    selectPaymentRequirements(x402Version2, paymentRequirements) {
+      const clientSchemesByNetwork = this.registeredClientSchemes.get(x402Version2);
+      if (!clientSchemesByNetwork) {
+        throw new Error(`No client registered for x402 version: ${x402Version2}`);
+      }
+      const supportedPaymentRequirements = paymentRequirements.filter((requirement) => {
+        let clientSchemes = findSchemesByNetwork(clientSchemesByNetwork, requirement.network);
+        if (!clientSchemes) {
+          return false;
+        }
+        return clientSchemes.has(requirement.scheme);
+      });
+      if (supportedPaymentRequirements.length === 0) {
+        throw new Error(`No network/scheme registered for x402 version: ${x402Version2} which comply with the payment requirements. ${JSON.stringify({
+          x402Version: x402Version2,
+          paymentRequirements,
+          x402Versions: Array.from(this.registeredClientSchemes.keys()),
+          networks: Array.from(clientSchemesByNetwork.keys()),
+          schemes: Array.from(clientSchemesByNetwork.values()).map((schemes) => Array.from(schemes.keys())).flat()
+        })}`);
+      }
+      const recognizedFlowRequirements = supportedPaymentRequirements.filter((requirement) => {
+        const flow = requirement.extra?.paymentFlow;
+        return flow == null || flow === "authorization" || flow === "upfront" || flow === "escrow";
+      });
+      if (recognizedFlowRequirements.length === 0) {
+        throw new Error(
+          `No payment requirements with a recognized paymentFlow for x402 version: ${x402Version2}`
+        );
+      }
+      let filteredRequirements = this.applySpendControls(
+        x402Version2,
+        recognizedFlowRequirements,
+        clientSchemesByNetwork
+      );
+      for (const policy of this.policies) {
+        filteredRequirements = policy(x402Version2, filteredRequirements);
+        if (filteredRequirements.length === 0) {
+          throw new Error(`All payment requirements were filtered out by policies for x402 version: ${x402Version2}`);
+        }
+      }
+      const authorizationAccepts = filteredRequirements.filter(
+        (requirement) => requirement.extra?.paymentFlow == null || requirement.extra?.paymentFlow === "authorization"
+      );
+      if (authorizationAccepts.length > 0) {
+        filteredRequirements = authorizationAccepts;
+      }
+      return this.paymentRequirementsSelector(x402Version2, filteredRequirements);
+    }
+    /**
+     * Filter by spend controls (default-asset allowlist → opt-in assets → caps).
+     * Keeps any accept that fits so a mixed offer can still pay the affordable option.
+     *
+     * @param x402Version - Protocol version (v1 uses `maxAmountRequired`)
+     * @param requirements - Post scheme/flow filter
+     * @param clientSchemesByNetwork - Registered clients for this version
+     * @returns Requirements that pass spend controls
+     */
+    applySpendControls(x402Version2, requirements, clientSchemesByNetwork) {
+      const controls = this.spendControls;
+      if (controls === false) {
+        return requirements;
+      }
+      const rawAmountOf = (requirement) => x402Version2 === 1 ? requirement.maxAmountRequired : requirement.amount;
+      const schemeFor = (requirement) => findByNetworkAndScheme(
+        clientSchemesByNetwork,
+        requirement.scheme,
+        requirement.network
+      );
+      const defaultAssetFor = (requirement) => schemeFor(requirement)?.findDefaultAsset?.(requirement.asset, requirement.network);
+      const findAssetEntry = (requirement) => findSpendControlAssetEntry(controls, requirement, defaultAssetFor(requirement));
+      const allowAnyAsset = controls.allowedAssets === true;
+      let filtered = allowAnyAsset ? requirements : requirements.filter((requirement) => {
+        if (defaultAssetFor(requirement) != null) {
+          return true;
+        }
+        return findAssetEntry(requirement) != null;
+      });
+      if (filtered.length === 0) {
+        throw new Error(
+          `All payment requirements were rejected by spendControls: only default assets or entries in spendControls.allowedAssets are allowed. Add an allowedAssets entry for non-default tokens, set allowedAssets: true, or set spendControls: false.`
+        );
+      }
+      const usdLimit = controls.maxAmountPerPayment === false ? false : controls.maxAmountPerPayment ?? DEFAULT_MAX_AMOUNT_PER_PAYMENT;
+      const beforeAmountCaps = filtered;
+      let rejectedByAssetCap = false;
+      let rejectedUsdSymbol;
+      filtered = filtered.filter((requirement) => {
+        const defaultAsset = defaultAssetFor(requirement);
+        const assetEntry = findSpendControlAssetEntry(controls, requirement, defaultAsset);
+        const cap = resolveAtomicSpendCap(controls, requirement, defaultAsset);
+        if (cap === void 0) {
+          return true;
+        }
+        const rawAmount = rawAmountOf(requirement);
+        if (!isAtomicAmount(rawAmount)) {
+          if (assetEntry?.maxAmountPerPayment != null) {
+            rejectedByAssetCap = true;
+            return false;
+          }
+          if (usdLimit === false) {
+            return true;
+          }
+          const valueScaled = BigInt(convertToTokenAmount(rawAmount, 18));
+          const capScaled = BigInt(convertToTokenAmount(parseMoney(usdLimit).amount, 18));
+          const ok2 = valueScaled <= capScaled;
+          if (!ok2) rejectedUsdSymbol = defaultAsset?.symbol;
+          return ok2;
+        }
+        const ok = BigInt(rawAmount) <= BigInt(cap);
+        if (!ok) {
+          if (assetEntry?.maxAmountPerPayment != null) {
+            rejectedByAssetCap = true;
+          } else {
+            rejectedUsdSymbol = defaultAsset?.symbol;
+          }
+        }
+        return ok;
+      });
+      if (filtered.length === 0) {
+        if (rejectedByAssetCap && beforeAmountCaps.every((requirement) => {
+          const entry = findAssetEntry(requirement);
+          return entry?.maxAmountPerPayment != null;
+        })) {
+          throw new Error(
+            `All payment requirements were rejected by spendControls.allowedAssets maxAmountPerPayment. Raise the per-asset cap, or omit maxAmountPerPayment to allow uncapped (default assets then fall back to the top-level USD cap).`
+          );
+        }
+        throw new Error(
+          `All payment requirements were rejected by spendControls.maxAmountPerPayment (${String(usdLimit)}${rejectedUsdSymbol ? `, including ${rejectedUsdSymbol}` : ""}). Raise maxAmountPerPayment, set it to false to disable, set allowedAssets[].maxAmountPerPayment for a per-asset atomic cap, or set spendControls: false to disable all spend controls.`
+        );
+      }
+      return filtered;
+    }
+    /**
+     * Internal method to register a scheme client.
+     *
+     * @param x402Version - The x402 protocol version
+     * @param network - The network to register the client for
+     * @param client - The scheme network client to register
+     * @returns The x402Client instance for chaining
+     */
+    _registerScheme(x402Version2, network, client) {
+      if (!this.registeredClientSchemes.has(x402Version2)) {
+        this.registeredClientSchemes.set(x402Version2, /* @__PURE__ */ new Map());
+      }
+      const clientSchemesByNetwork = this.registeredClientSchemes.get(x402Version2);
+      if (!clientSchemesByNetwork.has(network)) {
+        clientSchemesByNetwork.set(network, /* @__PURE__ */ new Map());
+      }
+      const clientByScheme = clientSchemesByNetwork.get(network);
+      clientByScheme.set(client.scheme, client);
+      if (!this.schemeClientHookAdapters.has(x402Version2)) {
+        this.schemeClientHookAdapters.set(x402Version2, /* @__PURE__ */ new Map());
+      }
+      const adaptersByNetwork = this.schemeClientHookAdapters.get(x402Version2);
+      if (!adaptersByNetwork.has(network)) {
+        adaptersByNetwork.set(network, /* @__PURE__ */ new Map());
+      }
+      const adaptersByScheme = adaptersByNetwork.get(network);
+      const hooks = client.schemeHooks;
+      if (!hooks) {
+        adaptersByScheme.delete(client.scheme);
+        return this;
+      }
+      const handles = {};
+      if (hooks.onBeforePaymentCreation) {
+        handles.beforePaymentCreation = hooks.onBeforePaymentCreation;
+      }
+      if (hooks.onAfterPaymentCreation) {
+        handles.afterPaymentCreation = hooks.onAfterPaymentCreation;
+      }
+      if (hooks.onPaymentCreationFailure) {
+        handles.onPaymentCreationFailure = hooks.onPaymentCreationFailure;
+      }
+      if (hooks.onPaymentResponse) {
+        handles.onPaymentResponse = hooks.onPaymentResponse;
+      }
+      if (Object.keys(handles).length > 0) {
+        adaptersByScheme.set(client.scheme, handles);
+      } else {
+        adaptersByScheme.delete(client.scheme);
+      }
+      return this;
+    }
+    /**
+     * Returns manual hooks followed by the selected scheme hook and declared extension hooks.
+     *
+     * @param phase - Hook slot to collect
+     * @param x402Version - Protocol version for the selected requirement
+     * @param requirements - Selected payment requirement
+     * @param declaredExtensions - Extension declarations that scope extension hooks
+     * @returns Hooks in invocation order
+     */
+    getLabeledHooks(phase, x402Version2, requirements, declaredExtensions) {
+      let manual;
+      switch (phase) {
+        case "beforePaymentCreation":
+          manual = this.beforePaymentCreationHooks;
+          break;
+        case "afterPaymentCreation":
+          manual = this.afterPaymentCreationHooks;
+          break;
+        case "onPaymentCreationFailure":
+          manual = this.onPaymentCreationFailureHooks;
+          break;
+        case "onPaymentResponse":
+          manual = this.paymentResponseHooks;
+          break;
+      }
+      const out = [...manual];
+      const adaptersByNetwork = this.schemeClientHookAdapters.get(x402Version2);
+      const schemeAdapter = adaptersByNetwork ? findByNetworkAndScheme(adaptersByNetwork, requirements.scheme, requirements.network) : void 0;
+      const hook = schemeAdapter?.[phase];
+      if (hook !== void 0) {
+        out.push(hook);
+      }
+      if (!declaredExtensions) {
+        return out;
+      }
+      const extensionHookKey = this.getClientExtensionHookKey(phase);
+      for (const [extensionKey, extension] of this.registeredExtensions) {
+        if (!(extensionKey in declaredExtensions)) continue;
+        const extensionHook = extension.hooks?.[extensionHookKey];
+        if (!extensionHook) continue;
+        out.push((async (ctx) => {
+          return extensionHook(declaredExtensions[extensionKey], ctx);
+        }));
+      }
+      return out;
+    }
+    /**
+     * Maps internal hook phases to extension hook names.
+     *
+     * @param phase - Internal hook phase
+     * @returns Extension hook key for the phase
+     */
+    getClientExtensionHookKey(phase) {
+      switch (phase) {
+        case "beforePaymentCreation":
+          return "onBeforePaymentCreation";
+        case "afterPaymentCreation":
+          return "onAfterPaymentCreation";
+        case "onPaymentCreationFailure":
+          return "onPaymentCreationFailure";
+        case "onPaymentResponse":
+          return "onPaymentResponse";
+      }
+    }
+  };
+  function mergeArraysUnique(client, server) {
+    const merged = [];
+    for (const item of [...client, ...server]) {
+      if (!merged.some((existing) => deepEqual(existing, item))) {
+        merged.push(item);
+      }
+    }
+    return merged;
+  }
+
+  // node_modules/@x402/evm/dist/esm/chunk-EKCH75YB.mjs
+  init_esm3();
+  var EIP155_NETWORK_REGEX = /^eip155:(\d+)$/;
+  function getEvmChainId(network) {
+    if (!network.startsWith("eip155:")) {
+      throw new Error(`Unsupported network format: ${network} (expected eip155:CHAIN_ID)`);
+    }
+    const match = EIP155_NETWORK_REGEX.exec(network);
+    if (!match) {
+      throw new Error(`Invalid CAIP-2 chain ID: ${network}`);
+    }
+    const chainId = Number(match[1]);
+    if (!Number.isSafeInteger(chainId)) {
+      throw new Error(`Invalid CAIP-2 chain ID: ${network}`);
+    }
+    return chainId;
+  }
+  function getCrypto() {
+    const cryptoObj = globalThis.crypto;
+    if (!cryptoObj) {
+      throw new Error("Crypto API not available");
+    }
+    return cryptoObj;
+  }
+  function createNonce() {
+    return toHex(getCrypto().getRandomValues(new Uint8Array(32)));
+  }
+  function createPermit2Nonce() {
+    const randomBytes4 = getCrypto().getRandomValues(new Uint8Array(32));
+    return BigInt(toHex(randomBytes4)).toString();
+  }
 
   // node_modules/@x402/evm/dist/esm/chunk-GPMYUGHX.mjs
   var EVM_NETWORK_CHAIN_ID_MAP = {
@@ -107690,9 +108551,838 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
     flare: 14
   };
   var NETWORKS = Object.keys(EVM_NETWORK_CHAIN_ID_MAP);
+  var authorizationTypes = {
+    TransferWithAuthorization: [
+      { name: "from", type: "address" },
+      { name: "to", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "validAfter", type: "uint256" },
+      { name: "validBefore", type: "uint256" },
+      { name: "nonce", type: "bytes32" }
+    ]
+  };
+  var permit2WitnessTypes = {
+    PermitWitnessTransferFrom: [
+      { name: "permitted", type: "TokenPermissions" },
+      { name: "spender", type: "address" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" },
+      { name: "witness", type: "Witness" }
+    ],
+    TokenPermissions: [
+      { name: "token", type: "address" },
+      { name: "amount", type: "uint256" }
+    ],
+    Witness: [
+      { name: "to", type: "address" },
+      { name: "validAfter", type: "uint256" }
+    ]
+  };
+  var eip2612PermitTypes = {
+    Permit: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "nonce", type: "uint256" },
+      { name: "deadline", type: "uint256" }
+    ]
+  };
+  var eip2612NoncesAbi = [
+    {
+      type: "function",
+      name: "nonces",
+      inputs: [{ name: "owner", type: "address" }],
+      outputs: [{ type: "uint256" }],
+      stateMutability: "view"
+    }
+  ];
+  var erc20ApproveAbi = [
+    {
+      type: "function",
+      name: "approve",
+      inputs: [
+        { name: "spender", type: "address" },
+        { name: "amount", type: "uint256" }
+      ],
+      outputs: [{ type: "bool" }],
+      stateMutability: "nonpayable"
+    }
+  ];
+  var erc20AllowanceAbi = [
+    {
+      type: "function",
+      name: "allowance",
+      inputs: [
+        { name: "owner", type: "address" },
+        { name: "spender", type: "address" }
+      ],
+      outputs: [{ type: "uint256" }],
+      stateMutability: "view"
+    }
+  ];
+  var ERC20_APPROVE_GAS_LIMIT = 70000n;
+  var DEFAULT_MAX_FEE_PER_GAS = 1000000000n;
+  var DEFAULT_MAX_PRIORITY_FEE_PER_GAS = 100000000n;
+  var PERMIT2_ADDRESS = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+  var x402ExactPermit2ProxyAddress = "0x402085c248EeA27D92E8b30b2C58ed07f9E20001";
+
+  // node_modules/@x402/evm/dist/esm/chunk-DIAR36YQ.mjs
+  init_esm3();
+  init_esm3();
+  init_esm3();
+  init_esm3();
+  var EIP2612_GAS_SPONSORING_KEY = "eip2612GasSponsoring";
+  var ERC20_APPROVAL_GAS_SPONSORING_KEY = "erc20ApprovalGasSponsoring";
+  var ERC20_APPROVAL_GAS_SPONSORING_VERSION = "1";
+  async function signEip2612Permit(signer, tokenAddress, tokenName, tokenVersion, chainId, deadline, permittedAmount) {
+    const owner = signer.address;
+    const spender = getAddress(PERMIT2_ADDRESS);
+    const nonce = await signer.readContract({
+      address: tokenAddress,
+      abi: eip2612NoncesAbi,
+      functionName: "nonces",
+      args: [owner]
+    });
+    const domain2 = {
+      name: tokenName,
+      version: tokenVersion,
+      chainId,
+      verifyingContract: tokenAddress
+    };
+    const approvalAmount = BigInt(permittedAmount);
+    const message2 = {
+      owner,
+      spender,
+      value: approvalAmount,
+      nonce,
+      deadline: BigInt(deadline)
+    };
+    const signature = await signer.signTypedData({
+      domain: domain2,
+      types: eip2612PermitTypes,
+      primaryType: "Permit",
+      message: message2
+    });
+    return {
+      from: owner,
+      asset: tokenAddress,
+      spender,
+      amount: approvalAmount.toString(),
+      nonce: nonce.toString(),
+      deadline,
+      signature,
+      version: "1"
+    };
+  }
+  async function signErc20ApprovalTransaction(signer, tokenAddress, chainId) {
+    const from28 = signer.address;
+    const spender = getAddress(PERMIT2_ADDRESS);
+    const data = encodeFunctionData({
+      abi: erc20ApproveAbi,
+      functionName: "approve",
+      args: [spender, maxUint256]
+    });
+    const nonce = await signer.getTransactionCount({ address: from28 });
+    let maxFeePerGas;
+    let maxPriorityFeePerGas;
+    try {
+      const fees = await signer.estimateFeesPerGas?.();
+      if (!fees) {
+        throw new Error("no fee estimates available");
+      }
+      maxFeePerGas = fees.maxFeePerGas;
+      maxPriorityFeePerGas = fees.maxPriorityFeePerGas;
+    } catch {
+      maxFeePerGas = DEFAULT_MAX_FEE_PER_GAS;
+      maxPriorityFeePerGas = DEFAULT_MAX_PRIORITY_FEE_PER_GAS;
+    }
+    const signedTransaction = await signer.signTransaction({
+      to: tokenAddress,
+      data,
+      nonce,
+      gas: ERC20_APPROVE_GAS_LIMIT,
+      maxFeePerGas,
+      maxPriorityFeePerGas,
+      chainId
+    });
+    return {
+      from: from28,
+      asset: tokenAddress,
+      spender,
+      amount: maxUint256.toString(),
+      signedTransaction,
+      version: ERC20_APPROVAL_GAS_SPONSORING_VERSION
+    };
+  }
+  var rpcClientCache = /* @__PURE__ */ new Map();
+  function isConfigByChainId(options) {
+    const keys2 = Object.keys(options);
+    return keys2.length > 0 && keys2.every((key) => /^\d+$/.test(key));
+  }
+  function getRpcClient(rpcUrl) {
+    const existing = rpcClientCache.get(rpcUrl);
+    if (existing) {
+      return existing;
+    }
+    const client = createPublicClient({
+      transport: http(rpcUrl)
+    });
+    rpcClientCache.set(rpcUrl, client);
+    return client;
+  }
+  function resolveRpcUrl(network, options) {
+    if (!options) {
+      return void 0;
+    }
+    if (isConfigByChainId(options)) {
+      const chainId = getEvmChainId(network);
+      const optionsByChainId = options;
+      return optionsByChainId[chainId]?.rpcUrl;
+    }
+    return options.rpcUrl;
+  }
+  function resolveExtensionRpcCapabilities(network, signer, options) {
+    const capabilities = {
+      signTransaction: signer.signTransaction,
+      readContract: signer.readContract,
+      getTransactionCount: signer.getTransactionCount,
+      estimateFeesPerGas: signer.estimateFeesPerGas
+    };
+    const needsRpcBackfill = !capabilities.readContract || !capabilities.getTransactionCount || !capabilities.estimateFeesPerGas;
+    if (!needsRpcBackfill) {
+      return capabilities;
+    }
+    const rpcUrl = resolveRpcUrl(network, options);
+    if (!rpcUrl) {
+      return capabilities;
+    }
+    const rpcClient = getRpcClient(rpcUrl);
+    if (!capabilities.readContract) {
+      capabilities.readContract = (args) => rpcClient.readContract(args);
+    }
+    if (!capabilities.getTransactionCount) {
+      capabilities.getTransactionCount = async (args) => rpcClient.getTransactionCount({ address: args.address });
+    }
+    if (!capabilities.estimateFeesPerGas) {
+      capabilities.estimateFeesPerGas = async () => rpcClient.estimateFeesPerGas();
+    }
+    return capabilities;
+  }
+  var warnedNetworks = /* @__PURE__ */ new Set();
+  function warnCannotReadForSponsoring(network) {
+    if (warnedNetworks.has(network)) return;
+    warnedNetworks.add(network);
+    console.warn(
+      `[x402] gas sponsoring is advertised for ${network} but the client cannot read the chain, so the sponsored permit/approval will not be signed and a fresh wallet will get 412 permit2_allowance_required. Pass { rpcUrl } to ExactEvmScheme, or use a signer with readContract (e.g. toClientEvmSigner(account, publicClient)).`
+    );
+  }
+  async function trySignEip2612PermitExtension(signer, options, requirements, result, context, approvalAmount) {
+    if (!context?.extensions?.[EIP2612_GAS_SPONSORING_KEY]) {
+      return void 0;
+    }
+    const capabilities = resolveExtensionRpcCapabilities(requirements.network, signer, options);
+    if (!capabilities.readContract) {
+      warnCannotReadForSponsoring(requirements.network);
+      return void 0;
+    }
+    const tokenName = requirements.extra?.name;
+    const tokenVersion = requirements.extra?.version;
+    if (!tokenName || !tokenVersion) {
+      return void 0;
+    }
+    const chainId = getEvmChainId(requirements.network);
+    const tokenAddress = getAddress(requirements.asset);
+    const requiredAllowance = approvalAmount ?? requirements.amount;
+    try {
+      const allowance = await capabilities.readContract({
+        address: tokenAddress,
+        abi: erc20AllowanceAbi,
+        functionName: "allowance",
+        args: [signer.address, PERMIT2_ADDRESS]
+      });
+      if (allowance >= BigInt(requiredAllowance)) {
+        return void 0;
+      }
+    } catch {
+    }
+    const permit2Auth = result.payload?.permit2Authorization;
+    const deadline = permit2Auth?.deadline ?? Math.floor(Date.now() / 1e3 + requirements.maxTimeoutSeconds).toString();
+    const info = await signEip2612Permit(
+      {
+        address: signer.address,
+        signTypedData: (msg) => signer.signTypedData(msg),
+        readContract: capabilities.readContract
+      },
+      tokenAddress,
+      tokenName,
+      tokenVersion,
+      chainId,
+      deadline,
+      requiredAllowance
+    );
+    return {
+      [EIP2612_GAS_SPONSORING_KEY]: { info }
+    };
+  }
+  async function trySignErc20ApprovalExtension(signer, options, requirements, context, approvalAmount) {
+    if (!context?.extensions?.[ERC20_APPROVAL_GAS_SPONSORING_KEY]) {
+      return void 0;
+    }
+    const capabilities = resolveExtensionRpcCapabilities(requirements.network, signer, options);
+    if (!capabilities.readContract) {
+      warnCannotReadForSponsoring(requirements.network);
+      return void 0;
+    }
+    if (!capabilities.signTransaction || !capabilities.getTransactionCount) {
+      return void 0;
+    }
+    const chainId = getEvmChainId(requirements.network);
+    const tokenAddress = getAddress(requirements.asset);
+    const requiredAllowance = approvalAmount ?? requirements.amount;
+    try {
+      const allowance = await capabilities.readContract({
+        address: tokenAddress,
+        abi: erc20AllowanceAbi,
+        functionName: "allowance",
+        args: [signer.address, PERMIT2_ADDRESS]
+      });
+      if (allowance >= BigInt(requiredAllowance)) {
+        return void 0;
+      }
+    } catch {
+    }
+    const info = await signErc20ApprovalTransaction(
+      {
+        address: signer.address,
+        signTransaction: capabilities.signTransaction,
+        getTransactionCount: capabilities.getTransactionCount,
+        estimateFeesPerGas: capabilities.estimateFeesPerGas
+      },
+      tokenAddress,
+      chainId
+    );
+    return {
+      [ERC20_APPROVAL_GAS_SPONSORING_KEY]: { info }
+    };
+  }
+
+  // node_modules/@x402/evm/dist/esm/chunk-LQQ3M4DU.mjs
+  var DEFAULT_ASSETS = {
+    "eip155:8453": [
+      {
+        asset: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+        name: "USD Coin",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Base mainnet USDC
+    "eip155:84532": [
+      {
+        asset: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Base Sepolia USDC
+    "eip155:1": [
+      {
+        asset: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        name: "USD Coin",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Ethereum mainnet USDC
+    "eip155:43114": [
+      {
+        asset: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",
+        name: "USD Coin",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Avalanche C-Chain USDC
+    "eip155:4326": [
+      {
+        asset: "0xFAfDdbb3FC7688494971a79cc65DCa3EF82079E7",
+        name: "MegaUSD",
+        version: "1",
+        decimals: 18,
+        symbol: "MegaUSD",
+        assetTransferMethod: "permit2",
+        supportsEip2612: true
+      }
+    ],
+    // MegaETH mainnet MegaUSD (no EIP-3009, supports EIP-2612)
+    "eip155:143": [
+      {
+        asset: "0x754704Bc059F8C67012fEd69BC8A327a5aafb603",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Monad mainnet USDC
+    "eip155:10143": [
+      {
+        asset: "0x534b2f3A21130d7a60830c2Df862319e593943A3",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Monad testnet USDC
+    "eip155:988": [
+      {
+        asset: "0x779Ded0c9e1022225f8E0630b35a9b54bE713736",
+        name: "USDT0",
+        version: "1",
+        decimals: 6,
+        symbol: "USDT0"
+      }
+    ],
+    // Stable mainnet USDT0
+    "eip155:2201": [
+      {
+        asset: "0x78Cf24370174180738C5B8E352B6D14c83a6c9A9",
+        name: "USDT0",
+        version: "1",
+        decimals: 6,
+        symbol: "USDT0"
+      }
+    ],
+    // Stable testnet USDT0
+    "eip155:137": [
+      {
+        asset: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
+        name: "USD Coin",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Polygon mainnet USDC
+    "eip155:42161": [
+      {
+        asset: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+        name: "USD Coin",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Arbitrum One USDC
+    "eip155:421614": [
+      {
+        asset: "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d",
+        name: "USD Coin",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Arbitrum Sepolia USDC
+    "eip155:31612": [
+      {
+        asset: "0xdD468A1DDc392dcdbEf6db6e34E89AA338F9F186",
+        name: "Mezo USD",
+        version: "1",
+        decimals: 18,
+        symbol: "mUSD",
+        assetTransferMethod: "permit2",
+        supportsEip2612: true
+      }
+    ],
+    // Mezo mainnet mUSD (no EIP-3009, supports EIP-2612)
+    "eip155:31611": [
+      {
+        asset: "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503",
+        name: "Mezo USD",
+        version: "1",
+        decimals: 18,
+        symbol: "mUSD",
+        assetTransferMethod: "permit2",
+        supportsEip2612: true
+      }
+    ],
+    // Mezo Testnet mUSD (no EIP-3009, supports EIP-2612)
+    "eip155:723487": [
+      {
+        asset: "0x33ad9e4BD16B69B5BFdED37D8B5D9fF9aba014Fb",
+        name: "Stable Coin",
+        version: "1",
+        decimals: 6,
+        symbol: "SBC",
+        assetTransferMethod: "permit2",
+        supportsEip2612: true
+      }
+    ],
+    // Radius Network SBC (no EIP-3009, supports EIP-2612)
+    "eip155:72344": [
+      {
+        asset: "0x33ad9e4BD16B69B5BFdED37D8B5D9fF9aba014Fb",
+        name: "Stable Coin",
+        version: "1",
+        decimals: 6,
+        symbol: "SBC",
+        assetTransferMethod: "permit2",
+        supportsEip2612: true
+      }
+    ],
+    // Radius Testnet SBC (no EIP-3009, supports EIP-2612)
+    "eip155:36900": [
+      {
+        asset: "0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2",
+        name: "USDC.e",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC.e"
+      }
+    ],
+    // ADI Chain USDC.e (EIP-3009 supported)
+    "eip155:190415": [
+      {
+        asset: "0x401eCb1D350407f13ba348573E5630B83638E30D",
+        name: "Bridged USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC.e"
+      }
+    ],
+    // HPP mainnet USDC.e
+    "eip155:181228": [
+      {
+        asset: "0x401eCb1D350407f13ba348573E5630B83638E30D",
+        name: "Bridged USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC.e"
+      }
+    ],
+    // HPP Sepolia USDC.e
+    "eip155:50": [
+      {
+        asset: "0xfA2958CB79b0491CC627c1557F441eF849Ca8eb1",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // XDC Network mainnet USDC (Bridged USDC Standard, EIP-3009 supported)
+    "eip155:51": [
+      {
+        asset: "0xb5AB69F7bBada22B28e79C8FFAECe55eF1c771D4",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // XDC Apothem testnet USDC (Bridged USDC Standard, EIP-3009 supported)
+    "eip155:38833": [
+      {
+        asset: "0xA5b8BF902b2844dA17d4506cc827F7F1681735E7",
+        name: "USDC",
+        version: "1",
+        decimals: 6,
+        symbol: "USDC",
+        assetTransferMethod: "permit2"
+      }
+    ],
+    // Igra mainnet USDC (no EIP-3009, no EIP-2612)
+    "eip155:14": [
+      {
+        asset: "0xe7cd86e13AC4309349F30B3435a9d337750fC82D",
+        name: "USD\u20AE0",
+        version: "1",
+        decimals: 6,
+        symbol: "USDT0"
+      }
+    ],
+    // Flare mainnet USD₮0 (EIP-3009 supported)
+    "eip155:42220": [
+      {
+        asset: "0xcebA9300f2b948710d2653dD7B07f33A8B32118C",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      },
+      {
+        asset: "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e",
+        name: "Tether USD",
+        version: "1",
+        decimals: 6,
+        symbol: "USDT"
+      },
+      {
+        asset: "0xD2ab3C9A02DBBAB236BfEC45D1d755DF4267F771",
+        name: "Tether America USD",
+        version: "1",
+        decimals: 6,
+        symbol: "USAT"
+      }
+    ],
+    // Celo mainnet USDC, USDT, USAT (EIP-3009 supported)
+    "eip155:11142220": [
+      {
+        asset: "0x01C5C0122039549AD1493B8220cABEdD739BC44E",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Celo Sepolia testnet USDC (EIP-3009 supported)
+    "eip155:1329": [
+      {
+        asset: "0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Sei mainnet USDC (EIP-3009 supported)
+    "eip155:1328": [
+      {
+        asset: "0x4fCF1784B31630811181f670Aea7A7bEF803eaED",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Sei testnet USDC (EIP-3009 supported)
+    "eip155:5042": [
+      {
+        asset: "0x3600000000000000000000000000000000000000",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ],
+    // Arc mainnet USDC (EIP-3009 supported)
+    "eip155:5042002": [
+      {
+        asset: "0x3600000000000000000000000000000000000000",
+        name: "USDC",
+        version: "2",
+        decimals: 6,
+        symbol: "USDC"
+      }
+    ]
+    // Arc Testnet USDC (EIP-3009 supported)
+  };
+  function resolveNetworkKey(network) {
+    if (network in DEFAULT_ASSETS) {
+      return network;
+    }
+    const chainId = EVM_NETWORK_CHAIN_ID_MAP[network];
+    if (chainId !== void 0) {
+      return `eip155:${chainId}`;
+    }
+    return network;
+  }
+  var findDefaultAsset = (asset, network) => {
+    const key = resolveNetworkKey(network);
+    const assets = DEFAULT_ASSETS[key];
+    if (!assets) {
+      return void 0;
+    }
+    const normalized = asset.toLowerCase();
+    return assets.find((entry) => entry.asset.toLowerCase() === normalized);
+  };
+
+  // node_modules/@x402/evm/dist/esm/chunk-6TBI5HDH.mjs
+  init_esm3();
+  async function createPermit2PayloadForProxy(proxyAddress, signer, x402Version2, paymentRequirements) {
+    const now = Math.floor(Date.now() / 1e3);
+    const nonce = createPermit2Nonce();
+    const validAfter = "0";
+    const deadline = (now + paymentRequirements.maxTimeoutSeconds).toString();
+    const permit2Authorization = {
+      from: signer.address,
+      permitted: {
+        token: getAddress(paymentRequirements.asset),
+        amount: paymentRequirements.amount
+      },
+      spender: proxyAddress,
+      nonce,
+      deadline,
+      witness: {
+        to: getAddress(paymentRequirements.payTo),
+        validAfter
+      }
+    };
+    const signature = await signPermit2Authorization(
+      signer,
+      permit2Authorization,
+      paymentRequirements
+    );
+    return {
+      x402Version: x402Version2,
+      payload: { signature, permit2Authorization }
+    };
+  }
+  async function signPermit2Authorization(signer, permit2Authorization, requirements) {
+    const chainId = getEvmChainId(requirements.network);
+    return await signer.signTypedData({
+      domain: { name: "Permit2", chainId, verifyingContract: PERMIT2_ADDRESS },
+      types: permit2WitnessTypes,
+      primaryType: "PermitWitnessTransferFrom",
+      message: {
+        permitted: {
+          token: getAddress(permit2Authorization.permitted.token),
+          amount: BigInt(permit2Authorization.permitted.amount)
+        },
+        spender: getAddress(permit2Authorization.spender),
+        nonce: BigInt(permit2Authorization.nonce),
+        deadline: BigInt(permit2Authorization.deadline),
+        witness: {
+          to: getAddress(permit2Authorization.witness.to),
+          validAfter: BigInt(permit2Authorization.witness.validAfter)
+        }
+      }
+    });
+  }
 
   // node_modules/@x402/evm/dist/esm/chunk-2U5G4M6O.mjs
   var MAX_UINT256 = BigInt("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+  async function createPermit2Payload(signer, x402Version2, paymentRequirements) {
+    return createPermit2PayloadForProxy(
+      x402ExactPermit2ProxyAddress,
+      signer,
+      x402Version2,
+      paymentRequirements
+    );
+  }
+
+  // node_modules/@x402/evm/dist/esm/chunk-GNHGHC3E.mjs
+  init_esm3();
+  async function createEIP3009Payload(signer, x402Version2, paymentRequirements) {
+    const nonce = createNonce();
+    const now = Math.floor(Date.now() / 1e3);
+    const authorization = {
+      from: signer.address,
+      to: getAddress(paymentRequirements.payTo),
+      value: paymentRequirements.amount,
+      validAfter: "0",
+      validBefore: (now + paymentRequirements.maxTimeoutSeconds).toString(),
+      nonce
+    };
+    const signature = await signEIP3009Authorization(signer, authorization, paymentRequirements);
+    const payload = {
+      authorization,
+      signature
+    };
+    return {
+      x402Version: x402Version2,
+      payload
+    };
+  }
+  async function signEIP3009Authorization(signer, authorization, requirements) {
+    const chainId = getEvmChainId(requirements.network);
+    if (!requirements.extra?.name || !requirements.extra?.version) {
+      throw new Error(
+        `EIP-712 domain parameters (name, version) are required in payment requirements for asset ${requirements.asset}`
+      );
+    }
+    const { name: name2, version: version8 } = requirements.extra;
+    const domain2 = {
+      name: name2,
+      version: version8,
+      chainId,
+      verifyingContract: getAddress(requirements.asset)
+    };
+    const message2 = {
+      from: getAddress(authorization.from),
+      to: getAddress(authorization.to),
+      value: BigInt(authorization.value),
+      validAfter: BigInt(authorization.validAfter),
+      validBefore: BigInt(authorization.validBefore),
+      nonce: authorization.nonce
+    };
+    return await signer.signTypedData({
+      domain: domain2,
+      types: authorizationTypes,
+      primaryType: "TransferWithAuthorization",
+      message: message2
+    });
+  }
+  var ExactEvmScheme = class {
+    /**
+     * Creates a new ExactEvmClient instance.
+     *
+     * @param signer - The EVM signer for client operations.
+     *   Base flow only requires `address` + `signTypedData`.
+     *   Extension enrichment (EIP-2612 / ERC-20 approval sponsoring) additionally
+     *   requires optional capabilities like `readContract` and tx signing helpers.
+     * @param options - Optional RPC configuration used to backfill extension capabilities.
+     */
+    constructor(signer, options) {
+      this.signer = signer;
+      this.options = options;
+      this.scheme = "exact";
+      this.findDefaultAsset = findDefaultAsset;
+    }
+    /**
+     * Creates a payment payload for the Exact scheme.
+     * Routes to EIP-3009 or Permit2 based on requirements.extra.assetTransferMethod.
+     *
+     * For Permit2 flows, if the server advertises `eip2612GasSponsoring` and the
+     * signer supports `readContract`, automatically signs an EIP-2612 permit
+     * when Permit2 allowance is insufficient.
+     *
+     * @param x402Version - The x402 protocol version
+     * @param paymentRequirements - The payment requirements
+     * @param context - Optional context with server-declared extensions
+     * @returns Promise resolving to a payment payload result (with optional extensions)
+     */
+    async createPaymentPayload(x402Version2, paymentRequirements, context) {
+      const assetTransferMethod = paymentRequirements.extra?.assetTransferMethod ?? "eip3009";
+      if (assetTransferMethod === "permit2") {
+        const result = await createPermit2Payload(this.signer, x402Version2, paymentRequirements);
+        const eip2612Extensions = await trySignEip2612PermitExtension(
+          this.signer,
+          this.options,
+          paymentRequirements,
+          result,
+          context
+        );
+        if (eip2612Extensions) {
+          return {
+            ...result,
+            extensions: eip2612Extensions
+          };
+        }
+        const erc20Extensions = await trySignErc20ApprovalExtension(
+          this.signer,
+          this.options,
+          paymentRequirements,
+          context
+        );
+        if (erc20Extensions) {
+          return {
+            ...result,
+            extensions: erc20Extensions
+          };
+        }
+        return result;
+      }
+      return createEIP3009Payload(this.signer, x402Version2, paymentRequirements);
+    }
+  };
 
   // node_modules/@walletconnect/ethereum-provider/dist/index.js
   var import_events17 = __toESM(require_events(), 1);
@@ -108118,7 +109808,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       })();
       const docsBaseUrl = "https://oxlib.sh";
       const docs = `${docsBaseUrl}${docsPath9 ?? ""}`;
-      const message = [
+      const message2 = [
         shortMessage || "An error occurred.",
         ...options.metaMessages ? ["", ...options.metaMessages] : [],
         ...details || docsPath9 ? [
@@ -108127,7 +109817,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
           docsPath9 ? `See: ${docs}` : void 0
         ] : []
       ].filter((x13) => typeof x13 === "string").join("\n");
-      super(message, options.cause ? { cause: options.cause } : void 0);
+      super(message2, options.cause ? { cause: options.cause } : void 0);
       Object.defineProperty(this, "details", {
         enumerable: true,
         configurable: true,
@@ -109833,7 +111523,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       this.iHash.destroy();
     }
   };
-  var hmac2 = (hash4, key, message) => new HMAC2(hash4, key).update(message).digest();
+  var hmac2 = (hash4, key, message2) => new HMAC2(hash4, key).update(message2).digest();
   hmac2.create = (hash4, key) => new HMAC2(hash4, key);
 
   // node_modules/@walletconnect/utils/node_modules/ox/node_modules/@noble/curves/esm/abstract/modular.js
@@ -115356,16 +117046,16 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       aInRange3("num < 2^" + fnBits, num2, _0n19, ORDER_MASK);
       return Fn5.toBytes(num2);
     }
-    function validateMsgAndHash(message, prehash) {
-      _abytes2(message, void 0, "message");
-      return prehash ? _abytes2(hash4(message), void 0, "prehashed message") : message;
+    function validateMsgAndHash(message2, prehash) {
+      _abytes2(message2, void 0, "message");
+      return prehash ? _abytes2(hash4(message2), void 0, "prehashed message") : message2;
     }
-    function prepSig(message, privateKey, opts) {
+    function prepSig(message2, privateKey, opts) {
       if (["recovered", "canonical"].some((k10) => k10 in opts))
         throw new Error("sign() legacy options not supported");
       const { lowS, prehash, extraEntropy: extraEntropy3 } = validateSigOpts(opts, defaultSigOpts);
-      message = validateMsgAndHash(message, prehash);
-      const h1int = bits2int_modN(message);
+      message2 = validateMsgAndHash(message2, prehash);
+      const h1int = bits2int_modN(message2);
       const d17 = _normFnElement(Fn5, privateKey);
       const seedArgs = [int2octets(d17), int2octets(h1int)];
       if (extraEntropy3 != null && extraEntropy3 !== false) {
@@ -115396,9 +117086,9 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
       }
       return { seed, k2sig };
     }
-    function sign3(message, secretKey, opts = {}) {
-      message = ensureBytes3("message", message);
-      const { seed, k2sig } = prepSig(message, secretKey, opts);
+    function sign3(message2, secretKey, opts = {}) {
+      message2 = ensureBytes3("message", message2);
+      const { seed, k2sig } = prepSig(message2, secretKey, opts);
       const drbg = createHmacDrbg3(hash4.outputLen, Fn5.BYTES, hmac4);
       const sig = drbg(seed, k2sig);
       return sig;
@@ -115430,10 +117120,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
         return false;
       return sig;
     }
-    function verify3(signature, message, publicKey, opts = {}) {
+    function verify3(signature, message2, publicKey, opts = {}) {
       const { lowS, prehash, format: format2 } = validateSigOpts(opts, defaultSigOpts);
       publicKey = ensureBytes3("publicKey", publicKey);
-      message = validateMsgAndHash(ensureBytes3("message", message), prehash);
+      message2 = validateMsgAndHash(ensureBytes3("message", message2), prehash);
       if ("strict" in opts)
         throw new Error("options.strict was renamed to lowS");
       const sig = format2 === void 0 ? tryParsingSig(signature) : Signature.fromBytes(ensureBytes3("sig", signature), format2);
@@ -115444,7 +117134,7 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
         if (lowS && sig.hasHighS())
           return false;
         const { r: r12, s: s23 } = sig;
-        const h16 = bits2int_modN(message);
+        const h16 = bits2int_modN(message2);
         const is3 = Fn5.inv(s23);
         const u1 = Fn5.create(h16 * is3);
         const u210 = Fn5.create(r12 * is3);
@@ -115457,10 +117147,10 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
         return false;
       }
     }
-    function recoverPublicKey5(signature, message, opts = {}) {
+    function recoverPublicKey5(signature, message2, opts = {}) {
       const { prehash } = validateSigOpts(opts, defaultSigOpts);
-      message = validateMsgAndHash(message, prehash);
-      return Signature.fromBytes(signature, "recovered").recoverPublicKey(message).toBytes();
+      message2 = validateMsgAndHash(message2, prehash);
+      return Signature.fromBytes(signature, "recovered").recoverPublicKey(message2).toBytes();
     }
     return Object.freeze({
       keygen,
@@ -121329,195 +123019,345 @@ ${t45.length}`);
   }
   var U9 = Object.freeze({ __proto__: null, convertWCMToAppKitOptions: q7, defineChain: _7 });
 
-  // public/x402-client.js
-  async function initPaymentUI() {
-    const token = localStorage.getItem("liq_gap_x402_token");
-    if (token) {
-      try {
-        const res = await fetch(`/api/payment/status?token=${token}`);
-        const data = await res.json();
-        if (data.hasAccess) {
-          document.cookie = `liq_gap_token=${token}; path=/; max-age=31536000`;
-          unlockDashboard();
-          return;
-        } else {
-          localStorage.removeItem("liq_gap_x402_token");
-          document.cookie = "liq_gap_token=; path=/; max-age=0";
-        }
-      } catch (e11) {
-        console.error(e11);
-      }
-    }
-    showPaymentModal();
-  }
-  function unlockDashboard() {
-    const modal = document.getElementById("x402-payment-modal");
-    if (modal) {
-      modal.style.display = "none";
-    }
-    const overlay = document.getElementById("x402-payment-overlay");
-    if (overlay) {
-      overlay.style.display = "none";
-    }
-  }
-  function showPaymentModal() {
-    let modal = document.getElementById("x402-payment-modal");
-    if (!modal) {
-      const overlay = document.createElement("div");
-      overlay.id = "x402-payment-overlay";
-      overlay.style.position = "fixed";
-      overlay.style.top = "0";
-      overlay.style.left = "0";
-      overlay.style.width = "100%";
-      overlay.style.height = "100%";
-      overlay.style.backgroundColor = "rgba(0,0,0,0.8)";
-      overlay.style.backdropFilter = "blur(5px)";
-      overlay.style.zIndex = "9998";
-      modal = document.createElement("div");
-      modal.id = "x402-payment-modal";
-      modal.style.position = "fixed";
-      modal.style.top = "50%";
-      modal.style.left = "50%";
-      modal.style.transform = "translate(-50%, -50%)";
-      modal.style.backgroundColor = "#1e1e1e";
-      modal.style.padding = "30px";
-      modal.style.borderRadius = "12px";
-      modal.style.zIndex = "9999";
-      modal.style.color = "#fff";
-      modal.style.textAlign = "center";
-      modal.style.minWidth = "400px";
-      modal.innerHTML = `
-      <h2 style="margin-top:0;">\u652F\u4ED8\u89E3\u9501\u9AD8\u7EA7\u529F\u80FD</h2>
-      <p style="color:#aaa; margin-bottom:24px;">\u652F\u6301 Web3 \u6D4F\u89C8\u5668\u94B1\u5305 (\u63D2\u4EF6) \u6216 WalletConnect (\u624B\u673A\u626B\u7801)</p>
-      <div style="display:grid; grid-template-columns:1fr 1fr; gap:15px;">
-        <button id="btn-mm-24h" style="padding:12px; background:#00796b; color:#fff; border:none; border-radius:8px; cursor:pointer;">\u{1F310} \u63D2\u4EF6\u652F\u4ED8 0.0001 USDC / 24h</button>
-        <button id="btn-mm-1m" style="padding:12px; background:#00796b; color:#fff; border:none; border-radius:8px; cursor:pointer;">\u{1F310} \u63D2\u4EF6\u652F\u4ED8 0.0030 USDC / \u5305\u6708</button>
-        <button id="btn-wc-24h" style="padding:12px; background:#00796b; color:#fff; border:none; border-radius:8px; cursor:pointer;">\u{1F4F1} \u626B\u7801\u652F\u4ED8 0.0001 USDC / 24h</button>
-        <button id="btn-wc-1m" style="padding:12px; background:#34495e; color:#fff; border:none; border-radius:8px; cursor:pointer;">\u{1F4F1} \u626B\u7801\u652F\u4ED8 0.0030 USDC / \u5305\u6708</button>
-      </div>
-      <div style="margin-top: 24px; font-size: 12px;">
-        <a href="/admin.html" style="color: #848E9C; text-decoration: none; border-bottom: 1px dashed #848E9C; padding-bottom: 2px;">\u{1F511} \u7BA1\u7406\u5458\u540E\u53F0\u901A\u9053</a>
-      </div>
-    `;
-      document.body.appendChild(overlay);
-      document.body.appendChild(modal);
-      document.getElementById("btn-mm-24h").addEventListener("click", () => handlePayment("daily", false, document.getElementById("btn-mm-24h")));
-      document.getElementById("btn-mm-1m").addEventListener("click", () => handlePayment("monthly", false, document.getElementById("btn-mm-1m")));
-      document.getElementById("btn-wc-24h").addEventListener("click", () => handlePayment("daily", true, document.getElementById("btn-wc-24h")));
-      document.getElementById("btn-wc-1m").addEventListener("click", () => handlePayment("monthly", true, document.getElementById("btn-wc-1m")));
-    }
-  }
-  async function handlePayment(type, useWalletConnect, btnElement) {
-    let provider;
-    const projectId = "9cea3b242316cfb3d6ab12e8604fea22";
-    const originalText = btnElement.innerText;
-    btnElement.innerText = "\u6B63\u5728\u5524\u8D77...";
-    btnElement.disabled = true;
+  // public/payment-client.js
+  var PENDING_KEY = "liq_gap_pending_order_v2";
+  var config2;
+  var modal;
+  var walletPromise;
+  var busy = false;
+  var polling = false;
+  var unlocked = false;
+  var checkTimer;
+  var bootstrapPromise;
+  var nativeFetch = window.fetch.bind(window);
+  async function api5(url2, options = {}) {
+    const controller16 = new AbortController();
+    const timer = setTimeout(() => controller16.abort(), 3e4);
     try {
-      if (useWalletConnect) {
-        provider = await N18.init({
-          projectId,
-          showQrModal: true,
-          chains: [84532],
-          // Base Sepolia
-          qrModalOptions: { themeMode: "dark" }
-        });
-        await provider.connect();
-      } else {
-        if (!window.ethereum) {
-          alert("\u672A\u68C0\u6D4B\u5230 Web3 \u6D4F\u89C8\u5668\u94B1\u5305\u63D2\u4EF6\uFF0C\u8BF7\u5B89\u88C5\u6216\u4F7F\u7528\u626B\u7801\u652F\u4ED8\u3002");
-          btnElement.innerText = originalText;
-          btnElement.disabled = false;
-          return;
-        }
-        provider = window.ethereum;
-        await provider.request({ method: "eth_requestAccounts" });
-        const accounts2 = await provider.request({ method: "eth_accounts" });
-        if (!accounts2 || accounts2.length === 0) {
-          throw new Error("User rejected account access");
-        }
-        const chainId = await provider.request({ method: "eth_chainId" });
-        if (chainId !== "0x14a34" && chainId !== "84532") {
-          try {
-            await provider.request({
-              method: "wallet_switchEthereumChain",
-              params: [{ chainId: "0x14a34" }]
-            });
-          } catch (e11) {
-            alert("\u8BF7\u5148\u5728\u94B1\u5305\u4E2D\u5207\u6362\u5230 Base Sepolia \u6D4B\u8BD5\u7F51\uFF01");
-            btnElement.innerText = originalText;
-            btnElement.disabled = false;
-            return;
-          }
-        }
-      }
-      const accounts = useWalletConnect ? provider.accounts : await provider.request({ method: "eth_accounts" });
-      const address = accounts[0];
-      const walletClient = createWalletClient({
-        account: address,
-        chain: baseSepolia,
-        transport: custom(provider)
-      });
-      const signer = {
-        address,
-        signTypedData: async (args) => {
-          try {
-            return await walletClient.signTypedData({
-              account: address,
-              domain: args.domain,
-              types: args.types,
-              primaryType: args.primaryType,
-              message: args.message
-            });
-          } catch (err) {
-            throw err;
-          }
-        }
-      };
-      const txParams = {
-        to: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-        // USDC Contract on Base Sepolia
-        from: address,
-        // a9059cbb = transfer(address,uint256)
-        // Recipient: 0x5c8E2fd639AaBa1DdB76504fC33A608528c6f975
-        // Amount: type === 'daily' ? 100 (0.0001) : 3000 (0.0030)
-        data: "0xa9059cbb0000000000000000000000005c8E2fd639AaBa1DdB76504fC33A608528c6f975" + (type === "daily" ? "0000000000000000000000000000000000000000000000000000000000000064" : "0000000000000000000000000000000000000000000000000000000000000bb8")
-      };
-      let txHash;
-      if (useWalletConnect) {
-        txHash = await provider.request({ method: "eth_sendTransaction", params: [txParams] });
-      } else {
-        txHash = await window.ethereum.request({ method: "eth_sendTransaction", params: [txParams] });
-      }
-      const res = await fetch(`/api/payment/buy/${type}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ txHash })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.token) {
-          localStorage.setItem("liq_gap_x402_token", data.token);
-          document.cookie = `liq_gap_token=${data.token}; path=/; max-age=31536000`;
-          unlockDashboard();
-          window.location.reload();
-        }
-      } else {
-        alert(`\u652F\u4ED8\u6821\u9A8C\u5931\u8D25 (HTTP ${res.status})`);
-      }
-    } catch (err) {
-      console.error(err);
-      if (err.message && (err.message.includes("User rejected") || err.message.includes("user rejected") || err.code === 4001 || err.code === "ACTION_REJECTED")) {
-        alert("\u652F\u4ED8\u5DF2\u53D6\u6D88 (\u7528\u6237\u62D2\u7EDD\u4E86\u4EA4\u6613)\u3002");
-      } else {
-        alert(`\u652F\u4ED8\u5F02\u5E38: ${err.message}`);
-      }
+      const response = await nativeFetch(url2, { ...options, signal: controller16.signal });
+      const data = await response.json();
+      if (!response.ok && response.status !== 402) throw new Error(data.error || `HTTP ${response.status}`);
+      return { response, data };
     } finally {
-      btnElement.innerText = originalText;
-      btnElement.disabled = false;
+      clearTimeout(timer);
     }
   }
-  return __toCommonJS(x402_client_exports);
+  function pendingOrder() {
+    try {
+      return JSON.parse(localStorage.getItem(PENDING_KEY) || "null");
+    } catch (_8) {
+      return null;
+    }
+  }
+  function savePending(order) {
+    localStorage.setItem(PENDING_KEY, JSON.stringify(order));
+  }
+  function message(text) {
+    const el = document.getElementById("payment-status");
+    if (el) el.textContent = text;
+  }
+  function lock() {
+    if (unlocked) {
+      location.reload();
+      return;
+    }
+    document.body.classList.add("payment-locked");
+    if (modal) modal.hidden = false;
+  }
+  function grant(data) {
+    if (!data.hasAccess && !data.success) return;
+    if (data.token) localStorage.setItem("liq_gap_x402_token", data.token);
+    localStorage.removeItem(PENDING_KEY);
+    if (!unlocked) {
+      unlocked = true;
+      document.body.classList.remove("payment-locked");
+      if (modal) modal.hidden = true;
+      window.dispatchEvent(new Event("payment-access-granted"));
+    }
+  }
+  async function checkAccess() {
+    try {
+      const token = localStorage.getItem("liq_gap_x402_token");
+      const { data } = await api5("/api/payment/status", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (data.hasAccess) grant(data);
+      else {
+        localStorage.removeItem("liq_gap_x402_token");
+        lock();
+      }
+      return !!data.hasAccess;
+    } catch (_8) {
+      if (!unlocked) message("\u6682\u65F6\u65E0\u6CD5\u68C0\u67E5\u6743\u9650\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u540E\u91CD\u8BD5\uFF1B\u4E0D\u4F1A\u81EA\u52A8\u518D\u6B21\u6263\u8D39\u3002");
+      return false;
+    }
+  }
+  async function walletConnect() {
+    if (!walletPromise) {
+      walletPromise = N18.init({
+        projectId: config2.projectId,
+        chains: [config2.chainId],
+        showQrModal: true,
+        methods: ["eth_sendTransaction", "personal_sign", "eth_signTypedData_v4"],
+        optionalMethods: ["wallet_switchEthereumChain"],
+        events: ["chainChanged", "accountsChanged"],
+        rpcMap: { [config2.chainId]: "https://sepolia.base.org" },
+        metadata: {
+          name: "Liquidity Gap",
+          description: "\u884C\u60C5\u5206\u6790\u5DE5\u5177\u8BBF\u95EE\u6388\u6743",
+          url: location.origin,
+          icons: []
+        },
+        qrModalOptions: { themeMode: "dark", themeVariables: { "--wcm-z-index": "10001" } }
+      }).catch((error62) => {
+        walletPromise = null;
+        throw error62;
+      });
+    }
+    const provider = await walletPromise;
+    const hasValidSession = () => Number(provider.session?.expiry) * 1e3 > Date.now();
+    if (provider.session && !hasValidSession()) await provider.disconnect();
+    if (!provider.session) await provider.connect();
+    if (!hasValidSession()) {
+      throw new Error("\u624B\u673A\u94B1\u5305\u5C1A\u672A\u5B8C\u6210\u8FDE\u63A5\uFF0C\u8BF7\u91CD\u65B0\u8FDE\u63A5\u5E76\u5728\u94B1\u5305\u4E2D\u6279\u51C6\u6388\u6743\u3002");
+    }
+    const chainPrefix = `eip155:${config2.chainId}:`;
+    const accounts = Object.values(provider.session.namespaces || {}).flatMap((namespace) => namespace.accounts || []);
+    if (!accounts.some((account) => account.startsWith(chainPrefix))) {
+      throw new Error("\u624B\u673A\u94B1\u5305\u672A\u6388\u6743 Base Sepolia \u8D26\u6237\uFF0C\u8BF7\u70B9\u51FB\u201C\u91CD\u7F6E\u94B1\u5305\u8FDE\u63A5\u201D\u540E\u91CD\u65B0\u8FDE\u63A5\u5E76\u6279\u51C6\u8BE5\u7F51\u7EDC\u3002");
+    }
+    return provider;
+  }
+  async function resetConnection() {
+    if (busy) return;
+    if (walletPromise) {
+      try {
+        const provider = await walletPromise;
+        if (provider.session) await provider.disconnect();
+      } catch (_8) {
+      }
+    }
+    walletPromise = null;
+    message("\u5DF2\u65AD\u5F00\u65E7\u4F1A\u8BDD\u3002\u8BF7\u91CD\u65B0\u8FDE\u63A5\u624B\u673A\u94B1\u5305\uFF0C\u5DF2\u521B\u5EFA\u7684\u8BA2\u5355\u548C\u652F\u4ED8\u8BB0\u5F55\u4E0D\u4F1A\u5220\u9664\u3002");
+  }
+  function friendlyError(error62) {
+    const text = String(error62.shortMessage || error62.message || "");
+    if ([4001, "ACTION_REJECTED"].includes(error62.code) || /reject|denied|cancel/i.test(text)) {
+      return "\u5DF2\u53D6\u6D88\u94B1\u5305\u64CD\u4F5C\uFF0C\u672A\u521B\u5EFA\u65B0\u7684\u652F\u4ED8\u6388\u6743\u3002";
+    }
+    if (/reset|disconnect|expired|pairing|proposal|call connect\(\) before request\(\)/i.test(text)) {
+      return "\u624B\u673A\u94B1\u5305\u8FDE\u63A5\u5DF2\u4E2D\u65AD\u3002\u8BF7\u56DE\u5230\u6B64\u9875\u9762\uFF0C\u70B9\u51FB\u201C\u91CD\u7F6E\u94B1\u5305\u8FDE\u63A5\u201D\u540E\u91CD\u65B0\u8FDE\u63A5\uFF1B\u5DF2\u6709\u8BA2\u5355\u8BF7\u7EE7\u7EED\u67E5\u8BE2\uFF0C\u4E0D\u8981\u91CD\u590D\u652F\u4ED8\u3002";
+    }
+    return text || "\u64CD\u4F5C\u672A\u5B8C\u6210\uFF0C\u8BF7\u68C0\u67E5\u94B1\u5305\u7F51\u7EDC\u5E76\u91CD\u8BD5\u3002";
+  }
+  async function queryOrder() {
+    const order = pendingOrder();
+    if (!order || polling) return;
+    polling = true;
+    try {
+      const { data } = await api5(`/api/payment/orders/${order.id}`, { headers: { "X-Order-Key": order.key } });
+      if (data.hasAccess) grant(data);
+      else if (data.state === "failed") {
+        localStorage.removeItem(PENDING_KEY);
+        message(data.error || "\u94FE\u4E0A\u786E\u8BA4\u8BE5\u652F\u4ED8\u672A\u6267\u884C\uFF0C\u53EF\u4EE5\u91CD\u65B0\u9009\u62E9\u5957\u9910\u3002");
+      } else if (data.state === "revoked" || data.state === "paid" || data.state === "cancelled") {
+        localStorage.removeItem(PENDING_KEY);
+        message(data.state === "revoked" ? "\u8BE5\u8BA2\u5355\u6743\u9650\u5DF2\u88AB\u64A4\u9500\u3002" : data.state === "cancelled" ? "\u8BA2\u5355\u5DF2\u53D6\u6D88\uFF0C\u53EF\u4EE5\u91CD\u65B0\u9009\u62E9\u5957\u9910\u3002" : "\u8BE5\u8BA2\u5355\u6743\u9650\u5DF2\u5230\u671F\u3002");
+      } else if (data.state === "pending") {
+        message(`\u8BA2\u5355 ${order.id}\uFF1A${data.error || "\u652F\u4ED8\u6388\u6743\u5DF2\u63D0\u4EA4\uFF0C\u6B63\u5728\u6838\u5BF9\u94FE\u4E0A\u5230\u8D26\uFF1B\u5207\u56DE\u672C\u9875\u9762\u53EF\u7EE7\u7EED\u67E5\u8BE2\u3002"}`);
+      } else {
+        message("\u8BA2\u5355\u5DF2\u4FDD\u5B58\uFF0C\u70B9\u51FB\u539F\u5957\u9910\u652F\u4ED8\u6309\u94AE\u53EF\u7EE7\u7EED\u7B7E\u540D\u6216\u63D0\u4EA4\u3002");
+      }
+    } catch (error62) {
+      message(`\u8BA2\u5355\u67E5\u8BE2\u6682\u672A\u5B8C\u6210\uFF1A${friendlyError(error62)} \u8BF7\u52FF\u91CD\u590D\u652F\u4ED8\u3002`);
+    } finally {
+      polling = false;
+    }
+  }
+  async function cancelUnsubmittedOrder() {
+    if (busy) return;
+    const order = pendingOrder();
+    if (!order) {
+      message("\u6CA1\u6709\u5F85\u5904\u7406\u8BA2\u5355\u3002");
+      return;
+    }
+    try {
+      await api5(`/api/payment/orders/${order.id}`, { method: "DELETE", headers: { "X-Order-Key": order.key } });
+      localStorage.removeItem(PENDING_KEY);
+      message("\u672A\u63D0\u4EA4\u7684\u8BA2\u5355\u5DF2\u53D6\u6D88\uFF0C\u53EF\u4EE5\u91CD\u65B0\u9009\u62E9\u5957\u9910\u6216\u91CD\u65B0\u7B7E\u540D\u3002\u5DF2\u63D0\u4EA4\u7ED3\u7B97\u7684\u8BA2\u5355\u4E0D\u80FD\u901A\u8FC7\u6B64\u64CD\u4F5C\u53D6\u6D88\u3002");
+    } catch (error62) {
+      message(friendlyError(error62));
+    }
+  }
+  async function pay2(type, mobile) {
+    if (busy) return;
+    if (!document.getElementById("payment-consent").checked) {
+      message("\u8BF7\u5148\u9605\u8BFB\u5E76\u52FE\u9009\u514D\u8D23\u58F0\u660E\u3002");
+      return;
+    }
+    busy = true;
+    modal.querySelectorAll("button[data-plan]").forEach((el) => {
+      el.disabled = true;
+    });
+    try {
+      if (!window.isSecureContext || !window.crypto?.subtle) {
+        throw new Error("\u94B1\u5305\u652F\u4ED8\u9700\u8981 HTTPS \u5B89\u5168\u8FDE\u63A5\uFF1B\u624B\u673A\u8BF7\u4F7F\u7528 HTTPS \u57DF\u540D\u8BBF\u95EE\uFF0C\u4E0D\u80FD\u4F7F\u7528\u5C40\u57DF\u7F51 HTTP \u5730\u5740\u3002");
+      }
+      let order = pendingOrder();
+      if (order && order.type !== type) throw new Error("\u6709\u672A\u5B8C\u6210\u8BA2\u5355\uFF0C\u8BF7\u5148\u67E5\u8BE2\u539F\u8BA2\u5355\uFF0C\u907F\u514D\u91CD\u590D\u4ED8\u6B3E\u3002");
+      if (order) {
+        const { data: data2 } = await api5(`/api/payment/orders/${order.id}`, { headers: { "X-Order-Key": order.key } });
+        if (data2.hasAccess) {
+          grant(data2);
+          return;
+        }
+        if (data2.state !== "new") {
+          await queryOrder();
+          return;
+        }
+      }
+      message("\u6B63\u5728\u8FDE\u63A5\u94B1\u5305\uFF0C\u8BF7\u5728\u624B\u673A\u94B1\u5305\u4E2D\u6279\u51C6\u8FDE\u63A5\uFF0C\u5E76\u8FD4\u56DE\u6B64\u9875\u9762\u5B8C\u6210\u652F\u4ED8\u7B7E\u540D\u3002");
+      const provider = mobile ? await walletConnect() : window.ethereum;
+      if (!provider) throw new Error("\u672A\u68C0\u6D4B\u5230\u6D4F\u89C8\u5668\u94B1\u5305\u3002\u624B\u673A\u53EF\u4F7F\u7528\u94B1\u5305\u5185\u7F6E\u6D4F\u89C8\u5668\uFF0C\u6216\u9009\u62E9\u624B\u673A\u94B1\u5305\u8FDE\u63A5\u3002");
+      const accounts = await provider.request({ method: "eth_requestAccounts" });
+      if (!accounts.length) throw new Error("\u94B1\u5305\u5C1A\u672A\u6388\u6743\u8D26\u6237");
+      const address = accounts[0];
+      const chainId = Number(await provider.request({ method: "eth_chainId" }));
+      if (chainId !== config2.chainId) {
+        await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x14a34" }] });
+        if (Number(await provider.request({ method: "eth_chainId" })) !== config2.chainId) throw new Error("\u8BF7\u5207\u6362\u5230 Base Sepolia \u6D4B\u8BD5\u7F51");
+      }
+      if (!order) {
+        const { data: data2 } = await api5("/api/payment/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type, disclaimerVersion: config2.disclaimerVersion })
+        });
+        order = { ...data2, type };
+        savePending(order);
+      }
+      const url2 = `/api/payment/orders/${order.id}/pay`;
+      if (!order.signature) {
+        const { response, data: data2 } = await api5(url2, { method: "POST", headers: { "X-Order-Key": order.key } });
+        if (response.status !== 402) {
+          if (data2.hasAccess) grant(data2);
+          else await queryOrder();
+          return;
+        }
+        const required2 = decodePaymentRequiredHeader(response.headers.get("PAYMENT-REQUIRED"));
+        const expected = config2.plans[type];
+        const accepted = required2.accepts[0];
+        if (required2.accepts.length !== 1 || accepted.amount !== expected.amount || accepted.network !== config2.network || accepted.asset.toLowerCase() !== config2.asset.toLowerCase() || accepted.payTo.toLowerCase() !== config2.payTo.toLowerCase()) throw new Error("\u652F\u4ED8\u8981\u6C42\u4E0E\u5C55\u793A\u5957\u9910\u4E0D\u4E00\u81F4\uFF0C\u5DF2\u505C\u6B62");
+        const wallet = createWalletClient({ account: address, chain: baseSepolia, transport: custom(provider) });
+        const client = new x402Client();
+        client.setSpendControls({ maxAmountPerPayment: `$${expected.price}` });
+        client.register(config2.network, new ExactEvmScheme({
+          address,
+          signTypedData: (args) => wallet.signTypedData({ ...args, account: address })
+        }));
+        message(`\u8BF7\u5728\u94B1\u5305\u786E\u8BA4 ${expected.price} USDC \u7684 x402 \u652F\u4ED8\u6388\u6743\u7B7E\u540D\uFF08\u4E0D\u662F\u666E\u901A\u767B\u5F55\u7B7E\u540D\uFF09\u3002`);
+        const payload = await client.createPaymentPayload(required2);
+        order.signature = encodePaymentSignatureHeader(payload);
+        savePending(order);
+      }
+      message("\u6B63\u5728\u63D0\u4EA4\u652F\u4ED8\u6388\u6743\uFF0C\u8BF7\u52FF\u91CD\u590D\u70B9\u51FB\u6216\u518D\u6B21\u8F6C\u8D26\u3002");
+      const { data } = await api5(url2, { method: "POST", headers: {
+        "X-Order-Key": order.key,
+        "PAYMENT-SIGNATURE": order.signature
+      } });
+      if (data.hasAccess) grant(data);
+      else await queryOrder();
+    } catch (error62) {
+      message(friendlyError(error62));
+    } finally {
+      busy = false;
+      modal.querySelectorAll("button[data-plan]").forEach((el) => {
+        el.disabled = false;
+      });
+    }
+  }
+  function render() {
+    document.body.classList.add("payment-locked");
+    const style = document.createElement("style");
+    style.textContent = `
+    body.payment-locked { overflow:hidden; width:100%; }
+    body.payment-locked > main, body.payment-locked > header { display:none; }
+    #payment-dialog[hidden] { display:none; }
+    #payment-dialog { position:fixed; inset:0; z-index:9998; background:rgba(11,14,17,.96); overflow:auto; display:flex; flex-direction:column; padding:16px; box-sizing:border-box; }
+    .payment-card { flex:none; margin:auto; width:min(100%,560px); background:#181a20; color:#e0e3eb; border:1px solid #2b3139; border-radius:16px; padding:24px; box-sizing:border-box; font:14px/1.6 system-ui; }
+    .payment-card h2 { margin:0 0 8px; } .payment-card p { color:#aeb6c3; }
+    .payment-plans { display:grid; gap:12px; } .payment-plan { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:12px; border:1px solid #343b46; border-radius:10px; }
+    .payment-plan strong { grid-column:1/-1; } .payment-card button { padding:10px; border:0; border-radius:24px; background:#00796b; color:white; cursor:pointer; font:inherit; }
+    .payment-card button:disabled { opacity:.5; cursor:wait; } .payment-card .secondary { background:#303947; }
+    .payment-card a { color:#aeb6c3; } #payment-status { min-height:44px; color:#e9c56c; overflow-wrap:anywhere; }
+    .payment-consent { display:flex; align-items:flex-start; gap:8px; margin:16px 0; } .payment-consent input { flex:none; margin-top:6px; }
+    .payment-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    @media(max-width:400px) { .payment-card { padding:16px; } .payment-plan { grid-template-columns:1fr; } }
+  `;
+    document.head.appendChild(style);
+    modal = document.createElement("section");
+    modal.id = "payment-dialog";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-labelledby", "payment-title");
+    modal.innerHTML = `<div class="payment-card">
+    <h2 id="payment-title">\u89E3\u9501\u884C\u60C5\u5206\u6790\u5DE5\u5177</h2>
+    <p>\u5F53\u524D\u4E3A Base Sepolia \u6D4B\u8BD5\u7F51\uFF0C\u4EC5\u4F7F\u7528\u6D4B\u8BD5 USDC\u3002x402 \u652F\u4ED8\u91C7\u7528\u94B1\u5305\u6388\u6743\u7B7E\u540D\uFF0C\u6838\u5B9E\u5230\u8D26\u540E\u5F00\u59CB\u8BA1\u65F6\u3002</p>
+    <div class="payment-plans">${Object.entries(config2.plans).map(([type, plan]) => `
+      <div class="payment-plan"><strong>${plan.label} \xB7 ${plan.price} USDC</strong>
+      <button data-plan="${type}" data-mobile="false">\u6D4F\u89C8\u5668\u94B1\u5305\u652F\u4ED8</button>
+      <button data-plan="${type}" data-mobile="true">\u624B\u673A\u94B1\u5305 / \u626B\u7801</button></div>`).join("")}</div>
+    <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>\u6211\u5DF2\u9605\u8BFB\u5E76\u540C\u610F<a href="/disclaimer.html" target="_blank" rel="noopener">\u514D\u8D23\u58F0\u660E\u4E0E\u652F\u4ED8\u8BF4\u660E</a>\u3002\u884C\u60C5\u53EF\u80FD\u5EF6\u8FDF\u6216\u4E2D\u65AD\uFF0C\u5206\u6790\u4E0D\u6784\u6210\u6295\u8D44\u5EFA\u8BAE\uFF0C\u4E0D\u627F\u8BFA\u6536\u76CA\u3002</span></label>
+    <div id="payment-status" role="status" aria-live="polite"></div>
+    <div class="payment-actions"><button id="payment-query" class="secondary">\u67E5\u8BE2\u5DF2\u6709\u8BA2\u5355</button><button id="payment-reset" class="secondary">\u91CD\u7F6E\u94B1\u5305\u8FDE\u63A5</button><button id="payment-cancel" class="secondary">\u53D6\u6D88\u672A\u63D0\u4EA4\u8BA2\u5355</button></div>
+    <p>\u624B\u673A\u4E0A\u53EF\u76F4\u63A5\u8DF3\u8F6C\u94B1\u5305\uFF0C\u4E5F\u53EF\u5728\u94B1\u5305\u5185\u7F6E\u6D4F\u89C8\u5668\u6253\u5F00\u672C\u7AD9\uFF1B\u7535\u8111\u7AEF\u53EF\u626B\u7801\u3002\u8BF7\u52FF\u5411\u5BA2\u670D\u63D0\u4F9B\u52A9\u8BB0\u8BCD\u6216\u79C1\u94A5\u3002</p>
+    <a href="/admin.html">\u7BA1\u7406\u5458\u901A\u9053</a>
+  </div>`;
+    document.body.appendChild(modal);
+    modal.querySelectorAll("[data-plan]").forEach((button) => button.addEventListener("click", () => pay2(button.dataset.plan, button.dataset.mobile === "true")));
+    document.getElementById("payment-query").onclick = () => {
+      if (pendingOrder()) queryOrder();
+      else checkAccess();
+    };
+    document.getElementById("payment-reset").onclick = resetConnection;
+    document.getElementById("payment-cancel").onclick = cancelUnsubmittedOrder;
+  }
+  function initPaymentUI() {
+    if (bootstrapPromise) return bootstrapPromise;
+    bootstrapPromise = (async () => {
+      try {
+        ({ data: config2 } = await api5("/api/payment/config"));
+        render();
+        await checkAccess();
+        if (!unlocked && pendingOrder()) queryOrder();
+        checkTimer = setInterval(() => {
+          if (document.hidden) return;
+          if (!unlocked && pendingOrder()) queryOrder();
+          else if (unlocked) checkAccess();
+        }, 1e4);
+        document.addEventListener("visibilitychange", () => {
+          if (!document.hidden) {
+            checkAccess();
+            if (pendingOrder()) queryOrder();
+          }
+        });
+        window.addEventListener("payment-access-revoked", lock);
+        window.fetch = async (...args) => {
+          const response = await nativeFetch(...args);
+          const url2 = new URL(args[0] instanceof Request ? args[0].url : args[0], location.href);
+          if (response.status === 401 && url2.origin === location.origin && url2.pathname.startsWith("/api/")) lock();
+          return response;
+        };
+        window.addEventListener("pagehide", () => clearInterval(checkTimer), { once: true });
+      } catch (_8) {
+        const error62 = document.createElement("p");
+        error62.textContent = "\u652F\u4ED8\u670D\u52A1\u6682\u4E0D\u53EF\u7528\uFF0C\u8BF7\u68C0\u67E5\u7F51\u7EDC\u540E\u5237\u65B0\u9875\u9762\u3002\u672A\u6388\u6743\u65F6\u4E0D\u4F1A\u52A0\u8F7D\u884C\u60C5\u3002";
+        document.body.prepend(error62);
+      }
+    })();
+    return bootstrapPromise;
+  }
+  return __toCommonJS(payment_client_exports);
 })();
 /*! Bundled license information:
 

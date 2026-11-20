@@ -22,7 +22,7 @@ async function main() {
     platform: 'node',
     target: 'node18',
     outfile: path.join(distDir, 'server.bundled.js'),
-    external: ['bytenode', '@aws-sdk/client-s3'],
+    external: ['bytenode', '@aws-sdk/client-s3', 'better-sqlite3'],
     minify: true,
   });
 

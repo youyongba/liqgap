@@ -904,9 +904,13 @@
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="./x402-bundle.js"></script>
-    <script src="./app.js"></script>
     <script>
-      // Initialize x402 payment UI on load
+      // Start data requests only after the server has confirmed access.
+      window.addEventListener('payment-access-granted', () => {
+        const script = document.createElement('script');
+        script.src = './app.js';
+        document.body.appendChild(script);
+      }, { once: true });
       window.addEventListener('DOMContentLoaded', () => {
         if (window.X402App && typeof window.X402App.initPaymentUI === 'function') {
           window.X402App.initPaymentUI();

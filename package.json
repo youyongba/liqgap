@@ -36,6 +36,7 @@
     "@x402/express": "^2.29.0",
     "@x402/fetch": "^2.29.0",
     "axios": "^1.7.7",
+    "better-sqlite3": "^11.10.0",
     "compression": "^1.8.1",
     "dotenv": "^17.4.2",
     "express": "^4.21.0",
