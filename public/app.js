@@ -55,7 +55,8 @@
     liqHeatmapMeasure: document.getElementById('liq-heatmap-measure'),
     liqHeatmapAlert: document.getElementById('liq-heatmap-alert'),
     subCard: document.getElementById('sub-card'),
-    mainCard: document.getElementById('main-card')
+    mainCard: document.getElementById('main-card'),
+    fitContentBtn: document.getElementById('fit-content-btn')
   };
 
   // ============================================================
@@ -3822,6 +3823,23 @@
   let chartsFitted = false;
   function markChartsNeedFit() { chartsFitted = false; }
 
+  // 主图「还原适应窗口」按钮：手动缩放/拖动后一键恢复
+  //   - 左右：timeScale().fitContent() 让所有 K 线进入可视区
+  //   - 上下：rightPriceScale.autoScale=true 让 Y 轴按可见 K 线高低价自适应
+  //     （用户手动拖动 Y 轴会切成手动模式，这里重置回 autoScale）
+  if (els.fitContentBtn) {
+    els.fitContentBtn.addEventListener('click', () => {
+      try {
+        mainChart.priceScale('right').applyOptions({
+          autoScale: true,
+          scaleMargins: { top: 0.1, bottom: 0.1 }
+        });
+      } catch (_) { /* noop */ }
+      try { mainChart.timeScale().fitContent(); } catch (_) { /* noop */ }
+      try { syncSubChartsToMain(); } catch (_) { /* noop */ }
+    });
+  }
+
   // ---- 各种渲染器 (Renderers) ----
 
   // 增量 series 更新 helper：避免每次 SSE 推送都用 setData 全量重设
@@ -4206,11 +4224,10 @@
   }
 
   // ============================================================
-  // 成交量分布 / Volume Profile（POC + VAH + VAL + LVN 价格线）
+  // 成交量分布 / Volume Profile（VAH + VAL + LVN 价格线，POC 已按需求移除）
   // ============================================================
   //
   // 用 lightweight-charts 的 PriceLine 在主 K 线图上标注关键价位：
-  //   - POC      (Point of Control,  金色实线)  · 公允价值 / 价格重力中心
   //   - VAH/VAL  (Value Area H/L,    紫色虚线)  · 70% 成交分布区上下沿
   //   - LVN-N    (Low Volume Node,   红色点线)  · 前 3 个最深的真空带中线
   //                                              价格回测时常作翻转位
@@ -4253,9 +4270,8 @@
   function _renderVolumeProfilePriceLines(vp) {
     if (!vp || !candleSeries) return;
     const lvnZones = Array.isArray(vp.lvnZones) ? vp.lvnZones.slice(0, VP_TOP_LVN_COUNT) : [];
-    // hash 防止反复重建（POC/VAH/VAL/LVN 变化频率很低）
+    // hash 防止反复重建（VAH/VAL/LVN 变化频率很低）
     const hash = JSON.stringify({
-      p: vp.poc && vp.poc.priceLow,
       h: vp.vah,
       l: vp.val,
       z: lvnZones.map((z) => [+z.priceMid.toFixed(2), +z.depth.toFixed(3)])
@@ -4269,18 +4285,6 @@
     }
     _vpPriceLines = [];
 
-    // POC（金色实线，最强重力位）
-    if (vp.poc && Number.isFinite(vp.poc.priceLow) && Number.isFinite(vp.poc.priceHigh)) {
-      const pocPrice = (vp.poc.priceLow + vp.poc.priceHigh) / 2;
-      _vpPriceLines.push(candleSeries.createPriceLine({
-        price: pocPrice,
-        color: 'rgba(255, 215, 0, 0.85)',
-        lineStyle: LightweightCharts.LineStyle.Solid,
-        lineWidth: 2,
-        axisLabelVisible: true,
-        title: `POC ${pocPrice.toFixed(2)}`
-      }));
-    }
     // VAH / VAL（紫色虚线，价值区上下沿）
     if (Number.isFinite(vp.vah)) {
       _vpPriceLines.push(candleSeries.createPriceLine({
