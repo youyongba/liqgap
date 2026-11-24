@@ -43,10 +43,10 @@ function lock() {
   document.body.classList.add('payment-locked');
   if (modal) modal.hidden = false;
 }
-function grant(data) {
+function grant(data, orderId) {
   if (!data.hasAccess && !data.success) return;
   if (data.token) localStorage.setItem('liq_gap_x402_token', data.token);
-  localStorage.removeItem(PENDING_KEY);
+  if (orderId && pendingOrder()?.id === orderId) localStorage.removeItem(PENDING_KEY);
   if (!unlocked) {
     unlocked = true;
     document.body.classList.remove('payment-locked');
@@ -128,7 +128,7 @@ async function queryOrder() {
   polling = true;
   try {
     const { data } = await api(`/api/payment/orders/${order.id}`, { headers: { 'X-Order-Key': order.key } });
-    if (data.hasAccess) grant(data);
+    if (data.hasAccess) grant(data, order.id);
     else if (data.state === 'failed') {
       localStorage.removeItem(PENDING_KEY);
       message(data.error || '链上确认该支付未执行，可以重新选择套餐。');
@@ -173,8 +173,9 @@ async function pay(type, mobile) {
     if (order && order.type !== type) throw new Error('有未完成订单，请先查询原订单，避免重复付款。');
     if (order) {
       const { data } = await api(`/api/payment/orders/${order.id}`, { headers: { 'X-Order-Key': order.key } });
-      if (data.hasAccess) { grant(data); return; }
+      if (data.hasAccess) { grant(data, order.id); return; }
       if (data.state !== 'new') { await queryOrder(); return; }
+      if (order.signature) { await submitSignedOrder(order); return; }
     }
     message('正在连接钱包，请在手机钱包中批准连接，并返回此页面完成支付签名。');
     const provider = mobile ? await walletConnect() : window.ethereum;
@@ -198,7 +199,7 @@ async function pay(type, mobile) {
     const url = `/api/payment/orders/${order.id}/pay`;
     if (!order.signature) {
       const { response, data } = await api(url, { method: 'POST', headers: { 'X-Order-Key': order.key } });
-      if (response.status !== 402) { if (data.hasAccess) grant(data); else await queryOrder(); return; }
+      if (response.status !== 402) { if (data.hasAccess) grant(data, order.id); else await queryOrder(); return; }
       const required = decodePaymentRequiredHeader(response.headers.get('PAYMENT-REQUIRED'));
       const expected = config.plans[type];
       const accepted = required.accepts[0];
@@ -216,18 +217,22 @@ async function pay(type, mobile) {
       order.signature = encodePaymentSignatureHeader(payload);
       savePending(order); // Retry the same authorization after network loss, never sign another charge.
     }
-    message('正在提交支付授权，请勿重复点击或再次转账。');
-    const { data } = await api(url, { method: 'POST', headers: {
-      'X-Order-Key': order.key, 'PAYMENT-SIGNATURE': order.signature
-    } });
-    if (data.hasAccess) grant(data);
-    else await queryOrder();
+    await submitSignedOrder(order);
   } catch (error) {
     message(friendlyError(error));
   } finally {
     busy = false;
     modal.querySelectorAll('button[data-plan]').forEach(el => { el.disabled = false; });
   }
+}
+
+async function submitSignedOrder(order) {
+  message('正在提交原订单的支付授权，请勿重复签名或转账。');
+  const { data } = await api(`/api/payment/orders/${order.id}/pay`, { method: 'POST', headers: {
+    'X-Order-Key': order.key, 'PAYMENT-SIGNATURE': order.signature
+  } });
+  if (data.hasAccess) grant(data, order.id);
+  else await queryOrder();
 }
 
 function render() {
@@ -246,6 +251,9 @@ function render() {
     .payment-card a { color:#aeb6c3; } #payment-status { min-height:44px; color:#e9c56c; overflow-wrap:anywhere; }
     .payment-consent { display:flex; align-items:flex-start; gap:8px; margin:16px 0; } .payment-consent input { flex:none; margin-top:6px; }
     .payment-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .payment-card details { margin:16px 0; } .payment-card summary { cursor:pointer; }
+    #whitelist-login { display:grid; gap:8px; margin-top:10px; }
+    #whitelist-login input { min-width:0; padding:10px; background:#0b0e11; color:inherit; border:1px solid #343b46; border-radius:6px; }
     @media(max-width:400px) { .payment-card { padding:16px; } .payment-plan { grid-template-columns:1fr; } }
   `;
   document.head.appendChild(style);
@@ -261,10 +269,15 @@ function render() {
       <div class="payment-plan"><strong>${plan.label} · ${plan.price} USDC</strong>
       <button data-plan="${type}" data-mobile="false">浏览器钱包支付</button>
       <button data-plan="${type}" data-mobile="true">手机钱包 / 扫码</button></div>`).join('')}</div>
-    <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>我已阅读并同意<a href="/disclaimer.html" target="_blank" rel="noopener">免责声明与支付说明</a>。行情可能延迟或中断，分析不构成投资建议，不承诺收益。</span></label>
+    <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>我已阅读并同意<a href="/disclaimer.html" target="_blank" rel="noopener">免责声明与支付说明</a>。链上支付一经确认无法撤回，可能无法退款。</span></label>
     <div id="payment-status" role="status" aria-live="polite"></div>
     <div class="payment-actions"><button id="payment-query" class="secondary">查询已有订单</button><button id="payment-reset" class="secondary">重置钱包连接</button><button id="payment-cancel" class="secondary">取消未提交订单</button></div>
     <p>手机上可直接跳转钱包，也可在钱包内置浏览器打开本站；电脑端可扫码。请勿向客服提供助记词或私钥。</p>
+    <details><summary>白名单登录</summary><form id="whitelist-login">
+      <input name="username" aria-label="白名单账号" placeholder="白名单账号" autocomplete="username" maxlength="48" required>
+      <input name="password" type="password" aria-label="白名单密码" placeholder="白名单密码" autocomplete="current-password" required>
+      <button>登录并进入行情</button>
+    </form></details>
     <a href="/admin.html">管理员通道</a>
   </div>`;
   document.body.appendChild(modal);
@@ -274,6 +287,21 @@ function render() {
   };
   document.getElementById('payment-reset').onclick = resetConnection;
   document.getElementById('payment-cancel').onclick = cancelUnsubmittedOrder;
+  document.getElementById('whitelist-login').onsubmit = async event => {
+    event.preventDefault();
+    if (busy) return;
+    const form = event.currentTarget;
+    const button = form.querySelector('button');
+    busy = button.disabled = true;
+    try {
+      const { data } = await api('/api/payment/whitelist/login', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+      localStorage.removeItem('liq_gap_x402_token');
+      form.reset();
+      grant(data);
+    } catch (error) { message(friendlyError(error)); }
+    finally { busy = button.disabled = false; }
+  };
 }
 
 export function initPaymentUI() {

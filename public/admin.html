@@ -21,6 +21,8 @@
     table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 14px; }
     .card { overflow-x:auto; }
     .flex-row { flex-wrap:wrap; }
+    #whitelist-form input { max-width:100%; box-sizing:border-box; background:#2b3139; color:inherit; border:1px solid #474d57; padding:10px; border-radius:6px; }
+    #whitelist-result { white-space:pre-wrap; overflow-wrap:anywhere; user-select:all; }
     td.account { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     th, td { text-align: left; padding: 16px 12px; border-bottom: 1px solid #2B3139; }
     th { color: #848E9C; font-weight: 500; }
@@ -54,6 +56,16 @@
       </div>
 
       <div class="card">
+        <h3>白名单账号</h3>
+        <form id="whitelist-form" class="flex-row">
+          <label>账号 <input name="username" maxlength="48" placeholder="中文、字母、数字、_ 或 -" required></label>
+          <label>到期时间（本地） <input type="datetime-local" name="expiry" required></label>
+          <button id="whitelist-save">创建账号</button>
+          <button type="reset" class="outline">重置</button>
+        </form>
+        <p id="whitelist-result" role="status"></p>
+      </div>
+      <div class="card">
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <h3>👥 用户访问凭证管理</h3>
           <button class="outline" onclick="fetchTokens()">🔄 刷新列表</button>
@@ -62,7 +74,7 @@
           <thead>
             <tr>
               <th>订单标识</th>
-              <th>支付钱包</th>
+              <th>钱包 / 账号</th>
               <th>授权类型</th>
               <th>签发时间</th>
               <th>到期时间</th>
@@ -128,7 +140,7 @@
           const created = new Date(info.createdAt).toLocaleString();
           const expires = info.expiresAt ? new Date(info.expiresAt).toLocaleString() : '-';
           const isExpired = info.expiresAt && info.expiresAt < now;
-          const typeText = { admin: '管理员通道', daily: '24小时 / 1 USDC', weekly: '7天 / 5 USDC', monthly: '30天 / 15 USDC' }[info.type] || '-';
+          const typeText = { whitelist: '白名单', admin: '管理员通道', daily: '24小时 / 1 USDC', weekly: '7天 / 5 USDC', monthly: '30天 / 15 USDC' }[info.type] || '-';
           const active = info.state === 'paid' && !isExpired && !info.revokedAt;
           const status = info.revokedAt ? '已撤销' : isExpired ? '已过期' :
             info.state === 'paid' ? '生效中' : info.state === 'pending' ? '待核实到账' :
@@ -137,21 +149,70 @@
           
           tr.innerHTML = `
             <td style="font-family:monospace; color:#FCD535;">${token.substring(0, 10)}...</td>
-            <td class="account" title="${info.wallet || ''}">${info.wallet || (info.type === 'admin' ? '管理员' : '-')}</td>
+            <td class="account"></td>
             <td>${typeText}</td>
             <td style="color:#848E9C;">${created}</td>
             <td style="${isExpired ? 'color:#848E9C;' : 'color:#E0E3EB;'}">${expires}</td>
             <td>${statusHtml}</td>
             <td>
-              <button class="danger" ${active ? '' : 'disabled'} onclick="revoke('${token}')">撤销权限</button>
+              <button class="danger" ${active || (info.type === 'whitelist' && !info.revokedAt) ? '' : 'disabled'} onclick="revoke('${token}')">撤销权限</button>
             </td>
           `;
+          const account = tr.querySelector('.account');
+          account.textContent = account.title = info.username || info.wallet || (info.type === 'admin' ? '管理员' : '-');
+          if (info.type === 'whitelist' && !info.revokedAt) {
+            const edit = document.createElement('button');
+            edit.className = 'outline';
+            edit.textContent = '调整有效期';
+            edit.onclick = () => {
+              whitelistForm.reset();
+              whitelistForm.dataset.id = token;
+              whitelistForm.elements.username.value = info.username;
+              whitelistForm.elements.username.readOnly = true;
+              const date = new Date(info.expiresAt);
+              whitelistForm.elements.expiry.value = new Date(date - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+              whitelistSave.textContent = '保存到期时间';
+              whitelistForm.elements.expiry.focus();
+            };
+            tr.lastElementChild.appendChild(edit);
+          }
           tbody.appendChild(tr);
         }
       } catch (e) {
         if (!silent) alert('网络错误: ' + e.message);
       }
     }
+
+    const whitelistForm = document.getElementById('whitelist-form');
+    const whitelistSave = document.getElementById('whitelist-save');
+    const whitelistResult = document.getElementById('whitelist-result');
+    whitelistForm.onreset = () => {
+      delete whitelistForm.dataset.id;
+      whitelistForm.elements.username.readOnly = false;
+      whitelistSave.textContent = '创建账号';
+      whitelistResult.textContent = '';
+    };
+    whitelistForm.onsubmit = async event => {
+      event.preventDefault();
+      const id = whitelistForm.dataset.id;
+      const username = whitelistForm.elements.username.value.trim();
+      const expiresAt = new Date(whitelistForm.elements.expiry.value).getTime();
+      if (!(expiresAt > Date.now())) { whitelistResult.textContent = '请选择未来的到期时间。'; return; }
+      whitelistSave.disabled = true;
+      try {
+        const res = await fetch('/api/payment/admin/whitelist' + (id ? `/${id}/expiry` : ''), {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret, username, expiresAt })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || '保存失败');
+        whitelistForm.reset();
+        whitelistResult.textContent = id ? '到期时间已更新。' :
+          `账号：${data.username}\n密码：${data.password}\n密码仅在此显示一次。请私下交给用户，在首页选择「白名单登录」。`;
+        await fetchTokens();
+      } catch (error) { whitelistResult.textContent = error.message; }
+      finally { whitelistSave.disabled = false; }
+    };
 
     async function grantAccess() {
       try {

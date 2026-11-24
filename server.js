@@ -75,6 +75,8 @@ app.use(compression({
 }));
 
 app.use(express.json());
+// Payment verification has its own RPC/facilitator deadlines and HTTP status semantics.
+app.use('/api/payment', paymentRoute);
 
 // ---------------------------------------------------------------------------
 // /api 看门狗 (API watchdog)
@@ -110,8 +112,6 @@ app.use('/api', (req, res, next) => {
 });
 
 // 把 8 + 1 个路由模块挂到 /api 下 (Mount every route under /api)
-app.use('/api/payment', paymentRoute);
-
 // 核心数据接口鉴权：如果没有有效 Token，直接拒绝访问
 app.use('/api', paymentRoute.checkAuth);
 

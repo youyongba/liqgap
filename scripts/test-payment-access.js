@@ -55,9 +55,47 @@ async function main() {
     assert.equal((await request('/api/payment/buy/daily', { txHash: 'forged' })).status, 410);
     assert.equal((await request('/api/payment/orders', { type: 'weekly' })).status, 400);
     console.log('PASS: 未授权、伪造凭证、旧接口和默认密码均拒绝');
+    const { disclaimerVersion } = (await request('/api/payment/config')).data;
+    assert.equal((await request('/api/payment/orders', { type: 'daily', disclaimerVersion: '2026-11-18' })).status, 400);
+    const secret = process.env.AUTO_TRADE_API_TOKEN;
+    const adminPath = '/api/payment/admin/whitelist';
+    const expiresAt = Date.now() + 86400000;
+    const spec = { username: '试用-A', expiresAt };
+    assert.equal((await request(adminPath, spec)).status, 403);
+    assert.equal((await request(adminPath, { ...spec, secret, expiresAt: Date.now() - 1 })).status, 400);
+    const created = await request(adminPath, { ...spec, secret });
+    assert.equal(created.status, 201);
+    assert.equal(created.headers.get('set-cookie'), null);
+    const { password, id } = created.data;
+    assert.equal((await request(adminPath, { ...spec, secret, username: '试用-a' })).status, 409);
+    const listing = (await request('/api/payment/admin/tokens', { secret })).data.tokens;
+    assert.equal(listing[id].username, spec.username);
+    assert.ok(!JSON.stringify(listing).includes(password));
+    const login = pwd => request('/api/payment/whitelist/login', { username: '试用-a', password: pwd });
+    assert.equal((await login('wrong')).status, 401);
+    const session = await login(password);
+    assert.equal(session.status, 200);
+    assert.equal(session.data.expiresAt, expiresAt);
+    const cookie = session.headers.get('set-cookie');
+    assert.match(cookie, /HttpOnly/);
+    const authHeaders = { Cookie: cookie.split(';')[0] };
+    assert.equal((await request('/api/private', null, authHeaders)).status, 200);
+    assert.equal((await request(adminPath, spec, authHeaders)).status, 403);
+    const editPath = `${adminPath}/${id}/expiry`;
+    assert.equal((await request(editPath, { expiresAt })).status, 403);
+    store.db.prepare('UPDATE orders SET expiresAt=? WHERE id=?').run(Date.now() - 1, id);
+    assert.equal((await login(password)).status, 401);
+    assert.equal((await request('/api/private', null, authHeaders)).status, 401);
+    assert.equal((await request(editPath, { secret, expiresAt })).status, 200);
+    assert.equal((await login(password)).status, 200);
+    assert.equal((await request('/api/payment/admin/revoke', { secret, token: id })).status, 200);
+    assert.equal((await request(editPath, { secret, expiresAt })).status, 404);
+    assert.equal((await login(password)).status, 401);
+    assert.equal((await request('/api/private', null, authHeaders)).status, 401);
+    console.log('PASS: 白名单创建、重复账号、登录、授权隔离、失效、续期、撤销');
 
     for (const [type, plan] of Object.entries(config.plans)) {
-      const order = (await request('/api/payment/orders', { type, disclaimerVersion: '2026-11-18' })).data;
+      const order = (await request('/api/payment/orders', { type, disclaimerVersion })).data;
       const headers = { 'X-Order-Key': order.key };
       const url = `/api/payment/orders/${order.id}/pay`;
       assert.equal((await request(url, {})).status, 404);
@@ -79,7 +117,7 @@ async function main() {
       assert.equal(submittedOrder.status, 202);
       assert.equal(submittedOrder.data.hasAccess, false);
       assert.equal(store.access(store.get(order.id).token), undefined);
-      const duplicate = (await request('/api/payment/orders', { type, disclaimerVersion: '2026-11-18' })).data;
+      const duplicate = (await request('/api/payment/orders', { type, disclaimerVersion })).data;
       assert.equal((await request(`/api/payment/orders/${duplicate.id}/pay`, {}, {
         'X-Order-Key': duplicate.key, 'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(payload)
       })).status, 409);
@@ -160,6 +198,8 @@ async function main() {
     assert.equal((await request('/api/payment/status', null, { Authorization: `Bearer ${admin.token}` })).data.hasAccess, true);
     store.close();
     store = createStore(filename);
+    assert.ok(store.get(id).revokedAt);
+    assert.ok(!store.loginWhitelist(spec.username, password));
     assert.ok(store.access(admin.token));
     assert.equal(store.access(token), undefined);
     assert.ok(store.get(paidOrder.id).revokedAt);

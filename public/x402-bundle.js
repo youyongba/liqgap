@@ -123064,10 +123064,10 @@ ${t45.length}`);
     document.body.classList.add("payment-locked");
     if (modal) modal.hidden = false;
   }
-  function grant(data) {
+  function grant(data, orderId) {
     if (!data.hasAccess && !data.success) return;
     if (data.token) localStorage.setItem("liq_gap_x402_token", data.token);
-    localStorage.removeItem(PENDING_KEY);
+    if (orderId && pendingOrder()?.id === orderId) localStorage.removeItem(PENDING_KEY);
     if (!unlocked) {
       unlocked = true;
       document.body.classList.remove("payment-locked");
@@ -123156,7 +123156,7 @@ ${t45.length}`);
     polling = true;
     try {
       const { data } = await api5(`/api/payment/orders/${order.id}`, { headers: { "X-Order-Key": order.key } });
-      if (data.hasAccess) grant(data);
+      if (data.hasAccess) grant(data, order.id);
       else if (data.state === "failed") {
         localStorage.removeItem(PENDING_KEY);
         message(data.error || "\u94FE\u4E0A\u786E\u8BA4\u8BE5\u652F\u4ED8\u672A\u6267\u884C\uFF0C\u53EF\u4EE5\u91CD\u65B0\u9009\u62E9\u5957\u9910\u3002");
@@ -123206,13 +123206,17 @@ ${t45.length}`);
       let order = pendingOrder();
       if (order && order.type !== type) throw new Error("\u6709\u672A\u5B8C\u6210\u8BA2\u5355\uFF0C\u8BF7\u5148\u67E5\u8BE2\u539F\u8BA2\u5355\uFF0C\u907F\u514D\u91CD\u590D\u4ED8\u6B3E\u3002");
       if (order) {
-        const { data: data2 } = await api5(`/api/payment/orders/${order.id}`, { headers: { "X-Order-Key": order.key } });
-        if (data2.hasAccess) {
-          grant(data2);
+        const { data } = await api5(`/api/payment/orders/${order.id}`, { headers: { "X-Order-Key": order.key } });
+        if (data.hasAccess) {
+          grant(data, order.id);
           return;
         }
-        if (data2.state !== "new") {
+        if (data.state !== "new") {
           await queryOrder();
+          return;
+        }
+        if (order.signature) {
+          await submitSignedOrder(order);
           return;
         }
       }
@@ -123228,19 +123232,19 @@ ${t45.length}`);
         if (Number(await provider.request({ method: "eth_chainId" })) !== config2.chainId) throw new Error("\u8BF7\u5207\u6362\u5230 Base Sepolia \u6D4B\u8BD5\u7F51");
       }
       if (!order) {
-        const { data: data2 } = await api5("/api/payment/orders", {
+        const { data } = await api5("/api/payment/orders", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ type, disclaimerVersion: config2.disclaimerVersion })
         });
-        order = { ...data2, type };
+        order = { ...data, type };
         savePending(order);
       }
       const url2 = `/api/payment/orders/${order.id}/pay`;
       if (!order.signature) {
-        const { response, data: data2 } = await api5(url2, { method: "POST", headers: { "X-Order-Key": order.key } });
+        const { response, data } = await api5(url2, { method: "POST", headers: { "X-Order-Key": order.key } });
         if (response.status !== 402) {
-          if (data2.hasAccess) grant(data2);
+          if (data.hasAccess) grant(data, order.id);
           else await queryOrder();
           return;
         }
@@ -123260,13 +123264,7 @@ ${t45.length}`);
         order.signature = encodePaymentSignatureHeader(payload);
         savePending(order);
       }
-      message("\u6B63\u5728\u63D0\u4EA4\u652F\u4ED8\u6388\u6743\uFF0C\u8BF7\u52FF\u91CD\u590D\u70B9\u51FB\u6216\u518D\u6B21\u8F6C\u8D26\u3002");
-      const { data } = await api5(url2, { method: "POST", headers: {
-        "X-Order-Key": order.key,
-        "PAYMENT-SIGNATURE": order.signature
-      } });
-      if (data.hasAccess) grant(data);
-      else await queryOrder();
+      await submitSignedOrder(order);
     } catch (error62) {
       message(friendlyError(error62));
     } finally {
@@ -123275,6 +123273,15 @@ ${t45.length}`);
         el.disabled = false;
       });
     }
+  }
+  async function submitSignedOrder(order) {
+    message("\u6B63\u5728\u63D0\u4EA4\u539F\u8BA2\u5355\u7684\u652F\u4ED8\u6388\u6743\uFF0C\u8BF7\u52FF\u91CD\u590D\u7B7E\u540D\u6216\u8F6C\u8D26\u3002");
+    const { data } = await api5(`/api/payment/orders/${order.id}/pay`, { method: "POST", headers: {
+      "X-Order-Key": order.key,
+      "PAYMENT-SIGNATURE": order.signature
+    } });
+    if (data.hasAccess) grant(data, order.id);
+    else await queryOrder();
   }
   function render() {
     document.body.classList.add("payment-locked");
@@ -123292,6 +123299,9 @@ ${t45.length}`);
     .payment-card a { color:#aeb6c3; } #payment-status { min-height:44px; color:#e9c56c; overflow-wrap:anywhere; }
     .payment-consent { display:flex; align-items:flex-start; gap:8px; margin:16px 0; } .payment-consent input { flex:none; margin-top:6px; }
     .payment-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .payment-card details { margin:16px 0; } .payment-card summary { cursor:pointer; }
+    #whitelist-login { display:grid; gap:8px; margin-top:10px; }
+    #whitelist-login input { min-width:0; padding:10px; background:#0b0e11; color:inherit; border:1px solid #343b46; border-radius:6px; }
     @media(max-width:400px) { .payment-card { padding:16px; } .payment-plan { grid-template-columns:1fr; } }
   `;
     document.head.appendChild(style);
@@ -123307,10 +123317,15 @@ ${t45.length}`);
       <div class="payment-plan"><strong>${plan.label} \xB7 ${plan.price} USDC</strong>
       <button data-plan="${type}" data-mobile="false">\u6D4F\u89C8\u5668\u94B1\u5305\u652F\u4ED8</button>
       <button data-plan="${type}" data-mobile="true">\u624B\u673A\u94B1\u5305 / \u626B\u7801</button></div>`).join("")}</div>
-    <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>\u6211\u5DF2\u9605\u8BFB\u5E76\u540C\u610F<a href="/disclaimer.html" target="_blank" rel="noopener">\u514D\u8D23\u58F0\u660E\u4E0E\u652F\u4ED8\u8BF4\u660E</a>\u3002\u884C\u60C5\u53EF\u80FD\u5EF6\u8FDF\u6216\u4E2D\u65AD\uFF0C\u5206\u6790\u4E0D\u6784\u6210\u6295\u8D44\u5EFA\u8BAE\uFF0C\u4E0D\u627F\u8BFA\u6536\u76CA\u3002</span></label>
+    <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>\u6211\u5DF2\u9605\u8BFB\u5E76\u540C\u610F<a href="/disclaimer.html" target="_blank" rel="noopener">\u514D\u8D23\u58F0\u660E\u4E0E\u652F\u4ED8\u8BF4\u660E</a>\u3002\u94FE\u4E0A\u652F\u4ED8\u4E00\u7ECF\u786E\u8BA4\u65E0\u6CD5\u64A4\u56DE\uFF0C\u53EF\u80FD\u65E0\u6CD5\u9000\u6B3E\u3002</span></label>
     <div id="payment-status" role="status" aria-live="polite"></div>
     <div class="payment-actions"><button id="payment-query" class="secondary">\u67E5\u8BE2\u5DF2\u6709\u8BA2\u5355</button><button id="payment-reset" class="secondary">\u91CD\u7F6E\u94B1\u5305\u8FDE\u63A5</button><button id="payment-cancel" class="secondary">\u53D6\u6D88\u672A\u63D0\u4EA4\u8BA2\u5355</button></div>
     <p>\u624B\u673A\u4E0A\u53EF\u76F4\u63A5\u8DF3\u8F6C\u94B1\u5305\uFF0C\u4E5F\u53EF\u5728\u94B1\u5305\u5185\u7F6E\u6D4F\u89C8\u5668\u6253\u5F00\u672C\u7AD9\uFF1B\u7535\u8111\u7AEF\u53EF\u626B\u7801\u3002\u8BF7\u52FF\u5411\u5BA2\u670D\u63D0\u4F9B\u52A9\u8BB0\u8BCD\u6216\u79C1\u94A5\u3002</p>
+    <details><summary>\u767D\u540D\u5355\u767B\u5F55</summary><form id="whitelist-login">
+      <input name="username" aria-label="\u767D\u540D\u5355\u8D26\u53F7" placeholder="\u767D\u540D\u5355\u8D26\u53F7" autocomplete="username" maxlength="48" required>
+      <input name="password" type="password" aria-label="\u767D\u540D\u5355\u5BC6\u7801" placeholder="\u767D\u540D\u5355\u5BC6\u7801" autocomplete="current-password" required>
+      <button>\u767B\u5F55\u5E76\u8FDB\u5165\u884C\u60C5</button>
+    </form></details>
     <a href="/admin.html">\u7BA1\u7406\u5458\u901A\u9053</a>
   </div>`;
     document.body.appendChild(modal);
@@ -123321,6 +123336,27 @@ ${t45.length}`);
     };
     document.getElementById("payment-reset").onclick = resetConnection;
     document.getElementById("payment-cancel").onclick = cancelUnsubmittedOrder;
+    document.getElementById("whitelist-login").onsubmit = async (event) => {
+      event.preventDefault();
+      if (busy) return;
+      const form = event.currentTarget;
+      const button = form.querySelector("button");
+      busy = button.disabled = true;
+      try {
+        const { data } = await api5("/api/payment/whitelist/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.fromEntries(new FormData(form)))
+        });
+        localStorage.removeItem("liq_gap_x402_token");
+        form.reset();
+        grant(data);
+      } catch (error62) {
+        message(friendlyError(error62));
+      } finally {
+        busy = button.disabled = false;
+      }
+    };
   }
   function initPaymentUI() {
     if (bootstrapPromise) return bootstrapPromise;

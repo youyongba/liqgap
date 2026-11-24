@@ -7,6 +7,9 @@ const { encodePaymentRequiredHeader, decodePaymentSignatureHeader } = require('@
 const { ProxyAgent, fetch: httpFetch } = require('undici');
 const { createStore } = require('../services/payment/store');
 const config = require('../services/payment/config');
+const disclaimerVersion = '2026-11-25';
+const usernameOf = value => typeof value === 'string' && /^[\p{Script=Han}a-zA-Z0-9_-]{1,48}$/u.test(value.trim()) ? value.trim() : null;
+const validExpiry = value => Number.isSafeInteger(value) && value > Date.now() && value <= 8640000000000000;
 const { createSettlementService } = require('../services/payment/settlement');
 
 const proxy = process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY;
@@ -63,7 +66,32 @@ function createPaymentRouter({ store = createStore(), verify = (p, r) => control
   router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   router.get('/config', (_req, res) => res.json({ plans: config.plans, network: config.network,
     chainId: 84532, chainName: 'Base Sepolia', asset: config.asset, payTo: config.payTo,
-    projectId: config.projectId, testnet: true, disclaimerVersion: '2026-11-18' }));
+    projectId: config.projectId, testnet: true, disclaimerVersion }));
+  router.post('/admin/whitelist', requireAdmin, (req, res) => {
+    const username = usernameOf(req.body.username);
+    const { expiresAt } = req.body;
+    if (!username || !validExpiry(expiresAt)) return res.status(400).json({ error: '请输入有效账号和未来的到期时间' });
+    try { res.status(201).json(store.createWhitelist(username, expiresAt)); }
+    catch (err) {
+      if (err.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') return res.status(409).json({ error: '该账号已存在，请调整原账号的有效期' });
+      throw err;
+    }
+  });
+  router.post('/admin/whitelist/:id/expiry', requireAdmin, (req, res) => {
+    const { expiresAt } = req.body;
+    if (!validExpiry(expiresAt)) return res.status(400).json({ error: '到期时间必须在未来' });
+    if (!store.setWhitelistExpiry(req.params.id, expiresAt)) return res.status(404).json({ error: '账号不存在或已撤销' });
+    res.json({ success: true, expiresAt });
+  });
+  router.post('/whitelist/login', (req, res) => {
+    const username = usernameOf(req.body?.username);
+    const password = req.body?.password;
+    const order = username && typeof password === 'string' && /^[0-9a-f]{64}$/.test(password) &&
+      store.loginWhitelist(username, password);
+    if (!order) return res.status(401).json({ error: '账号或密码不正确，或授权已失效' });
+    setAccess(req, res, order);
+    res.json({ hasAccess: true, expiresAt: order.expiresAt });
+  });
   router.post('/admin/grant', requireAdmin, (req, res) => {
     const order = store.create('admin', '0', 365 * 86400000, true);
     setAccess(req, res, order);
@@ -88,7 +116,7 @@ function createPaymentRouter({ store = createStore(), verify = (p, r) => control
   router.post('/orders', (req, res) => {
     const type = req.body && req.body.type;
     const plan = Object.hasOwn(config.plans, type) && config.plans[type];
-    if (!plan || req.body.disclaimerVersion !== '2026-11-18') {
+    if (!plan || req.body.disclaimerVersion !== disclaimerVersion) {
       return res.status(400).json({ error: '请选择有效套餐并阅读免责声明' });
     }
     const order = store.create(req.body.type, plan.amount, plan.duration);

@@ -21,6 +21,10 @@ function createStore(filename = process.env.PAYMENT_DB_PATH || path.join(process
       state TEXT NOT NULL DEFAULT 'new', wallet TEXT,
       paymentKey TEXT UNIQUE, payload TEXT, fromBlock TEXT, txHash TEXT UNIQUE, error TEXT
     );
+    CREATE TABLE IF NOT EXISTS whitelist_accounts (
+      username TEXT PRIMARY KEY COLLATE NOCASE,
+      orderId TEXT NOT NULL UNIQUE REFERENCES orders(id)
+    );
   `);
   if (filename !== ':memory:') fs.chmodSync(filename, 0o600);
   const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -56,9 +60,26 @@ function createStore(filename = process.env.PAYMENT_DB_PATH || path.join(process
       .run(txHash.toLowerCase(), Date.now() + order.duration, id);
     return get(id);
   });
+  const setWhitelistExpiry = (id, expiresAt) => db.prepare(`UPDATE orders SET expiresAt=?,duration=?-createdAt
+    WHERE id=? AND type='whitelist' AND revokedAt IS NULL`).run(expiresAt, expiresAt, id).changes;
+  const createWhitelist = db.transaction((username, expiresAt) => {
+    const order = create('whitelist', '0', expiresAt - Date.now(), true);
+    db.prepare('INSERT INTO whitelist_accounts(username,orderId) VALUES (?,?)').run(username, order.id);
+    setWhitelistExpiry(order.id, expiresAt);
+    return { id: order.id, username, expiresAt, password: order.key };
+  });
+  function loginWhitelist(username, password) {
+    const row = db.prepare('SELECT orderId FROM whitelist_accounts WHERE username=?').get(username);
+    const order = row && authorize(row.orderId, password);
+    return order && access(order.token);
+  }
   return {
     db, get, create, authorize, access, reserve, complete,
-    list: () => db.prepare("SELECT id,type,amount,createdAt,expiresAt,revokedAt,state,wallet,txHash,error FROM orders ORDER BY createdAt DESC LIMIT 1000").all(),
+    createWhitelist, setWhitelistExpiry, loginWhitelist,
+    list: () => db.prepare(`SELECT id,type,amount,createdAt,expiresAt,revokedAt,state,wallet,txHash,error,w.username
+      FROM orders LEFT JOIN whitelist_accounts w ON w.orderId=orders.id
+      WHERE type='whitelist' OR id IN (SELECT id FROM orders WHERE type!='whitelist' ORDER BY createdAt DESC LIMIT 1000)
+      ORDER BY createdAt DESC`).all(),
     revoke: id => db.prepare("UPDATE orders SET revokedAt=? WHERE id=? AND state='paid'").run(Date.now(), id).changes,
     cancel: id => db.prepare("UPDATE orders SET state='cancelled' WHERE id=? AND state='new'").run(id).changes,
     fail: (id, error) => db.prepare("UPDATE orders SET state='failed',error=? WHERE id=? AND state='pending'").run(error, id).changes,

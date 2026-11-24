@@ -34,18 +34,22 @@
 | 接口 | 请求 | 响应 / 行为 |
 | --- | --- | --- |
 | `GET /api/payment/config` | 无 | 套餐、链、USDC、收款地址、公开 WalletConnect projectId、声明版本 |
-| `POST /api/payment/orders` | `{type, disclaimerVersion:"2026-11-18"}` | `{id,key}`，key 是私密订单凭证 |
+| `POST /api/payment/orders` | `{type, disclaimerVersion}`（版本见 `/config`） | `{id,key}`，key 是私密订单凭证 |
 | `POST /api/payment/orders/:id/pay` | `X-Order-Key`；首次无签名 | HTTP 402 + `PAYMENT-REQUIRED` |
 | 同上 | 再次附 `PAYMENT-SIGNATURE` | 验签、保存同一授权并异步结算；202 仅表示处理中，不代表已付款 |
 | `GET /api/payment/orders/:id` | `X-Order-Key` | 状态；到账后返回 token、到期时间并设置 HttpOnly Cookie |
 | `DELETE /api/payment/orders/:id` | `X-Order-Key` | 仅允许取消尚未提交结算的订单 |
 | `GET /api/payment/status` | Cookie 或 `Authorization: Bearer ...` | `{hasAccess,type,expiresAt}` |
 | `POST /api/payment/admin/grant` | `{secret}` | 当前浏览器一年管理员访问权限 |
+| `POST /api/payment/admin/whitelist` | `{secret,username,expiresAt}`，到期时间为 Unix 毫秒整数 | 201 `{id,username,expiresAt,password}`；随机登录密码仅创建时返回，不为管理员设备解锁 |
+| `POST /api/payment/admin/whitelist/:id/expiry` | `{secret,expiresAt}` | 设置新的绝对到期时间，可延长已过期但未撤销的账号 |
+| `POST /api/payment/whitelist/login` | `{username,password}` | 成功设置 HttpOnly 访问 Cookie；密码不正确、撤销、到期均返回 401 |
 | `POST /api/payment/admin/tokens` | `{secret}` | 最近 1000 条订单，键为订单 ID，不返回所有用户的访问 token |
 | `POST /api/payment/admin/revoke` | `{secret,token:订单ID}` | 永久记录撤销，立即关闭该凭证的 SSE |
 
 旧 `POST /buy/:type` 已返回 410，客户端直接传交易哈希不会获得权限。
 管理员 API 的 `token` 参数名保留兼容页面调用，其值现为订单 ID。
+白名单账号不区分英文大小写，允许 1 至 48 个中文、英文字母、数字、下划线或连字符。管理员将账号与随机密码通过私密渠道交付；用户在首页「白名单登录」使用，不需钱包，不产生链上交易。密码仅存摘要。管理员可在记录列表调整有效期或撤销。生产环境请使用 HTTPS。
 
 ## 状态与恢复
 

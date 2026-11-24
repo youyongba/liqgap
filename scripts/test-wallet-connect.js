@@ -123,3 +123,17 @@ test('browser wallet keeps the injected-provider account authorization flow', as
   await sandbox.pay('daily', false);
   assert.deepEqual(calls, ['eth_requestAccounts', 'eth_chainId', 'order']);
 });
+
+test('saved signature retries only the original order without reconnecting a wallet', async () => {
+  const { sandbox, calls } = harness();
+  sandbox.pendingOrder = () => ({ id: 'saved', key: 'private', type: 'daily', signature: 'same-signature' });
+  sandbox.api = async (url, options) => {
+    calls.push(url);
+    assert.equal(options.headers['X-Order-Key'], 'private');
+    if (options.method === 'POST') assert.equal(options.headers['PAYMENT-SIGNATURE'], 'same-signature');
+    return { data: { state: options.method ? 'pending' : 'new' } };
+  };
+  sandbox.queryOrder = async () => calls.push('query');
+  await sandbox.pay('daily', true);
+  assert.deepEqual(calls, ['/api/payment/orders/saved', '/api/payment/orders/saved/pay', 'query']);
+});
