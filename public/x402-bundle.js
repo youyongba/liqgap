@@ -123066,6 +123066,16 @@ ${t45.length}`);
   }
   function grant(data, orderId) {
     if (!data.hasAccess && !data.success) return;
+    const expiry = document.getElementById("access-expiry");
+    if (expiry) {
+      const date5 = new Date(data.expiresAt);
+      expiry.hidden = !Number.isFinite(data.expiresAt) || !Number.isFinite(date5.getTime());
+      const time3 = expiry.querySelector("time");
+      if (!expiry.hidden && time3.dateTime !== date5.toISOString()) {
+        time3.dateTime = date5.toISOString();
+        time3.textContent = date5.toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" });
+      }
+    }
     if (data.token) localStorage.setItem("liq_gap_x402_token", data.token);
     if (orderId && pendingOrder()?.id === orderId) localStorage.removeItem(PENDING_KEY);
     if (!unlocked) {
@@ -123196,7 +123206,7 @@ ${t45.length}`);
       return;
     }
     busy = true;
-    modal.querySelectorAll("button[data-plan]").forEach((el) => {
+    modal.querySelectorAll('[data-mobile], input[name="payment-plan"]').forEach((el) => {
       el.disabled = true;
     });
     try {
@@ -123269,7 +123279,7 @@ ${t45.length}`);
       message(friendlyError(error62));
     } finally {
       busy = false;
-      modal.querySelectorAll("button[data-plan]").forEach((el) => {
+      modal.querySelectorAll('[data-mobile], input[name="payment-plan"]').forEach((el) => {
         el.disabled = false;
       });
     }
@@ -123285,51 +123295,51 @@ ${t45.length}`);
   }
   function render() {
     document.body.classList.add("payment-locked");
-    const style = document.createElement("style");
-    style.textContent = `
-    body.payment-locked { overflow:hidden; width:100%; }
-    body.payment-locked > main, body.payment-locked > header { display:none; }
-    #payment-dialog[hidden] { display:none; }
-    #payment-dialog { position:fixed; inset:0; z-index:9998; background:rgba(11,14,17,.96); overflow:auto; display:flex; flex-direction:column; padding:16px; box-sizing:border-box; }
-    .payment-card { flex:none; margin:auto; width:min(100%,560px); background:#181a20; color:#e0e3eb; border:1px solid #2b3139; border-radius:16px; padding:24px; box-sizing:border-box; font:14px/1.6 system-ui; }
-    .payment-card h2 { margin:0 0 8px; } .payment-card p { color:#aeb6c3; }
-    .payment-plans { display:grid; gap:12px; } .payment-plan { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:12px; border:1px solid #343b46; border-radius:10px; }
-    .payment-plan strong { grid-column:1/-1; } .payment-card button { padding:10px; border:0; border-radius:24px; background:#00796b; color:white; cursor:pointer; font:inherit; }
-    .payment-card button:disabled { opacity:.5; cursor:wait; } .payment-card .secondary { background:#303947; }
-    .payment-card a { color:#aeb6c3; } #payment-status { min-height:44px; color:#e9c56c; overflow-wrap:anywhere; }
-    .payment-consent { display:flex; align-items:flex-start; gap:8px; margin:16px 0; } .payment-consent input { flex:none; margin-top:6px; }
-    .payment-actions { display:flex; flex-wrap:wrap; gap:8px; }
-    .payment-card details { margin:16px 0; } .payment-card summary { cursor:pointer; }
-    #whitelist-login { display:grid; gap:8px; margin-top:10px; }
-    #whitelist-login input { min-width:0; padding:10px; background:#0b0e11; color:inherit; border:1px solid #343b46; border-radius:6px; }
-    @media(max-width:400px) { .payment-card { padding:16px; } .payment-plan { grid-template-columns:1fr; } }
-  `;
-    document.head.appendChild(style);
+    const plans = Object.entries(config2.plans);
+    const savedType = pendingOrder()?.type;
+    const selected = Object.hasOwn(config2.plans, savedType) ? savedType : plans[0][0];
     modal = document.createElement("section");
     modal.id = "payment-dialog";
     modal.setAttribute("role", "dialog");
     modal.setAttribute("aria-modal", "true");
     modal.setAttribute("aria-labelledby", "payment-title");
     modal.innerHTML = `<div class="payment-card">
+    <div class="payment-brand"><strong>x402</strong><span>Base Sepolia \xB7 \u6D4B\u8BD5\u7F51</span></div>
     <h2 id="payment-title">\u89E3\u9501\u884C\u60C5\u5206\u6790\u5DE5\u5177</h2>
-    <p>\u5F53\u524D\u4E3A Base Sepolia \u6D4B\u8BD5\u7F51\uFF0C\u4EC5\u4F7F\u7528\u6D4B\u8BD5 USDC\u3002x402 \u652F\u4ED8\u91C7\u7528\u94B1\u5305\u6388\u6743\u7B7E\u540D\uFF0C\u6838\u5B9E\u5230\u8D26\u540E\u5F00\u59CB\u8BA1\u65F6\u3002</p>
-    <div class="payment-plans">${Object.entries(config2.plans).map(([type, plan]) => `
-      <div class="payment-plan"><strong>${plan.label} \xB7 ${plan.price} USDC</strong>
-      <button data-plan="${type}" data-mobile="false">\u6D4F\u89C8\u5668\u94B1\u5305\u652F\u4ED8</button>
-      <button data-plan="${type}" data-mobile="true">\u624B\u673A\u94B1\u5305 / \u626B\u7801</button></div>`).join("")}</div>
+    <p class="payment-intro">\u4F7F\u7528\u6D4B\u8BD5 USDC \u652F\u4ED8\uFF0C\u5230\u8D26\u540E\u5F00\u59CB\u8BA1\u65F6\uFF0C\u4E0D\u81EA\u52A8\u7EED\u8D39\u3002</p>
+    <fieldset class="payment-picker"><legend>\u9009\u62E9\u4F7F\u7528\u65F6\u957F</legend>
+      <div class="payment-plans">${plans.map(([type, plan]) => `
+        <label class="payment-plan"><input type="radio" name="payment-plan" value="${type}" ${type === selected ? "checked" : ""}>
+          <span class="payment-tile"><span class="payment-duration">${plan.label}</span>
+          <span class="payment-price"><b>${plan.price}</b> USDC</span></span>
+        </label>`).join("")}</div>
+    </fieldset>
     <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>\u6211\u5DF2\u9605\u8BFB\u5E76\u540C\u610F<a href="/disclaimer.html" target="_blank" rel="noopener">\u514D\u8D23\u58F0\u660E\u4E0E\u652F\u4ED8\u8BF4\u660E</a>\u3002\u94FE\u4E0A\u652F\u4ED8\u4E00\u7ECF\u786E\u8BA4\u65E0\u6CD5\u64A4\u56DE\uFF0C\u53EF\u80FD\u65E0\u6CD5\u9000\u6B3E\u3002</span></label>
+    <div class="payment-wallets"><button type="button" data-mobile="false">Web3 \u6D4F\u89C8\u5668\u94B1\u5305</button>
+      <button type="button" data-mobile="true">\u624B\u673A\u94B1\u5305 / \u626B\u7801</button></div>
     <div id="payment-status" role="status" aria-live="polite"></div>
-    <div class="payment-actions"><button id="payment-query" class="secondary">\u67E5\u8BE2\u5DF2\u6709\u8BA2\u5355</button><button id="payment-reset" class="secondary">\u91CD\u7F6E\u94B1\u5305\u8FDE\u63A5</button><button id="payment-cancel" class="secondary">\u53D6\u6D88\u672A\u63D0\u4EA4\u8BA2\u5355</button></div>
-    <p>\u624B\u673A\u4E0A\u53EF\u76F4\u63A5\u8DF3\u8F6C\u94B1\u5305\uFF0C\u4E5F\u53EF\u5728\u94B1\u5305\u5185\u7F6E\u6D4F\u89C8\u5668\u6253\u5F00\u672C\u7AD9\uFF1B\u7535\u8111\u7AEF\u53EF\u626B\u7801\u3002\u8BF7\u52FF\u5411\u5BA2\u670D\u63D0\u4F9B\u52A9\u8BB0\u8BCD\u6216\u79C1\u94A5\u3002</p>
+    <details><summary>\u5DF2\u652F\u4ED8\uFF1F\u7528\u94B1\u5305\u6062\u590D\u8BBF\u95EE</summary>
+      <p>\u8FDE\u63A5\u539F\u4ED8\u6B3E\u8D26\u6237\uFF0C\u53EA\u7B7E\u4E00\u6B21\u767B\u5F55\u6D88\u606F\u3002\u4E0D\u8F6C\u8D26\u3001\u4E0D\u7EED\u671F\uFF0C\u539F\u6D4F\u89C8\u5668\u4ECD\u53EF\u4F7F\u7528\u3002</p>
+      <div class="payment-actions"><button type="button" data-recover="browser">\u7528\u6D4F\u89C8\u5668\u94B1\u5305\u6062\u590D</button>
+        <button type="button" data-recover="mobile">\u7528\u624B\u673A\u94B1\u5305\u6062\u590D</button></div>
+    </details>
+    <details><summary>\u8BA2\u5355\u4E0E\u8FDE\u63A5</summary><div class="payment-actions"><button id="payment-query">\u67E5\u8BE2\u5DF2\u6709\u8BA2\u5355</button><button id="payment-reset">\u91CD\u7F6E\u94B1\u5305\u8FDE\u63A5</button><button id="payment-cancel">\u53D6\u6D88\u672A\u63D0\u4EA4\u8BA2\u5355</button></div></details>
     <details><summary>\u767D\u540D\u5355\u767B\u5F55</summary><form id="whitelist-login">
       <input name="username" aria-label="\u767D\u540D\u5355\u8D26\u53F7" placeholder="\u767D\u540D\u5355\u8D26\u53F7" autocomplete="username" maxlength="48" required>
       <input name="password" type="password" aria-label="\u767D\u540D\u5355\u5BC6\u7801" placeholder="\u767D\u540D\u5355\u5BC6\u7801" autocomplete="current-password" required>
       <button>\u767B\u5F55\u5E76\u8FDB\u5165\u884C\u60C5</button>
     </form></details>
-    <a href="/admin.html">\u7BA1\u7406\u5458\u901A\u9053</a>
+    <div class="payment-foot"><span>\u8BF7\u52FF\u63D0\u4F9B\u52A9\u8BB0\u8BCD\u6216\u79C1\u94A5</span><a href="/admin.html">\u7BA1\u7406\u5458\u901A\u9053</a></div>
   </div>`;
     document.body.appendChild(modal);
-    modal.querySelectorAll("[data-plan]").forEach((button) => button.addEventListener("click", () => pay2(button.dataset.plan, button.dataset.mobile === "true")));
+    modal.querySelectorAll("[data-recover]").forEach((button) => button.addEventListener(
+      "click",
+      () => recoverAccess(button.dataset.recover === "mobile")
+    ));
+    modal.querySelectorAll("[data-mobile]").forEach((button) => button.addEventListener("click", () => {
+      const choice = modal.querySelector('input[name="payment-plan"]:checked');
+      if (choice) pay2(choice.value, button.dataset.mobile === "true");
+    }));
     document.getElementById("payment-query").onclick = () => {
       if (pendingOrder()) queryOrder();
       else checkAccess();
@@ -123357,6 +123367,40 @@ ${t45.length}`);
         busy = button.disabled = false;
       }
     };
+  }
+  async function recoverAccess(mobile) {
+    if (busy) return;
+    busy = true;
+    const controls = modal.querySelectorAll("[data-recover], [data-mobile]");
+    controls.forEach((el) => {
+      el.disabled = true;
+    });
+    try {
+      if (!window.isSecureContext) throw new Error("\u8BF7\u901A\u8FC7 HTTPS \u6253\u5F00\u672C\u7AD9\u540E\u6062\u590D\u8BBF\u95EE\u3002");
+      message("\u8BF7\u8FDE\u63A5\u539F\u4ED8\u6B3E\u8D26\u6237\uFF0C\u518D\u786E\u8BA4\u767B\u5F55\u6D88\u606F\u3002");
+      const provider = mobile ? await walletConnect() : window.ethereum;
+      if (!provider) throw new Error("\u672A\u68C0\u6D4B\u5230\u6D4F\u89C8\u5668\u94B1\u5305\uFF0C\u8BF7\u4F7F\u7528\u624B\u673A\u94B1\u5305\u6062\u590D\u3002");
+      const [address] = await provider.request({ method: "eth_requestAccounts" });
+      if (!address) throw new Error("\u94B1\u5305\u5C1A\u672A\u6388\u6743\u8D26\u6237\u3002");
+      const post = (path, body) => api5(`/api/payment/recovery/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const { data } = await post("challenge", { address });
+      const wallet = createWalletClient({ account: address, transport: custom(provider) });
+      const signature = await wallet.signMessage({ message: data.message });
+      const result = await post("verify", { signature });
+      localStorage.removeItem("liq_gap_x402_token");
+      grant(result.data);
+    } catch (error62) {
+      message(friendlyError(error62));
+    } finally {
+      busy = false;
+      controls.forEach((el) => {
+        el.disabled = false;
+      });
+    }
   }
   function initPaymentUI() {
     if (bootstrapPromise) return bootstrapPromise;

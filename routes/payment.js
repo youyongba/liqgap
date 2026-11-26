@@ -2,6 +2,8 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const { getAddress, verifyMessage } = require('viem');
+const { createSiweMessage } = require('viem/siwe');
 const { HTTPFacilitatorClient } = require('@x402/core/server');
 const { encodePaymentRequiredHeader, decodePaymentSignatureHeader } = require('@x402/core/http');
 const { ProxyAgent, fetch: httpFetch } = require('undici');
@@ -40,6 +42,7 @@ function createPaymentRouter({ store = createStore(), verify = (p, r) => control
     settle: (p, r) => control('settle', p, r), fetchPayment
   });
   const streams = new Map();
+  const challenges = new Map();
   const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res)).catch(next);
   function bearer(req) {
     const authorization = req.get('authorization') || '';
@@ -64,6 +67,56 @@ function createPaymentRouter({ store = createStore(), verify = (p, r) => control
     if (!res.writableEnded) res.end('event: access-revoked\ndata: {}\n\n');
   }
   router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  router.use('/recovery', (req, res, next) => {
+    try {
+      const origin = new URL(req.get('origin'));
+      if (!/^https?:$/.test(origin.protocol) || origin.host !== req.get('host') ||
+          origin.origin !== req.get('origin')) throw new Error();
+      req.recoveryOrigin = origin;
+      next();
+    } catch (_) { res.status(403).json({ error: '请在本站页面发起钱包恢复' }); }
+  });
+  const recoveryCookie = 'liq_gap_recovery';
+  const recoveryPath = '/api/payment/recovery';
+  router.post('/recovery/challenge', (req, res) => {
+    let address;
+    try { address = getAddress(req.body.address); }
+    catch (_) { return res.status(400).json({ error: '无效的钱包地址' }); }
+    const now = Date.now(), ttl = 300000;
+    for (const [key, entry] of challenges) {
+      if (entry.expiresAt > now) break;
+      challenges.delete(key);
+    }
+    if (challenges.size >= 4096) return res.status(429).json({ error: '登录请求较多，请稍后重试' });
+    const browserKey = crypto.randomBytes(32).toString('hex');
+    const origin = req.recoveryOrigin;
+    const message = createSiweMessage({ domain: origin.host, uri: origin.origin, address,
+      version: '1', chainId: 84532, nonce: crypto.randomBytes(16).toString('hex'),
+      issuedAt: new Date(now), expirationTime: new Date(now + ttl),
+      statement: 'Restore Liquidity Gap access on this browser. Login only; no transaction, payment or renewal.' });
+    challenges.set(browserKey, { address, origin: origin.origin, message, expiresAt: now + ttl });
+    res.cookie(recoveryCookie, browserKey, { path: recoveryPath, httpOnly: true, sameSite: 'strict',
+      secure: origin.protocol === 'https:', maxAge: ttl });
+    res.json({ message });
+  });
+  router.post('/recovery/verify', wrap(async (req, res) => {
+    const key = (req.headers.cookie || '').match(/(?:^|;\s*)liq_gap_recovery=([a-f0-9]{64})(?:;|$)/)?.[1];
+    const challenge = challenges.get(key);
+    challenges.delete(key); // Consume before asynchronous verification, including failed attempts.
+    res.clearCookie(recoveryCookie, { path: recoveryPath });
+    const signature = req.body?.signature;
+    let valid = false;
+    if (challenge && challenge.origin === req.recoveryOrigin.origin && challenge.expiresAt > Date.now() &&
+        typeof signature === 'string' && /^0x[a-f0-9]{130}$/i.test(signature)) {
+      try { valid = await verifyMessage({ address: challenge.address, message: challenge.message, signature }); }
+      catch (_) { /* malformed signature */ }
+    }
+    if (!valid) return res.status(401).json({ error: '登录签名无效或已过期，请重新发起恢复' });
+    const session = store.recoverWallet(challenge.address);
+    if (!session) return res.status(403).json({ error: '此钱包没有已到账且仍有效的订单，请确认使用的是原付款账户。' });
+    setAccess(req, res, session);
+    res.json({ hasAccess: true, expiresAt: session.expiresAt });
+  }));
   router.get('/config', (_req, res) => res.json({ plans: config.plans, network: config.network,
     chainId: 84532, chainName: 'Base Sepolia', asset: config.asset, payTo: config.payTo,
     projectId: config.projectId, testnet: true, disclaimerVersion }));
@@ -106,10 +159,18 @@ function createPaymentRouter({ store = createStore(), verify = (p, r) => control
     for (const response of streams.get(order.token) || []) closeStream(response);
     res.json({ success: true });
   });
+  router.delete('/admin/credentials/:id', requireAdmin, (req, res) => {
+    const order = store.get(req.params.id);
+    if (!order || order.state === 'deleted') return res.status(404).json({ error: '凭证不存在或已删除' });
+    if (!store.deleteCredential(order.id)) return res.status(409).json({ error: '订单正在核实到账，暂不能删除' });
+    for (const response of streams.get(order.token) || []) closeStream(response);
+    res.json({ success: true });
+  });
   router.get('/status', (req, res) => {
     // Accept the old local token once, then issue an HttpOnly cookie.
-    const order = store.access(bearer(req) || req.query.token);
-    if (order) setAccess(req, res, order);
+    const token = bearer(req) || req.query.token;
+    const order = store.access(token);
+    if (order) setAccess(req, res, { token, expiresAt: order.expiresAt });
     else res.clearCookie('liq_gap_token', { path: '/' });
     res.json({ hasAccess: !!order, type: order && order.type, expiresAt: order && order.expiresAt });
   });

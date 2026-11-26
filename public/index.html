@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Liquidity Gap · Binance 流动性 & 信号仪表盘</title>
     <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./payment.css" />
     <script>window._hmt = window._hmt || [];</script>
     <script async src="https://hm.baidu.com/hm.js?2ed55142a0cc3cec5fec7487379393e2"></script>
     <style>
@@ -47,6 +48,8 @@
         font-weight: 600;
         letter-spacing: 0.5px;
       }
+      .dashboard-heading { flex: none; }
+      #access-expiry { margin-top: 3px; color: var(--fg-1); font-size: 11px; white-space: nowrap; font-variant-numeric: tabular-nums; }
       header .pill {
         font-size: 11px;
         padding: 2px 8px;
@@ -347,6 +350,12 @@
       #main-chart > div > canvas,
       #main-chart table {
         max-width: 100%;
+      }
+      #candle-countdown {
+        position: absolute; right: 0; z-index: 2; pointer-events: none;
+        padding: 0 3px; text-align: center; white-space: nowrap;
+        font: 11px/16px ui-monospace, monospace; font-variant-numeric: tabular-nums;
+        color: #101820; border-radius: 0 0 2px 2px;
       }
       .sub-pane h3 {
         font-size: 12px;
@@ -684,7 +693,10 @@
   </head>
   <body>
     <header>
-      <h1>Liquidity Gap · 流动性缺口</h1>
+      <div class="dashboard-heading">
+        <h1>Liquidity Gap · 流动性缺口</h1>
+        <div id="access-expiry" hidden>解锁到期：<time></time>（UTF+8）</div>
+      </div>
       <span class="pill">Binance · 实时流动性仪表盘 (Real-time Liquidity Dashboard)</span>
       <div class="controls">
         <div class="symbol-wrapper">

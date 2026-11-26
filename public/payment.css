@@ -1,0 +1,56 @@
+body.payment-locked { overflow: hidden; width: 100%; }
+body.payment-locked > :is(main, header), #payment-dialog[hidden] { display: none; }
+#payment-dialog {
+  --pay-muted: #a4b3c2;
+  --pay-line: #34424e;
+  --pay-accent: #79dfbc;
+  position: fixed; inset: 0; z-index: 9998;
+  display: flex; flex-direction: column; overflow: auto; overscroll-behavior: contain;
+  padding: max(16px, env(safe-area-inset-top)) 12px max(16px, env(safe-area-inset-bottom));
+  background: radial-gradient(ellipse at 50% 8%, #162b2c, #0c121a 65%);
+  box-sizing: border-box; color-scheme: dark;
+}
+.payment-card {
+  flex: none; width: min(100%, 530px); margin: auto; box-sizing: border-box;
+  padding: clamp(18px, 4vw, 32px); border: 1px solid var(--pay-line); border-radius: 22px;
+  background: #141d26; color: #eef4f9; box-shadow: 0 18px 60px #0005;
+  font: 14px/1.55 system-ui, sans-serif;
+}
+.payment-brand, .payment-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.payment-brand strong { font: bold 18px ui-monospace, monospace; color: var(--pay-accent); }
+.payment-brand span { padding: 3px 10px; border-radius: 99px; color: #b6e0d3; background: #20362f; font-size: 12px; white-space: nowrap; }
+.payment-card h2 { margin: 20px 0 5px; font-size: clamp(23px, 4vw, 29px); line-height: 1.25; }
+.payment-intro { margin: 0 0 22px; color: var(--pay-muted); }
+.payment-picker { padding: 0; border: 0; margin: 0; min-width: 0; }
+.payment-picker legend { padding: 0 0 8px; font-weight: 600; }
+.payment-plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.payment-plan { position: relative; cursor: pointer; }
+.payment-plan input { position: absolute; width: 1px; height: 1px; padding: 0; margin: 0; clip-path: inset(50%); }
+.payment-tile { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--pay-line); border-radius: 12px; background: #19242e; }
+.payment-duration { color: var(--pay-muted); font-size: 13px; }
+.payment-price { display: flex; align-items: baseline; gap: 4px; font: 11px ui-monospace, monospace; white-space: nowrap; }
+.payment-price b { font: 650 25px/1 system-ui, sans-serif; }
+.payment-plan input:checked + .payment-tile { border-color: var(--pay-accent); background: #19342e; box-shadow: inset 0 0 0 1px var(--pay-accent); }
+.payment-plan input:checked + .payment-tile .payment-duration { color: var(--pay-accent); }
+.payment-card :focus-visible, .payment-plan input:focus-visible + .payment-tile { outline: 2px solid #b7dafd; outline-offset: 3px; }
+.payment-consent { display: flex; align-items: flex-start; gap: 9px; margin: 18px 0; color: var(--pay-muted); font-size: 13px; }
+.payment-consent input { flex: none; width: 16px; height: 16px; margin: 2px 0; accent-color: #00796b; }
+.payment-card a { color: var(--pay-accent); text-underline-offset: 3px; }
+.payment-wallets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.payment-card button { min-height: 44px; padding: 8px 12px; border: 1px solid var(--pay-line); border-radius: 22px; background: #263440; color: #eef4f9; font: 600 14px/1.35 system-ui, sans-serif; cursor: pointer; }
+.payment-wallets button:first-child, #whitelist-login button { border-color: transparent; background: #00796b; color: white; }
+.payment-card button:disabled { opacity: .55; cursor: wait; }
+#payment-status:not(:empty) { margin-top: 12px; padding: 9px 12px; border-left: 2px solid #d3af65; background: #302c24; color: #f2d391; overflow-wrap: anywhere; }
+.payment-card details { margin-top: 10px; border-top: 1px solid var(--pay-line); }
+.payment-card summary { padding: 10px 0 0; cursor: pointer; color: #cedae3; }
+.payment-actions, #whitelist-login { display: grid; gap: 8px; margin-top: 10px; }
+.payment-actions { grid-template-columns: repeat(auto-fit, minmax(115px, 1fr)); }
+.payment-actions button { padding-inline: 8px; font-size: 13px; }
+#whitelist-login input { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 12px; background: #101820; color: inherit; border: 1px solid var(--pay-line); border-radius: 8px; font-size: 16px; }
+.payment-foot { margin-top: 18px; color: var(--pay-muted); font-size: 12px; }
+.payment-foot a { color: inherit; white-space: nowrap; }
+@media (max-width: 400px) {
+  .payment-tile { padding: 10px 8px; }
+  .payment-price b { font-size: 22px; }
+  .payment-wallets button { padding-inline: 6px; font-size: 13px; }
+}

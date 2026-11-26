@@ -45,6 +45,16 @@ function lock() {
 }
 function grant(data, orderId) {
   if (!data.hasAccess && !data.success) return;
+  const expiry = document.getElementById('access-expiry');
+  if (expiry) {
+    const date = new Date(data.expiresAt);
+    expiry.hidden = !Number.isFinite(data.expiresAt) || !Number.isFinite(date.getTime());
+    const time = expiry.querySelector('time');
+    if (!expiry.hidden && time.dateTime !== date.toISOString()) {
+      time.dateTime = date.toISOString();
+      time.textContent = date.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    }
+  }
   if (data.token) localStorage.setItem('liq_gap_x402_token', data.token);
   if (orderId && pendingOrder()?.id === orderId) localStorage.removeItem(PENDING_KEY);
   if (!unlocked) {
@@ -164,7 +174,7 @@ async function pay(type, mobile) {
     return;
   }
   busy = true;
-  modal.querySelectorAll('button[data-plan]').forEach(el => { el.disabled = true; });
+  modal.querySelectorAll('[data-mobile], input[name="payment-plan"]').forEach(el => { el.disabled = true; });
   try {
     if (!window.isSecureContext || !window.crypto?.subtle) {
       throw new Error('钱包支付需要 HTTPS 安全连接；手机请使用 HTTPS 域名访问，不能使用局域网 HTTP 地址。');
@@ -222,7 +232,7 @@ async function pay(type, mobile) {
     message(friendlyError(error));
   } finally {
     busy = false;
-    modal.querySelectorAll('button[data-plan]').forEach(el => { el.disabled = false; });
+    modal.querySelectorAll('[data-mobile], input[name="payment-plan"]').forEach(el => { el.disabled = false; });
   }
 }
 
@@ -237,51 +247,49 @@ async function submitSignedOrder(order) {
 
 function render() {
   document.body.classList.add('payment-locked');
-  const style = document.createElement('style');
-  style.textContent = `
-    body.payment-locked { overflow:hidden; width:100%; }
-    body.payment-locked > main, body.payment-locked > header { display:none; }
-    #payment-dialog[hidden] { display:none; }
-    #payment-dialog { position:fixed; inset:0; z-index:9998; background:rgba(11,14,17,.96); overflow:auto; display:flex; flex-direction:column; padding:16px; box-sizing:border-box; }
-    .payment-card { flex:none; margin:auto; width:min(100%,560px); background:#181a20; color:#e0e3eb; border:1px solid #2b3139; border-radius:16px; padding:24px; box-sizing:border-box; font:14px/1.6 system-ui; }
-    .payment-card h2 { margin:0 0 8px; } .payment-card p { color:#aeb6c3; }
-    .payment-plans { display:grid; gap:12px; } .payment-plan { display:grid; grid-template-columns:1fr 1fr; gap:8px; padding:12px; border:1px solid #343b46; border-radius:10px; }
-    .payment-plan strong { grid-column:1/-1; } .payment-card button { padding:10px; border:0; border-radius:24px; background:#00796b; color:white; cursor:pointer; font:inherit; }
-    .payment-card button:disabled { opacity:.5; cursor:wait; } .payment-card .secondary { background:#303947; }
-    .payment-card a { color:#aeb6c3; } #payment-status { min-height:44px; color:#e9c56c; overflow-wrap:anywhere; }
-    .payment-consent { display:flex; align-items:flex-start; gap:8px; margin:16px 0; } .payment-consent input { flex:none; margin-top:6px; }
-    .payment-actions { display:flex; flex-wrap:wrap; gap:8px; }
-    .payment-card details { margin:16px 0; } .payment-card summary { cursor:pointer; }
-    #whitelist-login { display:grid; gap:8px; margin-top:10px; }
-    #whitelist-login input { min-width:0; padding:10px; background:#0b0e11; color:inherit; border:1px solid #343b46; border-radius:6px; }
-    @media(max-width:400px) { .payment-card { padding:16px; } .payment-plan { grid-template-columns:1fr; } }
-  `;
-  document.head.appendChild(style);
+  const plans = Object.entries(config.plans);
+  const savedType = pendingOrder()?.type;
+  const selected = Object.hasOwn(config.plans, savedType) ? savedType : plans[0][0];
   modal = document.createElement('section');
   modal.id = 'payment-dialog';
   modal.setAttribute('role', 'dialog');
   modal.setAttribute('aria-modal', 'true');
   modal.setAttribute('aria-labelledby', 'payment-title');
   modal.innerHTML = `<div class="payment-card">
+    <div class="payment-brand"><strong>x402</strong><span>Base Sepolia · 测试网</span></div>
     <h2 id="payment-title">解锁行情分析工具</h2>
-    <p>当前为 Base Sepolia 测试网，仅使用测试 USDC。x402 支付采用钱包授权签名，核实到账后开始计时。</p>
-    <div class="payment-plans">${Object.entries(config.plans).map(([type, plan]) => `
-      <div class="payment-plan"><strong>${plan.label} · ${plan.price} USDC</strong>
-      <button data-plan="${type}" data-mobile="false">浏览器钱包支付</button>
-      <button data-plan="${type}" data-mobile="true">手机钱包 / 扫码</button></div>`).join('')}</div>
+    <p class="payment-intro">使用测试 USDC 支付，到账后开始计时，不自动续费。</p>
+    <fieldset class="payment-picker"><legend>选择使用时长</legend>
+      <div class="payment-plans">${plans.map(([type, plan]) => `
+        <label class="payment-plan"><input type="radio" name="payment-plan" value="${type}" ${type === selected ? 'checked' : ''}>
+          <span class="payment-tile"><span class="payment-duration">${plan.label}</span>
+          <span class="payment-price"><b>${plan.price}</b> USDC</span></span>
+        </label>`).join('')}</div>
+    </fieldset>
     <label class="payment-consent"><input id="payment-consent" type="checkbox"><span>我已阅读并同意<a href="/disclaimer.html" target="_blank" rel="noopener">免责声明与支付说明</a>。链上支付一经确认无法撤回，可能无法退款。</span></label>
+    <div class="payment-wallets"><button type="button" data-mobile="false">Web3 浏览器钱包</button>
+      <button type="button" data-mobile="true">手机钱包 / 扫码</button></div>
     <div id="payment-status" role="status" aria-live="polite"></div>
-    <div class="payment-actions"><button id="payment-query" class="secondary">查询已有订单</button><button id="payment-reset" class="secondary">重置钱包连接</button><button id="payment-cancel" class="secondary">取消未提交订单</button></div>
-    <p>手机上可直接跳转钱包，也可在钱包内置浏览器打开本站；电脑端可扫码。请勿向客服提供助记词或私钥。</p>
+    <details><summary>已支付？用钱包恢复访问</summary>
+      <p>连接原付款账户，只签一次登录消息。不转账、不续期，原浏览器仍可使用。</p>
+      <div class="payment-actions"><button type="button" data-recover="browser">用浏览器钱包恢复</button>
+        <button type="button" data-recover="mobile">用手机钱包恢复</button></div>
+    </details>
+    <details><summary>订单与连接</summary><div class="payment-actions"><button id="payment-query">查询已有订单</button><button id="payment-reset">重置钱包连接</button><button id="payment-cancel">取消未提交订单</button></div></details>
     <details><summary>白名单登录</summary><form id="whitelist-login">
       <input name="username" aria-label="白名单账号" placeholder="白名单账号" autocomplete="username" maxlength="48" required>
       <input name="password" type="password" aria-label="白名单密码" placeholder="白名单密码" autocomplete="current-password" required>
       <button>登录并进入行情</button>
     </form></details>
-    <a href="/admin.html">管理员通道</a>
+    <div class="payment-foot"><span>请勿提供助记词或私钥</span><a href="/admin.html">管理员通道</a></div>
   </div>`;
   document.body.appendChild(modal);
-  modal.querySelectorAll('[data-plan]').forEach(button => button.addEventListener('click', () => pay(button.dataset.plan, button.dataset.mobile === 'true')));
+  modal.querySelectorAll('[data-recover]').forEach(button => button.addEventListener('click',
+    () => recoverAccess(button.dataset.recover === 'mobile')));
+  modal.querySelectorAll('[data-mobile]').forEach(button => button.addEventListener('click', () => {
+    const choice = modal.querySelector('input[name="payment-plan"]:checked');
+    if (choice) pay(choice.value, button.dataset.mobile === 'true');
+  }));
   document.getElementById('payment-query').onclick = () => {
     if (pendingOrder()) queryOrder(); else checkAccess();
   };
@@ -302,6 +310,30 @@ function render() {
     } catch (error) { message(friendlyError(error)); }
     finally { busy = button.disabled = false; }
   };
+}
+
+async function recoverAccess(mobile) {
+  if (busy) return;
+  busy = true;
+  const controls = modal.querySelectorAll('[data-recover], [data-mobile]');
+  controls.forEach(el => { el.disabled = true; });
+  try {
+    if (!window.isSecureContext) throw new Error('请通过 HTTPS 打开本站后恢复访问。');
+    message('请连接原付款账户，再确认登录消息。');
+    const provider = mobile ? await walletConnect() : window.ethereum;
+    if (!provider) throw new Error('未检测到浏览器钱包，请使用手机钱包恢复。');
+    const [address] = await provider.request({ method: 'eth_requestAccounts' });
+    if (!address) throw new Error('钱包尚未授权账户。');
+    const post = (path, body) => api(`/api/payment/recovery/${path}`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const { data } = await post('challenge', { address });
+    const wallet = createWalletClient({ account: address, transport: custom(provider) });
+    const signature = await wallet.signMessage({ message: data.message });
+    const result = await post('verify', { signature });
+    localStorage.removeItem('liq_gap_x402_token');
+    grant(result.data);
+  } catch (error) { message(friendlyError(error)); }
+  finally { busy = false; controls.forEach(el => { el.disabled = false; }); }
 }
 
 export function initPaymentUI() {

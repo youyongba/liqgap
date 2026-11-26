@@ -93,6 +93,17 @@ async function main() {
     assert.equal((await login(password)).status, 401);
     assert.equal((await request('/api/private', null, authHeaders)).status, 401);
     console.log('PASS: 白名单创建、重复账号、登录、授权隔离、失效、续期、撤销');
+    const deleteCredential = (id, secret) => fetch(`${base}/api/payment/admin/credentials/${id}`, {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret })
+    });
+    const disposable = store.createWhitelist('delete-test', expiresAt);
+    const accessBeforeDelete = store.loginWhitelist(disposable.username, disposable.password);
+    assert.equal((await deleteCredential(disposable.id, 'wrong')).status, 403);
+    assert.equal((await deleteCredential(disposable.id, secret)).status, 200);
+    assert.equal((await deleteCredential(disposable.id, secret)).status, 404);
+    assert.ok(!store.access(accessBeforeDelete.token));
+    assert.ok(!store.loginWhitelist(disposable.username, disposable.password));
+    assert.ok(!store.list().some(row => row.id === disposable.id));
 
     for (const [type, plan] of Object.entries(config.plans)) {
       const order = (await request('/api/payment/orders', { type, disclaimerVersion })).data;
@@ -115,6 +126,7 @@ async function main() {
       assert.equal((await request(url, {}, { ...headers, 'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(wrong) })).status, 400);
       const submittedOrder = await request(url, {}, { ...headers, 'PAYMENT-SIGNATURE': encodePaymentSignatureHeader(payload) });
       assert.equal(submittedOrder.status, 202);
+      assert.equal((await deleteCredential(order.id, secret)).status, 409);
       assert.equal(submittedOrder.data.hasAccess, false);
       assert.equal(store.access(store.get(order.id).token), undefined);
       const duplicate = (await request('/api/payment/orders', { type, disclaimerVersion })).data;
@@ -183,6 +195,32 @@ async function main() {
     assert.equal(store.access(expired.token), undefined);
     console.log('PASS: 已取消订单不会被并发验签激活，链上确认过期未执行订单可结束');
     const token = paidOrder.token;
+    const origin = { Origin: base };
+    const recovery = '/api/payment/recovery';
+    const challenge = async address => {
+      const response = await request(`${recovery}/challenge`, { address }, origin);
+      assert.equal(response.status, 200);
+      return { message: response.data.message, headers: { ...origin, Cookie: response.headers.get('set-cookie').split(';')[0] } };
+    };
+    const verifyLogin = (signature, headers) => request(`${recovery}/verify`, { signature }, headers);
+    const other = privateKeyToAccount('0x' + '02'.repeat(32));
+    const wrong = await challenge(account.address);
+    assert.equal((await verifyLogin(await other.signMessage(wrong), wrong.headers)).status, 401);
+    const missing = await challenge(other.address);
+    assert.equal((await verifyLogin(await other.signMessage(missing), missing.headers)).status, 403);
+    const loginChallenge = await challenge(account.address);
+    const sig = await account.signMessage(loginChallenge);
+    assert.equal((await verifyLogin(sig, origin)).status, 401);
+    const recovered = await verifyLogin(sig, loginChallenge.headers);
+    assert.equal(recovered.status, 200);
+    assert.equal(recovered.data.expiresAt, paidOrder.expiresAt);
+    const recoveredToken = recovered.headers.get('set-cookie').match(/liq_gap_token=([a-f0-9]{64})/)[1];
+    assert.notEqual(recoveredToken, token);
+    const secondDevice = { Cookie: `liq_gap_token=${recoveredToken}` };
+    assert.equal((await request('/api/private', null, secondDevice)).status, 200);
+    assert.equal((await verifyLogin(sig, loginChallenge.headers)).status, 401);
+    assert.equal(store.get(paidOrder.id).expiresAt, paidOrder.expiresAt);
+    console.log('PASS: 原钱包一次性签名跨设备恢复，不重复结算、不续期，签名不可重用');
     assert.equal((await request('/api/private', null, { Authorization: `Bearer ${token}` })).status, 200);
     const sse = await fetch(base + '/api/stream/sse', { headers: { Authorization: `Bearer ${token}` } });
     const reader = sse.body.getReader();
@@ -193,6 +231,7 @@ async function main() {
     const remaining = await reader.read();
     assert.match(new TextDecoder().decode(remaining.value), /access-revoked/);
     assert.equal((await reader.read()).done, true);
+    assert.equal((await request('/api/private', null, secondDevice)).status, 401);
     assert.equal((await request('/api/private', null, { Authorization: `Bearer ${token}` })).status, 401);
     const admin = (await request('/api/payment/admin/grant', { secret: process.env.AUTO_TRADE_API_TOKEN })).data;
     assert.equal((await request('/api/payment/status', null, { Authorization: `Bearer ${admin.token}` })).data.hasAccess, true);

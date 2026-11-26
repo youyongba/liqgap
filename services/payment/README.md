@@ -40,6 +40,8 @@
 | `GET /api/payment/orders/:id` | `X-Order-Key` | 状态；到账后返回 token、到期时间并设置 HttpOnly Cookie |
 | `DELETE /api/payment/orders/:id` | `X-Order-Key` | 仅允许取消尚未提交结算的订单 |
 | `GET /api/payment/status` | Cookie 或 `Authorization: Bearer ...` | `{hasAccess,type,expiresAt}` |
+| `POST /api/payment/recovery/challenge` | 同源 JSON `{address}` | 返回 `{message}` 并设置短期 HttpOnly 挑战 Cookie；在原付款钱包确认登录消息 |
+| `POST /api/payment/recovery/verify` | 同源 JSON `{signature}`、原挑战 Cookie | 成功设置独立 HttpOnly 访问凭证，返回 `{hasAccess,expiresAt}`，不创建订单、不结算 |
 | `POST /api/payment/admin/grant` | `{secret}` | 当前浏览器一年管理员访问权限 |
 | `POST /api/payment/admin/whitelist` | `{secret,username,expiresAt}`，到期时间为 Unix 毫秒整数 | 201 `{id,username,expiresAt,password}`；随机登录密码仅创建时返回，不为管理员设备解锁 |
 | `POST /api/payment/admin/whitelist/:id/expiry` | `{secret,expiresAt}` | 设置新的绝对到期时间，可延长已过期但未撤销的账号 |
@@ -60,7 +62,8 @@
 - `failed`：链上时间超过签名有效期至少 60 秒，且 USDC 合约确认该 nonce 未执行；允许重新选套餐。单纯网络超时不会判定付款失败。
 - `revokedAt`：撤销记录不删除，过期记录也保留；到期或撤销后接口与 SSE 都拒绝继续提供数据。
 - 重启后通过已保存的交易哈希或 `AuthorizationUsed(from,nonce)` 日志恢复结算结果。RPC 若限制历史日志范围，待处理订单可能需要运营方核验，不能盲目重新付款。
-- 浏览器保留私密订单凭证与访问 token；清除浏览器数据或更换设备不等于删除服务端记录，但本版本未实现钱包签名登录的跨设备找回。
+- 更换浏览器后，选择「已支付？用钱包恢复访问」，使用原付款账户签署一次性 SIWE 登录消息。当前支持普通 EVM 外部账户的个人消息签名，不支持合约钱包验签。若有多笔有效套餐，使用到期最晚的一笔，不叠加时长，不替换旧设备凭证。新设备凭证摘要保存在 SQLite，API / SSE 继续检查原订单。
+- 登录挑战绑定站点、地址和发起浏览器，5 分钟内有效，验证一次即作废。挑战暂存在服务进程内；服务重启后重新发起即可，多实例部署需会话粘滞或共享挑战存储。反向代理需保留公网 `Host`，且页面和 API 使用同一 HTTPS 来源。
 - **旧版只有内存 token，且没有可靠记录付款钱包/交易哈希，无法据此自动迁移为可信支付记录。** 已丢失的历史记录需依据原交易与运营记录人工核验，不应要求用户直接重复付款。
 
 ## 行情稳定性

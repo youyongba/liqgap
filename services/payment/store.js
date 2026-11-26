@@ -25,6 +25,9 @@ function createStore(filename = process.env.PAYMENT_DB_PATH || path.join(process
       username TEXT PRIMARY KEY COLLATE NOCASE,
       orderId TEXT NOT NULL UNIQUE REFERENCES orders(id)
     );
+    CREATE TABLE IF NOT EXISTS wallet_sessions (
+      tokenHash TEXT PRIMARY KEY, orderId TEXT NOT NULL REFERENCES orders(id)
+    );
   `);
   if (filename !== ':memory:') fs.chmodSync(filename, 0o600);
   const hash = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -46,9 +49,19 @@ function createStore(filename = process.env.PAYMENT_DB_PATH || path.join(process
   }
   function access(token) {
     if (typeof token !== 'string') return null;
-    return db.prepare("SELECT * FROM orders WHERE token=? AND state='paid' AND revokedAt IS NULL AND expiresAt>?")
-      .get(token, Date.now());
+    return db.prepare(`SELECT * FROM orders WHERE (token=? OR id=(
+      SELECT orderId FROM wallet_sessions WHERE tokenHash=?)) AND state='paid'
+      AND revokedAt IS NULL AND expiresAt>?`).get(token, hash(token), Date.now());
   }
+  const recoverWallet = db.transaction(wallet => {
+    const order = db.prepare(`SELECT * FROM orders WHERE wallet=? AND type IN ('daily','weekly','monthly')
+      AND state='paid' AND txHash IS NOT NULL AND revokedAt IS NULL AND expiresAt>?
+      ORDER BY expiresAt DESC LIMIT 1`).get(wallet.toLowerCase(), Date.now());
+    if (!order) return null;
+    const token = crypto.randomBytes(32).toString('hex');
+    db.prepare('INSERT INTO wallet_sessions(tokenHash,orderId) VALUES (?,?)').run(hash(token), order.id);
+    return { token, expiresAt: order.expiresAt };
+  });
   function reserve(id, wallet, paymentKey, payload, fromBlock) {
     return db.prepare(`UPDATE orders SET wallet=?,paymentKey=?,payload=?,fromBlock=?,state='pending',error=NULL
       WHERE id=? AND state='new'`).run(wallet, paymentKey, JSON.stringify(payload), String(fromBlock), id).changes;
@@ -73,12 +86,21 @@ function createStore(filename = process.env.PAYMENT_DB_PATH || path.join(process
     const order = row && authorize(row.orderId, password);
     return order && access(order.token);
   }
+  const deleteCredential = db.transaction(id => {
+    const changed = db.prepare(`UPDATE orders SET state='deleted',revokedAt=COALESCE(revokedAt,?)
+      WHERE id=? AND state NOT IN ('pending','deleted')`).run(Date.now(), id).changes;
+    if (!changed) return false;
+    db.prepare('DELETE FROM whitelist_accounts WHERE orderId=?').run(id);
+    db.prepare('DELETE FROM wallet_sessions WHERE orderId=?').run(id);
+    return true;
+  });
   return {
-    db, get, create, authorize, access, reserve, complete,
-    createWhitelist, setWhitelistExpiry, loginWhitelist,
+    db, get, create, authorize, access, reserve, complete, recoverWallet,
+    createWhitelist, setWhitelistExpiry, loginWhitelist, deleteCredential,
     list: () => db.prepare(`SELECT id,type,amount,createdAt,expiresAt,revokedAt,state,wallet,txHash,error,w.username
       FROM orders LEFT JOIN whitelist_accounts w ON w.orderId=orders.id
-      WHERE type='whitelist' OR id IN (SELECT id FROM orders WHERE type!='whitelist' ORDER BY createdAt DESC LIMIT 1000)
+      WHERE state!='deleted' AND (type='whitelist' OR id IN (
+        SELECT id FROM orders WHERE type!='whitelist' AND state!='deleted' ORDER BY createdAt DESC LIMIT 1000))
       ORDER BY createdAt DESC`).all(),
     revoke: id => db.prepare("UPDATE orders SET revokedAt=? WHERE id=? AND state='paid'").run(Date.now(), id).changes,
     cancel: id => db.prepare("UPDATE orders SET state='cancelled' WHERE id=? AND state='new'").run(id).changes,

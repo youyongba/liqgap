@@ -346,6 +346,38 @@
     lineWidth: 2,
     title: 'VWAP'
   });
+  const countdown = document.createElement('span');
+  countdown.id = 'candle-countdown';
+  countdown.hidden = true;
+  countdown.setAttribute('aria-label', '当前 K 线距离收盘的剩余时间');
+  els.mainChart.appendChild(countdown);
+  let countdownBar = null;
+  function updateCandleCountdown() {
+    if (document.hidden) return;
+    const now = Date.now();
+    const seconds = countdownBar && Math.ceil((Number(countdownBar.closeTime) + 1 - now) / 1000);
+    if (!(seconds > 0) || now < Number(countdownBar.openTime)) {
+      countdown.hidden = true;
+      return;
+    }
+    const y = candleSeries.priceToCoordinate(Number(countdownBar.close));
+    const top = Math.round(y) + 9;
+    const width = mainChart.priceScale('right').width();
+    if (!Number.isFinite(y) || y < 0 || !width ||
+        top + 16 > els.mainChart.clientHeight - mainChart.timeScale().height()) {
+      countdown.hidden = true;
+      return;
+    }
+    const hh = Math.floor(seconds / 3600), mm = Math.floor(seconds / 60) % 60;
+    const text = (hh ? _pad2(hh) + ':' : '') + _pad2(mm) + ':' + _pad2(seconds % 60);
+    if (countdown.textContent !== text) countdown.textContent = text;
+    countdown.style.top = top + 'px';
+    countdown.style.width = width + 'px';
+    countdown.style.backgroundColor = Number(countdownBar.close) >= Number(countdownBar.open) ? '#4ade80' : '#f87171';
+    countdown.hidden = false;
+  }
+  setInterval(updateCandleCountdown, 250);
+  document.addEventListener('visibilitychange', updateCandleCountdown);
 
   // ---- 副图：成交量 (Volume chart · separate Lightweight Charts instance) ----
   const volumeChart = LightweightCharts.createChart(els.volumePane, {
@@ -4055,6 +4087,8 @@
       close: c.close
     }));
     _smartUpdateSeries(candleSeries, mapped);
+    countdownBar = merged[merged.length - 1];
+    requestAnimationFrame(updateCandleCountdown);
     
     if (heatmap && heatmap.redraw) {
       heatmap.redraw();
@@ -5522,6 +5556,8 @@
     toggleMinimize(target, btn);
   });
   function _clearMainChart() {
+    countdownBar = null;
+    countdown.hidden = true;
     _smartUpdateSeries(candleSeries, []);
     _smartUpdateSeries(vwapSeries, []);
     _smartUpdateSeries(volumeSeries, []);
